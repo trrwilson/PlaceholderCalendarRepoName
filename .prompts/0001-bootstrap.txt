@@ -1,0 +1,274 @@
+Bootstrap a new, local GitHub repository in this folder that will contain the first working version of a personal,
+touch-first household dashboard application.
+  
+Throughout, retain appropriate instructions, skills, and other collateral to persist durable
+architecture, product constraints, conventions, and definition-of-done information
+that future coding-agent requests should know, so I do not need to repeat this
+context.
+
+## Product
+ 
+This application will run continuously in a full-screen browser on a wall-mounted
+27-inch 4K touchscreen (3840x2160). Webcam and microphone capabilities will be used in
+later revisions. Keyboard input is entirely out of scope.
+ 
+The primary experience is a family calendar / household dashboard.
+ 
+The long-term application should support:
+ 
+- Microsoft Outlook calendars through Microsoft Graph
+- Google Calendar
+- Home Assistant
+- touch-first interaction
+- microphone / voice interaction
+- speech-to-text and text-to-speech
+- an AI agent capable of interpreting natural-language requests and invoking
+explicit application tools
+- real-time updates to the displayed UI
+- eventually, optional local AI/audio/video processing
+ 
+Do NOT implement those external integrations yet. Establish sensible boundaries
+for them without over-engineering speculative abstractions.
+
+The display client should be disposable and mostly stateless. Credentials, OAuth
+tokens, calendar access, AI credentials, and important household state should
+remain on the server.
+ 
+## Technology
+ 
+Use:
+ 
+Frontend:
+- React
+- TypeScript with strict type checking
+- Vite
+- touch/pointer-friendly browser APIs
+- straightforward CSS appropriate for a dedicated large-screen application
+- avoid a large component framework unless it provides substantial value
+ 
+Backend:
+- Python
+- FastAPI
+- Pydantic models for API/domain boundaries
+- async APIs where appropriate
+- WebSockets for server-pushed state and future real-time integrations
+ 
+Testing:
+- pytest for Python
+- a lightweight modern frontend testing setup
+- Playwright if useful for validating the actual large-screen UI end-to-end
+ 
+Development:
+- use current stable versions compatible with the tooling installed on this machine
+- use modern Python project/package management with a pyproject.toml
+- keep configuration and secrets out of source control
+- make local development easy from VS Code
+- do not introduce Docker, Redis, Postgres, a message broker, or cloud
+infrastructure in this first milestone
+ 
+Persistence:
+- no persistent database is necessary for the first milestone
+- design so SQLite can be added naturally when persistence becomes useful
+ 
+## Repository organization
+ 
+Prefer a simple structure approximately like:
+ 
+/
+frontend/
+backend/
+app/
+api/
+calendar/
+models/
+services/
+tests/
+README.md
+ 
+Adjust this if the tooling makes another structure clearly cleaner.
+ 
+Do not create layers or interfaces merely because a production enterprise
+application might eventually need them. This is being pursued as a smaller scale personal project and should take advantage of those simplifications where possible.
+ 
+## Calendar domain
+ 
+Define our own provider-neutral calendar model. Do not expose Microsoft Graph,
+Google Calendar, or other provider-specific types to the frontend.
+ 
+We will eventually need operations roughly equivalent to:
+ 
+- query events for a time range
+- create an event
+- modify an event
+- delete an event
+ 
+For this milestone implement only an in-memory/mock calendar provider.
+ 
+Populate it with realistic household test data covering cases useful for UI
+development:
+ 
+- multiple household calendars / people with distinct colors
+- appointments at specific times
+- all-day events
+- overlapping events
+- events today
+- events later this week
+- events spanning enough dates to exercise calendar navigation
+ 
+Keep the provider boundary simple enough that later requests can add
+MicrosoftGraphCalendarProvider and GoogleCalendarProvider without rewriting the
+frontend.
+ 
+## Initial UI
+ 
+Build a genuinely usable first screen rather than a developer placeholder.
+ 
+The UI should feel like a dedicated household appliance, not Outlook or a generic
+desktop productivity application.
+ 
+Optimize specifically for:
+ 
+- 3840x2160 16:9 display
+- visibility from several feet away on the 27" display
+- interaction when standing at arm's length
+- large touch targets
+- good typography
+- clearly visible current date/time
+- visually distinct household calendars
+- restrained information density despite the high resolution
+ 
+The initial screen should include:
+ 
+1. A useful calendar-oriented primary view
+2. Today's/upcoming agenda
+3. Current date and time
+4. Visually distinct calendars/people
+5. A touch-friendly Add affordance that does not need to be functional yet
+6. Reserved/subtle areas where future household status, weather, and voice-agent
+state can naturally live
+ 
+Calendar navigation should already work against the mock data.
+ 
+The visual hierarchy should work in two conceptual modes even if no explicit mode
+switch is implemented yet:
+ 
+Ambient:
+- readable from across the room
+- calendar, date, upcoming events are dominant
+- minimal controls
+ 
+Interactive:
+- touch targets and additional detail become useful when someone approaches and
+interacts
+ 
+Avoid designing a dense desktop-calendar clone just because 4K provides room for it.
+ 
+## Future voice/AI architecture
+ 
+Do not implement AI or speech yet, but preserve a straightforward path toward this
+data flow:
+ 
+browser microphone
+-> audio/speech service
+-> speech-to-text
+-> agent
+-> explicit application tools
+-> calendar / Home Assistant actions
+-> real-time UI update
+-> optional text-to-speech
+ 
+The future agent should manipulate explicit tools rather than having direct,
+unstructured access to calendar providers.
+ 
+Examples of future tools might be conceptually similar to:
+ 
+- get_calendar_events
+- create_calendar_event
+- update_calendar_event
+- delete_calendar_event
+- get_home_state
+- control_home_entity
+- show_calendar_range
+- show_agenda
+- navigate_dashboard
+ 
+Do not build these yet. Document this intended direction briefly so future
+implementation does not accidentally couple AI logic directly to provider APIs.
+ 
+## Real-time architecture
+ 
+Establish a minimal FastAPI WebSocket endpoint and frontend client connection so
+the architecture already has a path for server-pushed updates.
+ 
+Do not build a generalized event bus.
+ 
+A simple typed application message model is sufficient.
+ 
+Use it for one small demonstrable behavior if convenient, such as causing the
+frontend to refresh or update when mock calendar state changes.
+ 
+## Engineering expectations
+ 
+- Use Python type hints consistently.
+- Use Pydantic at API boundaries.
+- Use TypeScript strict mode.
+- Prefer small, readable modules.
+- Avoid premature framework abstractions.
+- Avoid placeholder interfaces with no foreseeable next implementation.
+- Avoid duplicating domain definitions more than necessary.
+- Include useful error handling.
+- Keep frontend state management simple unless complexity actually demands a
+state-management library.
+- Do not include credentials, fake OAuth secrets, or vendor-specific SDKs yet.
+- Include a useful .gitignore.
+- Include a README covering architecture and exact local-development commands.
+ 
+Tests should emphasize useful behavior rather than achieving an arbitrary coverage
+number.
+ 
+At minimum test:
+- calendar time-range querying
+- calendar mock/provider behavior
+- important calendar-domain model validation
+- at least one meaningful frontend/calendar interaction
+ 
+## Execution
+ 
+Work autonomously through the entire bootstrap:
+ 
+1. Inspect installed Python, Node/npm, and supporting tool versions.
+2. Initialize the repository and projects.
+3. Create .github/copilot-instructions.md.
+4. Implement the FastAPI backend.
+5. Implement the provider-neutral calendar model and mock provider.
+6. Implement the React/TypeScript frontend.
+7. Implement the initial polished calendar/dashboard UX.
+8. Establish minimal WebSocket connectivity.
+9. Install required dependencies.
+10. Build/type-check/lint as appropriate.
+11. Run backend and frontend tests.
+12. Fix compilation, type-checking, linting, runtime, and test failures.
+13. If practical, launch the application and verify that the frontend loads and
+communicates with the backend.
+14. Review the repository once at the end and remove obvious unnecessary
+boilerplate, abstractions, and unused dependencies.
+ 
+Do not stop after merely generating files. Run the available validation steps and
+fix problems you encounter.
+ 
+If a tool or dependency choice turns out not to work in the installed environment,
+choose a sensible alternative and continue rather than asking me about minor
+implementation choices.
+ 
+At completion, provide a concise report containing:
+ 
+- what was created
+- resulting repository architecture
+- exact commands to run it locally
+- build/type-check/test status
+- important implementation decisions
+- anything you could not verify
+- the three highest-value next implementation milestones
+ 
+Do NOT begin Microsoft Graph, Google Calendar, Home Assistant, authentication,
+speech recognition, or LLM integration yet.

@@ -1,0 +1,31 @@
+:root {
+  font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color: #253235;
+  background: #e9e6dc;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  font-weight: 500;
+  color: #646cff;
+  text-decoration: inherit;
+}
+a:hover {
+  color: #535bf2;
+}
+
+html, body, #root { width: 100%; min-width: 320px; height: 100%; min-height: 100%; }
+body {
+  margin: 0;
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+  min-height: 100%;
+}

@@ -1,0 +1,290 @@
+Continue development of the existing Homebase repository. This is a focused frontend/product-UX iteration, not an architectural rewrite.
+
+First inspect:
+- the existing frontend implementation
+- current calendar/domain models and mock data
+- existing tests
+- .github/copilot-instructions.md
+
+Preserve working backend/API architecture and the existing improved Month view unless a small refactor is necessary. Do not implement Microsoft Graph, Google Calendar, Home Assistant, speech recognition, LLM integration, authentication, persistence, or other backend integrations in this task.
+
+The purpose of this iteration is to move the UI from “a desktop calendar displayed on a large monitor” toward “a purpose-built ambient household appliance.”
+
+## FIRST: UPDATE DURABLE COPILOT INSTRUCTIONS
+
+Before implementing the redesign, update `.github/copilot-instructions.md` with the following durable product/design principles in a concise form so future agents inherit them automatically.
+
+These are overarching design requirements for this application:
+
+1. This is an AMBIENT HOUSEHOLD APPLIANCE, not a conventional desktop web application.
+
+2. Optimize every primary screen in this order:
+   a. What can a person understand in about 2 seconds while walking past from several feet away?
+   b. What can a person accomplish with one or two touches while standing at the display?
+   c. Only then optimize for information density.
+
+3. Design for two viewing distances:
+   - Ambient: important information must be readable and understandable from roughly 6–10 feet away.
+   - Interactive: richer details and controls may appear when the user approaches/touches the screen.
+
+4. Apply progressive disclosure:
+   - Ambient UI summarizes.
+   - Touch reveals detail and controls.
+   - Future voice interaction transforms/navigates the same visual UI.
+   Do not permanently display controls or configuration merely because space exists.
+
+5. Optimize for NOW, NEXT, and UNUSUAL.
+   Current and near-future household information is more valuable than treating every date, status, or entity as equally important.
+
+6. Prefer exception-driven household status:
+   - Important abnormal/actionable state such as “Garage open 43 minutes” deserves prominent space.
+   - Normal state such as “everything is fine” should consume little or no prime screen real estate.
+
+7. High resolution is for excellent legibility, not maximum density.
+   The target hardware is a 27-inch 3840x2160 touchscreen. Do not use 4K resolution as justification for desktop-sized typography or tiny controls.
+
+8. Color primarily communicates semantic identity/state:
+   - household member/calendar identity
+   - event category where useful
+   - warnings/status
+   Avoid color used only as decoration.
+
+9. Primary navigation and frequently used actions must be large, obvious, and touchscreen-friendly. Do not rely on hover or small text/chevrons.
+
+10. The application should have distinct purpose-built modes rather than one dashboard permanently showing every capability.
+    Expected eventual modes include Home/Today, Week, Month, Tasks, and Home/household control.
+
+11. The physical screen is an output medium for the future assistant.
+    Future voice commands should preferentially cause visible navigation, highlighting, proposals, or confirmations rather than behaving like a detached chatbot.
+
+12. All normal primary modes must cleanly fit in a 16:9 kiosk viewport without document-level scrolling.
+
+Keep these principles concise in the repository instructions rather than copying this entire prompt verbatim.
+
+## PRIMARY TASK: INTRODUCE A PURPOSE-BUILT HOME/TODAY EXPERIENCE
+
+The current Month view is now reasonably good and should remain available.
+
+However, Month should no longer be assumed to be the application's primary ambient home screen.
+
+Create a genuinely different Home/Today experience optimized for what a household needs to know right now.
+
+Do NOT simply rearrange the existing Month dashboard.
+
+The Home/Today mode should answer at a glance:
+
+- What is happening today?
+- What happens next?
+- What matters later today?
+- What does tomorrow / the near future look like?
+- Is there anything unusual or actionable?
+- What can I interact with?
+
+Calendar/schedule information should dominate.
+
+A reasonable information hierarchy is:
+
+CURRENT CONTEXT
+- prominent current time
+- day/date
+- reserved compact weather/context area if useful
+
+TODAY
+- large, highly readable chronological schedule
+- time + event title as the dominant event representation
+- calendar/person identity obvious through strong but tasteful color treatment
+- location/secondary information visible when useful without competing with primary information
+
+NEXT / COMING UP
+- upcoming events later today and/or tomorrow
+- intelligently avoid merely duplicating the same information already visible in Today
+- near-future information should be considerably more useful than displaying arbitrary dates later in the month
+
+EXCEPTION / HOUSEHOLD CONTEXT AREA
+- reserve a contextual region that can later display Home Assistant exceptions, event details, or agent state
+- for mock content, demonstrate at least one meaningful example of abnormal/actionable household state
+- do not dedicate a large permanent panel to saying that everything is normal
+
+FUTURE VOICE AFFORDANCE
+- provide a visually coherent, unobtrusive microphone/Ask affordance
+- do not implement speech yet
+- anticipate future states such as listening, transcript, proposed action, and confirmation without permanently reserving a large chat panel
+
+## APPLICATION MODES / NAVIGATION
+
+Add persistent large touch-oriented mode navigation suitable for the physical display.
+
+At minimum:
+
+Home | Week | Month
+
+The design may visibly anticipate future Tasks and Home/household modes without needing to implement those screens.
+
+Prefer a physically reachable navigation area such as a bottom navigation bar/dock unless inspection of the current implementation suggests a clearly better solution.
+
+Navigation must use large hit targets and visually identify the active mode.
+
+Month must continue to work.
+
+## ADD A USEFUL WEEK VIEW
+
+Implement a Week view that is meaningfully different from Month.
+
+Its purpose is rapid schedule comprehension, not recreating Outlook.
+
+Design around the useful waking portion of the day and the household schedule.
+
+Requirements:
+- today is immediately obvious
+- event times and titles are readable from a useful distance
+- calendar/person colors remain semantically meaningful
+- overlapping/busy periods remain understandable
+- empty time should be visually useful rather than overwhelming
+- week navigation should be touch friendly
+- the view must fit the kiosk viewport without document-level scrolling
+
+Choose an appropriate week representation after inspecting the existing component/data model. A time-oriented week or schedule-style week is preferable if it communicates household schedule better than seven miniature day cards.
+
+## IMPROVE INFORMATION SEMANTICS
+
+Review the existing UI for information that currently consumes permanent screen space without earning it.
+
+Specifically reconsider:
+- permanent Calendars/filter panel
+- permanent “all quiet at home” style state
+- tiny uppercase section labels
+- tiny secondary event text
+- controls intended more for mouse than touch
+- prime screen areas containing configuration rather than useful household information
+
+Move calendar/person filtering behind a touch-friendly control/popover if necessary. It does not need to occupy prime permanent screen area.
+
+Use stronger calendar/person identity in event rendering so the user should not need to repeatedly consult a legend to understand event ownership.
+
+## PROGRESSIVE DISCLOSURE
+
+Add a simple event-selection interaction if the current architecture supports it cleanly.
+
+Ambient representation should be concise, for example:
+
+4:00
+Swim practice
+River Ridge Pool
+
+Touching/selecting the event may reveal richer details and actions in a contextual panel or overlay.
+
+Avoid permanently placing all possible metadata in the schedule.
+
+Do not implement actual event editing if it substantially expands scope. The goal is to establish the interaction pattern.
+
+## PREPARE THE UI FOR AGENT-DRIVEN INTERACTION
+
+Do not implement AI.
+
+However, structure frontend state/components so a later agent can drive visible UI operations such as:
+
+- navigate to a date/range
+- highlight an event
+- show a particular day/week
+- display a proposed event change
+- present Confirm / Cancel actions
+- temporarily occupy the contextual region with assistant output
+
+Do not build a chatbot panel.
+
+The design principle is:
+
+Voice supplies intent.
+The display supplies context and visual output.
+Touch supplies selection, disambiguation, and confirmation.
+
+Avoid speculative abstraction beyond what is needed to keep this evolution straightforward.
+
+## VISUAL / PHYSICAL REQUIREMENTS
+
+Primary target:
+3840x2160, 16:9, 27-inch touchscreen.
+
+Also render sensibly at 1920x1080 for development.
+
+At both resolutions:
+- no document-level horizontal or vertical scrolling in Home, Week, or Month
+- no clipping
+- no accidental dead regions
+- no tiny desktop-style primary content
+- large useful touch targets
+- strong contrast in ordinary indoor lighting
+
+Prefer crisp typography, restrained surfaces, clear spatial grouping, and meaningful whitespace.
+
+Avoid:
+- generic admin-dashboard styling
+- excessive rounded cards
+- glassmorphism
+- gradients without semantic purpose
+- decorative giant headings
+- interfaces that resemble a marketing website
+- squeezing more information onto the screen merely because it is 4K
+
+## MOCK DATA
+
+Improve mock data only as necessary to properly exercise the design.
+
+Ensure the rendered application demonstrates:
+- a realistically busy today
+- events owned by different calendars/people
+- an all-day event
+- overlapping or closely spaced events
+- locations for some events
+- useful tomorrow/near-future events
+- one mock actionable household exception suitable for the contextual region
+
+The screen should look like a household actively using the product, not a sparse component demo.
+
+## VALIDATION
+
+Work autonomously through implementation and validation rather than stopping after the first visual pass.
+
+1. Inspect existing implementation and tests.
+2. Update `.github/copilot-instructions.md`.
+3. Implement Home/Today mode.
+4. Implement Week mode.
+5. Preserve/improve Month mode and integrate it into mode navigation.
+6. Implement contextual/event detail behavior where practical.
+7. Update/add relevant frontend tests.
+8. Add or update Playwright coverage for the important modes.
+9. Validate at 3840x2160.
+10. Validate at 1920x1080.
+11. Explicitly check that each primary mode has no document-level overflow.
+12. Build, type-check, lint, and run tests.
+13. Run the application and inspect rendered output/screenshots if the environment supports it.
+14. If the first rendered result still resembles a desktop web application, contains excessive unused space, uses overly small important typography, has poor schedule hierarchy, or wastes prime space on configuration/normal status, revise it before stopping.
+
+Do not ask for approval between these steps unless blocked by something that genuinely cannot be inferred from the repository.
+
+## DEFINITION OF DONE
+
+A person walking past the physical display should be able to determine today's important schedule and what is coming next within roughly two seconds.
+
+A person approaching the touchscreen should immediately understand how to:
+- navigate Home / Week / Month
+- inspect an event
+- add something
+- eventually invoke voice interaction
+
+Home should feel substantially different from Month and should be the strongest candidate for the default ambient screen.
+
+Week should answer “what does the next several days look like?” more effectively than Month.
+
+Month should remain the planning-oriented broad temporal view.
+
+The result should look convincing with browser chrome removed and the monitor mounted permanently on a kitchen wall.
+
+At completion, provide only:
+- concise description of changes
+- build/test/type-check status
+- screenshots or locations of generated screenshots if available
+- important design decisions that materially departed from this guidance
+- at most 3 recommended next steps
+
+Do not begin implementing those next steps.

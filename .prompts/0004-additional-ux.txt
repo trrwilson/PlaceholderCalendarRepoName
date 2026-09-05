@@ -1,0 +1,225 @@
+Continue development of the existing Homebase repository with a tightly scoped frontend composition correction.
+
+Do NOT redesign the application from scratch. Preserve the current visual language, existing Home / Week / Month functionality, backend/API architecture, calendar behavior, mock data semantics, and working tests unless a small change is necessary to accomplish this task.
+
+The current Home screen is substantially improved structurally, but the latest rendered version has a major appliance-UX problem: too much prime screen area is consumed by duplicated information, low-value labels, navigation, arbitrary panel sizing, and empty space. The result is visually clean but underutilizes a 27-inch 4K display.
+
+FIRST: UPDATE DURABLE COPILOT INSTRUCTIONS
+
+Before changing the UI, update `.github/copilot-instructions.md` to incorporate the following durable principles concisely. Integrate them with the existing appliance-design guidance rather than duplicating or replacing it.
+
+### Information composition principles
+
+1. LOW COGNITIVE LOAD IS NOT LOW INFORMATION DENSITY.
+   This is an ambient household information appliance, not a minimalist marketing page. A screen may be information-rich while remaining immediately understandable.
+
+2. WHITESPACE MUST EARN ITS SPACE.
+   Whitespace is valuable when it:
+   - separates meaningful information,
+   - creates visual hierarchy,
+   - improves distance readability, or
+   - creates appropriately sized touch targets.
+   Avoid large empty regions produced by decorative headings, duplicated state, fixed-height containers, sparse cards, or arbitrary grid allocation.
+
+3. PRIME SCREEN AREA MUST COMMUNICATE VALUE.
+   Every large persistent region should either:
+   - communicate useful household information from ambient viewing distance,
+   - provide a high-value interaction,
+   - or create intentional separation between useful information.
+   Configuration UI, slogans, breadcrumbs, duplicate information, and "everything is normal" status should not permanently consume prime space.
+
+4. INFORMATION SHOULD HAVE ONE AUTHORITATIVE LOCATION.
+   Avoid prominently displaying the same date, time, navigation, status, or other information twice on one screen.
+
+5. DENSITY SHOULD FOLLOW AVAILABLE INFORMATION.
+   Do not stretch sparse content vertically merely to fill a predefined card or grid area. Let contextual regions expand or collapse according to useful content.
+
+6. EXCEPTIONS DESERVE SPACE; NORMALCY DOES NOT.
+   An abnormal actionable condition such as "Garage open for 43 minutes" may become visually prominent.
+   A normal condition such as "All quiet at home" should consume little or no prime space.
+
+7. USE 4K FOR LEGIBILITY, NOT DESKTOP-SCALE DENSITY.
+   The target is a 27-inch 3840x2160 wall-mounted touchscreen. Important ambient information should be comfortably readable from roughly 6-10 feet away. High resolution should make large typography and semantic color exceptionally crisp, not encourage tiny desktop-style UI.
+
+8. DESIGN HIERARCHY:
+   optimize first for information usable in a two-second glance while walking past,
+   second for one- or two-touch interaction while standing at the display,
+   third for raw information density.
+
+After updating the instructions, perform the following surgical UI task.
+
+## TASK: FIX HOME SCREEN SPACE UTILIZATION AND HIERARCHY
+
+Inspect the current rendered Home screen and its implementation before editing it.
+
+The current implementation visibly wastes significant vertical space near the top and duplicates important UI concepts. Correct those problems without initiating another broad visual redesign.
+
+### 1. Collapse the top of the screen
+
+Remove the large low-information band currently containing things such as:
+- duplicated large date/time presentation,
+- breadcrumb-style "HOME / TODAY",
+- low-value household tagline,
+- unnecessary vertical separation before actual household information.
+
+There should be ONE authoritative current date/time treatment, preferably integrated into a compact global header.
+
+Useful schedule content should begin shortly below that header.
+
+A reasonable conceptual header is:
+
+[homebase]    [Saturday, Sep 5]    [3:54 PM]                  [Ask] [+ Add]
+
+Do not treat this exact arrangement as a pixel specification. Optimize it based on the existing implementation.
+
+### 2. Eliminate duplicate primary navigation
+
+The current screen has both upper navigation and bottom navigation for Home / Week / Month.
+
+Keep ONE persistent primary navigation system.
+
+Prefer the bottom touch navigation because this is a wall-mounted touchscreen and frequently used mode transitions should be physically accessible, unless existing implementation constraints make another placement clearly superior.
+
+The navigation should support:
+- Home
+- Week
+- Month
+
+It may visually anticipate future Tasks / Home-control modes, but do not implement unrelated functionality.
+
+### 3. Let useful content occupy the recovered space
+
+Move the Today / upcoming household content upward.
+
+Use the recovered vertical space to improve DISTANCE READABILITY rather than merely increasing padding.
+
+Today's schedule should become visually dominant:
+- event time,
+- event title,
+- calendar/person identity,
+- useful secondary context such as location when available.
+
+Strengthen event typography enough that the primary event information is useful from several feet away.
+
+Do not make event rows enormous simply to fill available height.
+
+### 4. Make the Home screen semantically adaptive
+
+The Home screen should prioritize:
+
+NOW / TODAY
+NEXT
+NEAR FUTURE
+UNUSUAL OR ACTIONABLE HOUSEHOLD STATE
+
+Do not allocate large fixed-height panels simply because those categories exist.
+
+Examples:
+
+If "Next" contains only a small number of events, do not leave a large empty Next card.
+
+If tomorrow is sparse, keep tomorrow compact.
+
+If an actionable exception exists, such as the mock "Garage door open for 43 minutes" condition, allow that condition to claim meaningful visual attention.
+
+If there is no actionable household exception, the contextual area should collapse or be available for more useful schedule information.
+
+### 5. Remove low-value permanent UI
+
+Review the current Home screen for controls or information that are primarily configuration rather than ambient information.
+
+Do not permanently consume prime space for:
+- calendar/person configuration,
+- quiet/normal household status,
+- breadcrumbs,
+- explanatory slogans,
+- counts such as "10 events in view" unless genuinely useful,
+- small footer status text that does not help the household,
+- duplicate controls.
+
+Calendar/person filtering may live behind an obvious touch-friendly People/Calendars control rather than occupy the normal ambient composition.
+
+### 6. Preserve progressive disclosure
+
+Ambient event presentation should remain concise.
+
+For example:
+
+4:00 PM
+Swim practice
+Riverside Pool
+[Jordan semantic color]
+
+Touching the event may reveal richer information and future actions.
+
+Do not put every available event property onto the ambient screen.
+
+### 7. Preserve the contextual region as a future interaction surface
+
+The right/contextual portion of the screen can serve multiple purposes rather than being permanently divided into sparse cards.
+
+Eventually this region may display:
+- next events,
+- event details after touch,
+- actionable Home Assistant exceptions,
+- voice listening/transcript state,
+- AI-proposed calendar changes and Confirm/Cancel actions.
+
+Do NOT implement AI, speech, or Home Assistant in this task.
+
+Structure the present UI so that the contextual area can naturally perform those roles later.
+
+### 8. Keep appliance constraints
+
+Primary target:
+- 27-inch
+- 3840x2160
+- 16:9
+- touch
+- kiosk/full-screen browser
+
+Also remain usable at 1920x1080 during development.
+
+At both resolutions:
+- no document-level vertical scrolling,
+- no document-level horizontal scrolling,
+- no clipping of primary controls,
+- no tiny mouse-oriented primary controls.
+
+## VALIDATION
+
+Work autonomously through this correction:
+
+1. Inspect current frontend and current durable Copilot instructions.
+2. Update `.github/copilot-instructions.md` with the new durable principles.
+3. Modify only the frontend code necessary for this composition correction.
+4. Preserve Home / Week / Month behavior.
+5. Update tests only where the changed behavior/layout requires it.
+6. Run type checking, linting, frontend tests, Playwright tests, and existing relevant project tests.
+7. Render/inspect Home at 3840x2160.
+8. Render/inspect Home at 1920x1080.
+9. Verify no document-level overflow at either target.
+10. If screenshot/render inspection is available, critically evaluate the result before stopping.
+
+Before declaring completion, specifically verify:
+
+- Date/time are not prominently duplicated.
+- Primary mode navigation is not duplicated.
+- The former large empty upper band is gone.
+- Useful household information begins near the top of the usable viewport.
+- Today's event time/title information is substantially easier to read from a distance.
+- Large empty regions do not exist merely because a grid/card has a fixed height.
+- Normal household state does not consume the same visual space as an actionable exception.
+- Whitespace separates useful information instead of substituting for useful information.
+- The screen feels information-rich but cognitively simple.
+- The result looks intentional with browser chrome removed and the monitor mounted on a wall.
+
+Do not ask for approval on intermediate implementation choices unless genuinely blocked.
+
+At completion report only:
+- concise summary of changes,
+- validation/build/test results,
+- any important deliberate deviation from these instructions,
+- location of generated screenshots if available.
+
+Do not start implementing Graph, Google Calendar, Home Assistant, speech, AI, authentication, persistence, or other next-phase functionality.
