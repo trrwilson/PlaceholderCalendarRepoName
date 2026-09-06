@@ -18,6 +18,24 @@ import type {
 
 const MAX_CONSECUTIVE_FAILURES = 3
 
+function appendTranscript(current: string, incoming: string): string {
+  const text = incoming.trim()
+  if (!text || current.endsWith(text)) return current
+  // Some Live transcription updates are complete revisions, others are the
+  // newly recognized token(s). Support both without repeating the utterance.
+  if (text.startsWith(current)) return text
+  let overlap = 0
+  for (let length = Math.min(current.length, text.length); length > 0; length -= 1) {
+    if (current.endsWith(text.slice(0, length))) {
+      overlap = length
+      break
+    }
+  }
+  if (overlap) return current + text.slice(overlap)
+  const separator = /^[,.;:!?'’)]/.test(text) || /[([]$/.test(current) ? '' : ' '
+  return `${current}${separator}${text}`.trim()
+}
+
 const FALLBACK_MESSAGE: Record<VoiceErrorKind, string> = {
   disabled: 'Voice support is turned off.',
   network: 'Could not reach the voice service.',
@@ -108,7 +126,7 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
     (event: VoiceEvent) => {
       switch (event.type) {
         case 'user-transcript':
-          setTranscript((t) => ({ ...t, user: event.text }))
+          setTranscript((t) => ({ ...t, user: appendTranscript(t.user, event.text) }))
           break
         case 'assistant-transcript':
           setTranscript((t) => ({ ...t, assistant: t.assistant + event.text }))
@@ -166,22 +184,26 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
         maybeFinish()
       })
     }
+    const mic = new MicCapture()
+    micRef.current = mic
+    // Must happen synchronously in the Ask button's user gesture so Chrome
+    // permits response audio after the asynchronous token/session setup.
+    sinkRef.current.activate()
+    mic.activate()
 
     try {
       const session = new GeminiVoiceSession(apiBaseUrl, handleEvent, surface)
       sessionRef.current = session
       await session.connect()
 
-      const mic = new MicCapture()
-      micRef.current = mic
       try {
         await mic.start((chunk) => sessionRef.current?.sendAudio(chunk))
       } catch (cause: unknown) {
         throw microphoneError(cause)
       }
       setMicActive(true)
+      console.debug('[voice] microphone capture started')
 
-      session.startActivity()
       failuresRef.current = 0
       setStatus('listening')
     } catch (cause: unknown) {
@@ -202,7 +224,7 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
     micRef.current?.stop()
     micRef.current = null
     setMicActive(false)
-    sessionRef.current?.endActivity()
+    sessionRef.current?.endAudioStream()
     setStatus('thinking')
   }, [status])
 

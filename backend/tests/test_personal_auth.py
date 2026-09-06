@@ -76,6 +76,21 @@ def test_status_connected_when_account_cached(client, monkeypatch):
     body = client.get("/api/calendar/auth").json()
     assert body["state"] == "connected"
     assert body["account"] == "mia@outlook.com"
+    assert body["accounts"] == ["mia@outlook.com"]
+
+
+def test_status_lists_each_cached_household_account(client, monkeypatch):
+    monkeypatch.setattr(
+        msal.PublicClientApplication,
+        "get_accounts",
+        lambda self, **kw: [
+            {"username": "mia@outlook.com", "home_account_id": "mia"},
+            {"username": "sam@outlook.com", "home_account_id": "sam"},
+        ],
+    )
+    body = client.get("/api/calendar/auth").json()
+    assert body["state"] == "connected"
+    assert body["accounts"] == ["mia@outlook.com", "sam@outlook.com"]
 
 
 def test_status_reports_provider_auth_failure(client, monkeypatch):

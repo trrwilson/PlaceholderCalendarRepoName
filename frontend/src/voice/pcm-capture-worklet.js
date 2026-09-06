@@ -1,10 +1,10 @@
 // AudioWorklet: collects mono microphone samples at the context's native rate
-// and posts them to the main thread in ~2048-sample Float32 batches. Down-sampling
+// and posts them to the main thread in ~100 ms Float32 batches. Down-sampling
 // to 16 kHz and PCM16 encoding happen on the main thread (see audio.ts).
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super()
-    this._batch = new Float32Array(2048)
+    this._batch = new Float32Array(4800)
     this._filled = 0
   }
 

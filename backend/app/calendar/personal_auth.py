@@ -37,7 +37,8 @@ def _status(settings: Settings) -> CalendarAuthStatus:
         return CalendarAuthStatus(provider=provider, state="disconnected", error=str(error))
 
     accounts = app.get_accounts()
-    account = accounts[0]["username"] if accounts else None
+    account_names = [account["username"] for account in accounts if account.get("username")]
+    account = account_names[0] if account_names else None
 
     with _lock:
         pending = dict(_pending) if _pending else None
@@ -49,6 +50,7 @@ def _status(settings: Settings) -> CalendarAuthStatus:
             provider=provider,
             state="connecting",
             account=account,
+            accounts=account_names,
             user_code=pending["user_code"],
             verification_uri=pending["verification_uri"],
             verification_uri_complete=pending.get("verification_uri_complete"),
@@ -57,15 +59,20 @@ def _status(settings: Settings) -> CalendarAuthStatus:
         )
 
     if accounts and outlook_personal.auth_error is None:
-        return CalendarAuthStatus(provider=provider, state="connected", account=account)
+        return CalendarAuthStatus(
+            provider=provider, state="connected", account=account, accounts=account_names
+        )
     if accounts:
         return CalendarAuthStatus(
             provider=provider,
             state="disconnected",
             account=account,
+            accounts=account_names,
             error=outlook_personal.auth_error,
         )
-    return CalendarAuthStatus(provider=provider, state="disconnected", error=flow_error)
+    return CalendarAuthStatus(
+        provider=provider, state="disconnected", accounts=account_names, error=flow_error
+    )
 
 
 def get_status(settings: Settings) -> CalendarAuthStatus:
@@ -78,27 +85,28 @@ def begin_sign_in(settings: Settings) -> CalendarAuthStatus:
         already_pending = _pending is not None and _pending["expires_at"] > time.time()
     if not already_pending:
         app, cache, path = shared_msal_app(settings)
-        if not app.get_accounts():
-            flow = app.initiate_device_flow(scopes=GRAPH_SCOPES)
-            usable = all(k in flow for k in ("user_code", "verification_uri", "expires_in"))
-            with _lock:
-                if not usable:
-                    _flow_error = flow.get("error_description") or "could not start sign-in"
-                    _pending = None
-                else:
-                    _flow_error = None
-                    _pending = {
-                        "user_code": flow["user_code"],
-                        "verification_uri": flow["verification_uri"],
-                        "verification_uri_complete": flow.get("verification_uri_complete"),
-                        "expires_at": time.time() + int(flow["expires_in"]),
-                    }
-                    _thread = threading.Thread(
-                        target=_complete,
-                        args=(cache, path, app, flow),
-                        daemon=True,
-                    )
-                    _thread.start()
+        # A device flow is also how an already-connected household adds another
+        # account. Microsoft presents account selection on the phone.
+        flow = app.initiate_device_flow(scopes=GRAPH_SCOPES)
+        usable = all(k in flow for k in ("user_code", "verification_uri", "expires_in"))
+        with _lock:
+            if not usable:
+                _flow_error = flow.get("error_description") or "could not start sign-in"
+                _pending = None
+            else:
+                _flow_error = None
+                _pending = {
+                    "user_code": flow["user_code"],
+                    "verification_uri": flow["verification_uri"],
+                    "verification_uri_complete": flow.get("verification_uri_complete"),
+                    "expires_at": time.time() + int(flow["expires_in"]),
+                }
+                _thread = threading.Thread(
+                    target=_complete,
+                    args=(cache, path, app, flow),
+                    daemon=True,
+                )
+                _thread.start()
     return _status(settings)
 
 

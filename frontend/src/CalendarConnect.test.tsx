@@ -58,6 +58,17 @@ describe('calendar sign-in', () => {
     expect(screen.queryByRole('button', { name: /Calendar sign-in/ })).not.toBeInTheDocument()
   })
 
+  it('starts the same device-code flow when adding a calendar from Settings', async () => {
+    vi.stubGlobal('fetch', mockBackend({ provider: 'outlook_personal', state: 'connected', account: 'mia@outlook.com', accounts: ['mia@outlook.com'] } as Auth).fetchMock)
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add another Outlook calendar' }))
+
+    expect(await screen.findByText('ABCD-EFGH')).toBeInTheDocument()
+    expect(screen.getByText('Scan to finish on your phone')).toBeInTheDocument()
+  })
+
   it('stays quiet for the mock provider', async () => {
     vi.stubGlobal('fetch', mockBackend({ provider: 'mock', state: 'not_applicable' } as Auth).fetchMock)
     render(<App />)

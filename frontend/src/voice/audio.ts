@@ -41,19 +41,32 @@ export class MicCapture {
   private node: AudioWorkletNode | null = null
   active = false
 
+  /** Create the capture context during the Ask tap, while autoplay permission is live. */
+  activate(): void {
+    if (!this.context) this.context = new AudioContext()
+    void this.context.resume().catch(() => {
+      console.warn('[voice] microphone audio context could not resume')
+    })
+  }
+
   async start(onChunk: (base64: string) => void): Promise<void> {
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     })
-    this.context = new AudioContext()
-    await this.context.audioWorklet.addModule(new URL('./pcm-capture-worklet.js', import.meta.url))
-    const source = this.context.createMediaStreamSource(this.stream)
-    this.node = new AudioWorkletNode(this.context, 'pcm-capture')
-    const rate = this.context.sampleRate
+    this.activate()
+    const context = this.context
+    if (!context) throw new Error('Could not create the microphone audio context.')
+    await context.audioWorklet.addModule(new URL('./pcm-capture-worklet.js', import.meta.url))
+    const source = context.createMediaStreamSource(this.stream)
+    this.node = new AudioWorkletNode(context, 'pcm-capture')
+    const rate = context.sampleRate
     this.node.port.onmessage = (event: MessageEvent<Float32Array>) => {
       onChunk(floatToPcm16Base64(downsample(event.data, rate, INPUT_RATE)))
     }
     source.connect(this.node)
+    // The processor emits no audio, so this is silent; connecting it keeps the
+    // worklet in the browser's active rendering graph and avoids delayed chunks.
+    this.node.connect(context.destination)
     this.active = true
   }
 
@@ -80,16 +93,47 @@ export class AudioSink {
     this.onDrained = onDrained
   }
 
+  /**
+   * Create and resume the context while handling the Ask tap. Creating it only
+   * when response audio arrives is too late for browsers' user-gesture policy
+   * and leaves the context suspended (and therefore silent).
+   */
+activate(): void {
+  if (!this.context) {
+    this.context = new AudioContext({ sampleRate: OUTPUT_RATE })
+
+    console.debug('[voice] speaker context created', {
+      state: this.context.state,
+      sampleRate: this.context.sampleRate,
+    })
+
+    this.context.addEventListener('statechange', () => {
+      console.debug('[voice] speaker context state:', this.context?.state)
+    })
+  }
+
+  void this.context.resume().then(() => {
+    console.debug('[voice] speaker context resumed', {
+      state: this.context?.state,
+      sampleRate: this.context?.sampleRate,
+    })
+  }).catch((error) => {
+    console.warn('[voice] speaker audio context could not resume', error)
+  })
+}
+
   enqueue(base64: string): void {
-    if (!this.context) this.context = new AudioContext({ sampleRate: OUTPUT_RATE })
+    this.activate()
+    const context = this.context
+    if (!context) return
     const samples = pcm16Base64ToFloat(base64)
     if (!samples.length) return
-    const buffer = this.context.createBuffer(1, samples.length, OUTPUT_RATE)
+    const buffer = context.createBuffer(1, samples.length, OUTPUT_RATE)
     buffer.copyToChannel(samples, 0)
-    const source = this.context.createBufferSource()
+    const source = context.createBufferSource()
     source.buffer = buffer
-    source.connect(this.context.destination)
-    const startAt = Math.max(this.context.currentTime, this.cursor)
+    source.connect(context.destination)
+    const startAt = Math.max(context.currentTime, this.cursor)
     source.start(startAt)
     this.cursor = startAt + buffer.duration
     this.sources.add(source)

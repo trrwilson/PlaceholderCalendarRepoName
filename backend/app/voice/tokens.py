@@ -34,8 +34,13 @@ def _live_config(settings: Settings, calendar_names: list[str]) -> dict:
         },
         "input_audio_transcription": {},
         "output_audio_transcription": {},
-        # Kiosk uses tap-to-talk: it sends explicit activity start/end, no server VAD.
-        "realtime_input_config": {"automatic_activity_detection": {"disabled": True}},
+        # Let the service finish a spoken request after a natural pause. The browser
+        # still has a Stop control, but it no longer needs to guess when speech ends.
+        "realtime_input_config": {
+            # 650 ms retains normal pauses while making a finished question feel
+            # immediate. Google's recommended range is 500–800 ms.
+            "automatic_activity_detection": {"disabled": False, "silence_duration_ms": 650}
+        },
     }
     if settings.gemini_language_code:
         config["speech_config"]["language_code"] = settings.gemini_language_code

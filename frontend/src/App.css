@@ -35,20 +35,33 @@
 .bottom-dock { gap: clamp(12px, 1vw, 36px); }
 .bottom-dock nav { margin-right: auto; }
 
-.identity-marker { display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%; vertical-align: middle; background: var(--line-dark); }
 .identity-dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; vertical-align: middle; background: var(--line-dark); }
-.identity-marker.calendar-coral, .identity-dot.calendar-coral, .detail-bar.calendar-coral { background: var(--coral); }
-.identity-marker.calendar-ocean, .identity-dot.calendar-ocean, .detail-bar.calendar-ocean { background: var(--ocean); }
-.identity-marker.calendar-gold, .identity-dot.calendar-gold, .detail-bar.calendar-gold { background: var(--gold); }
-.identity-marker.calendar-fern, .identity-dot.calendar-fern, .detail-bar.calendar-fern { background: var(--fern); }
-.identity-marker.calendar-violet, .identity-dot.calendar-violet, .detail-bar.calendar-violet { background: var(--violet); }
+.identity-dot.calendar-coral, .detail-bar.calendar-coral { background: var(--coral); }
+.identity-dot.calendar-ocean, .detail-bar.calendar-ocean { background: var(--ocean); }
+.identity-dot.calendar-gold, .detail-bar.calendar-gold { background: var(--gold); }
+.identity-dot.calendar-fern, .detail-bar.calendar-fern { background: var(--fern); }
+.identity-dot.calendar-violet, .detail-bar.calendar-violet { background: var(--violet); }
+
+/* Secondary association (the classification NOT painting the card) reads as a triangle
+   along the left edge — "2" beside the primary "1" — rather than a free-floating dot.
+   It fills its full width at the top, then tapers to a point at the lower left: 90° at
+   the upper left, 70° at the upper right, and 20° at the lower left. Colour arrives
+   on --event-accent (a pure identity token in category-first mode, the category hex in
+   people-first mode). */
+.large-event, .compact-event, .event-chip { position: relative; overflow: hidden; }
+.week-event { overflow: hidden; } /* .week-event is already absolutely positioned — it is its own containing block */
+.secondary-triangle { position: absolute; top: 0; bottom: 0; left: 0; z-index: 1; aspect-ratio: 1 / 2.7474774195; background: var(--event-accent, var(--line-dark)); clip-path: polygon(0 0, 100% 0, 0 100%); pointer-events: none; }
+.large-event > :not(.secondary-triangle), .compact-event > :not(.secondary-triangle), .week-event > :not(.secondary-triangle), .event-chip > :not(.secondary-triangle) { position: relative; z-index: 2; }
+/* Keep content just beyond the triangle's widest (top) edge at each card scale. */
+.large-event:has(.secondary-triangle) { padding-left: clamp(34px, 3.28vh, 68px); }
+.compact-event:has(.secondary-triangle) { padding-left: clamp(24px, 2.56vh, 42px); }
+.week-event:has(.secondary-triangle) { padding-left: clamp(18px, 1.5vw, 38px); }
+.event-chip:has(.secondary-triangle) { padding-left: clamp(17px, 1.5vh, 30px); }
 
 /* Category display colour arrives from the provider as a concrete hex on
    --category-color (Outlook master-category swatch, mock seed, …); everything
    category-tinted derives from that one custom property. */
 .category-dominant { color: color-mix(in srgb, var(--category-color, #6e8596) 62%, #14211f); background: color-mix(in srgb, var(--category-color, #6e8596) 16%, var(--surface)); }
-.category-markers { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; vertical-align: middle; }
-.category-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--category-color, #6e8596); }
 .detail-categories { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 22px; color: var(--ink-soft); font-size: clamp(14px, .8vw, 27px); }
 .detail-categories > span:first-child { width: 100%; color: var(--muted); font-size: .75em; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .category-label { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 8px; color: var(--ink); background: var(--warm); }

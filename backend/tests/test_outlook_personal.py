@@ -108,6 +108,37 @@ def test_maps_me_calendar_view_to_snapshot(tmp_path) -> None:
 
 
 @respx.mock
+def test_reads_each_cached_account_as_a_household_calendar(tmp_path) -> None:
+    respx.get(CALENDAR_VIEW).mock(
+        side_effect=[
+            httpx.Response(200, json={"value": [timed_event(id="mia-event")]}),
+            httpx.Response(200, json={"value": [timed_event(id="sam-event")]}),
+        ]
+    )
+    provider = PersonalOutlookCalendarProvider(make_settings(tmp_path))
+
+    class FakeApp:
+        def get_accounts(self):
+            return [{"username": "mia@outlook.com"}, {"username": "sam@outlook.com"}]
+
+    provider._app = FakeApp()  # type: ignore[assignment]
+    provider._acquire_token_silent = lambda account=None: f"token-{account['username']}"  # type: ignore[method-assign,index]
+
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    assert [calendar.id for calendar in snapshot.calendars] == [
+        "mia@outlook.com",
+        "sam@outlook.com",
+    ]
+    assert [event.calendar_id for event in snapshot.events] == [
+        "mia@outlook.com",
+        "sam@outlook.com",
+    ]
+
+
+@respx.mock
 def test_resolves_category_colors_from_master_categories(tmp_path) -> None:
     respx.get(CALENDAR_VIEW).mock(
         return_value=httpx.Response(200, json={"value": [timed_event(categories=["Family"])]})

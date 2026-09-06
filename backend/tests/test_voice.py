@@ -97,4 +97,6 @@ def test_token_minted_with_locked_constraints(
         "check_conflicts",
     }
     assert "Family" in str(constraint.config.system_instruction)
-    assert constraint.config.realtime_input_config.automatic_activity_detection.disabled is True
+    activity_detection = constraint.config.realtime_input_config.automatic_activity_detection
+    assert activity_detection.disabled is False
+    assert activity_detection.silence_duration_ms == 650

@@ -22,8 +22,7 @@ const h = vi.hoisted(() => {
       micStart: (() => Promise.resolve()) as () => Promise<void>,
     },
     spies: {
-      startActivity: vi.fn(),
-      endActivity: vi.fn(),
+      endAudioStream: vi.fn(),
       close: vi.fn(),
       respondTool: vi.fn(),
     },
@@ -38,8 +37,7 @@ vi.mock('./session', () => ({
       h.state.emit = onEvent
     }
     connect = () => h.state.connectBehavior()
-    startActivity = h.spies.startActivity
-    endActivity = h.spies.endActivity
+    endAudioStream = h.spies.endAudioStream
     sendAudio = vi.fn()
     respondTool = h.spies.respondTool
     close = h.spies.close
@@ -48,10 +46,12 @@ vi.mock('./session', () => ({
 
 vi.mock('./audio', () => ({
   MicCapture: class {
+    activate = vi.fn()
     start = () => h.state.micStart()
     stop = vi.fn()
   },
   AudioSink: class {
+    activate = vi.fn()
     enqueue = vi.fn()
     flush = vi.fn()
     close = vi.fn()
@@ -76,11 +76,10 @@ describe('useVoiceSession', () => {
       await result.current.startTurn()
     })
     expect(result.current.status).toBe('listening')
-    expect(h.spies.startActivity).toHaveBeenCalled()
 
     act(() => result.current.stopTurn())
     expect(result.current.status).toBe('thinking')
-    expect(h.spies.endActivity).toHaveBeenCalled()
+    expect(h.spies.endAudioStream).toHaveBeenCalled()
 
     act(() => h.state.emit({ type: 'assistant-transcript', text: 'Here is Friday' }))
     act(() => h.state.emit({ type: 'turn-complete' }))
@@ -105,6 +104,20 @@ describe('useVoiceSession', () => {
     await waitFor(() =>
       expect(h.spies.respondTool).toHaveBeenCalledWith('1', 'show_view', expect.objectContaining({ ok: true })),
     )
+  })
+
+  it('accumulates incremental user transcription into one utterance', async () => {
+    const { result } = renderHook(() => useVoiceSession(options))
+    await act(async () => {
+      await result.current.startTurn()
+    })
+
+    act(() => h.state.emit({ type: 'user-transcript', text: 'what', final: false }))
+    act(() => h.state.emit({ type: 'user-transcript', text: "'s", final: false }))
+    act(() => h.state.emit({ type: 'user-transcript', text: 'tomorrow', final: false }))
+    act(() => h.state.emit({ type: 'user-transcript', text: '?', final: true }))
+
+    expect(result.current.transcript.user).toBe("what's tomorrow?")
   })
 
   it('goes unavailable with kind "disabled" when the backend says voice is off', async () => {

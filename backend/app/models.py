@@ -106,6 +106,9 @@ class CalendarAuthStatus(BaseModel):
     provider: str
     state: Literal["connected", "connecting", "disconnected", "not_applicable"]
     account: str | None = None
+    # All household accounts currently available to the personal provider.  ``account``
+    # remains the first entry for clients that predate multi-account support.
+    accounts: list[str] = Field(default_factory=list)
     # Present while state == "connecting": show these so a phone can finish sign-in.
     user_code: str | None = None
     verification_uri: str | None = None

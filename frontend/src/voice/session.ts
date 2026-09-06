@@ -33,6 +33,7 @@ type TokenResponse = { token: string; model: string; expires_at: string }
 
 export class GeminiVoiceSession {
   private session: Session | null = null
+  private firstAudioChunk = true
   private readonly apiBaseUrl: string
   private readonly onEvent: (event: VoiceEvent) => void
   private readonly surface: string | null
@@ -89,6 +90,7 @@ export class GeminiVoiceSession {
           onclose: () => this.onEvent({ type: 'closing' }),
         },
       })
+      console.debug('[voice] Live session connected')
     } catch (cause) {
       throw new VoiceSessionError('session', toError(cause).message)
     }
@@ -97,16 +99,25 @@ export class GeminiVoiceSession {
   private handle(message: LiveServerMessage): void {
     const content = message.serverContent
     if (content?.interimInputTranscription?.text) {
+      console.debug('[voice] interim transcription received')
       this.onEvent({ type: 'user-transcript', text: content.interimInputTranscription.text, final: false })
     }
     if (content?.inputTranscription?.text) {
+      console.debug('[voice] final transcription received')
       this.onEvent({ type: 'user-transcript', text: content.inputTranscription.text, final: true })
     }
     if (content?.outputTranscription?.text) {
+      console.debug('[voice] response transcription received')
       this.onEvent({ type: 'assistant-transcript', text: content.outputTranscription.text })
     }
     for (const part of content?.modelTurn?.parts ?? []) {
-      if (part.inlineData?.data) this.onEvent({ type: 'audio', data: part.inlineData.data })
+      if (part.inlineData?.data) {
+        if (this.firstAudioChunk) {
+          this.firstAudioChunk = false
+          console.debug('[voice] first response-audio chunk received', part.inlineData.mimeType)
+        }
+        this.onEvent({ type: 'audio', data: part.inlineData.data })
+      }
     }
     if (content?.interrupted) this.onEvent({ type: 'interrupted' })
     if (content?.turnComplete) this.onEvent({ type: 'turn-complete' })
@@ -121,12 +132,10 @@ export class GeminiVoiceSession {
     if (message.goAway) this.onEvent({ type: 'closing' })
   }
 
-  startActivity(): void {
-    this.session?.sendRealtimeInput({ activityStart: {} })
-  }
-
-  endActivity(): void {
-    this.session?.sendRealtimeInput({ activityEnd: {} })
+  endAudioStream(): void {
+    // Server-side VAD normally endpoints after silence. This is the explicit
+    // equivalent when the person taps Stop before it has done so.
+    this.session?.sendRealtimeInput({ audioStreamEnd: true })
   }
 
   sendAudio(base64: string): void {

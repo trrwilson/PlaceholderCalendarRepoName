@@ -142,8 +142,9 @@ frontend/                React 19 + TypeScript (strict) + Vite
   `DELETE …/auth/device` cancels; `DELETE …/auth` signs out. These endpoints are
   loopback/LAN-only unless `allow_remote_auth`. The frontend surfaces "needs sign-in" as
   a header pill + Home exception card and shows the code/QR in a sheet; credentials are
-  never entered on the kiosk. Onboarding stays backend-config only — no account
-  management UI, no multi-account.
+  never entered on the kiosk. The initial zero-account prompt and Settings both use
+  this same flow; Settings can add another Outlook account, and the personal provider
+  exposes each cached account as a separate household calendar.
 - **Persistence.** No datastore yet; the MSAL token cache is a single JSON file. A
   SQLite-backed provider or token store should drop in behind the same protocol without
   any frontend change.

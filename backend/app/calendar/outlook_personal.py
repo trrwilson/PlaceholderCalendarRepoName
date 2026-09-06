@@ -147,14 +147,14 @@ class PersonalOutlookCalendarProvider:
 
     # -- auth ---------------------------------------------------------------
 
-    def _acquire_token_silent(self) -> str:
+    def _acquire_token_silent(self, account: dict[str, Any] | None = None) -> str:
         global auth_error
         self._app, self._cache, self._cache_path = shared_msal_app(self._settings)
         accounts = self._app.get_accounts()
         if not accounts:
             auth_error = "not signed in"
             raise RuntimeError(f"Personal Outlook calendar is not signed in — {SIGN_IN_HINT}")
-        result = self._app.acquire_token_silent(GRAPH_SCOPES, account=accounts[0])
+        result = self._app.acquire_token_silent(GRAPH_SCOPES, account=account or accounts[0])
         save_cache(self._cache, self._cache_path)
         _touch_shared_mtime(self._cache_path)
         if not result or "access_token" not in result:
@@ -167,15 +167,17 @@ class PersonalOutlookCalendarProvider:
         accounts = self._app.get_accounts() if self._app is not None else []
         return accounts[0]["username"] if accounts else "outlook"
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, token: str | None = None) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self._token_provider()}",
+            "Authorization": f"Bearer {token if token is not None else self._token_provider()}",
             "Prefer": f'outlook.timezone="{_local_tz_name()}"',
         }
 
     # -- fetch ------------------------------------------------------------------
 
-    def _calendar_view(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    def _calendar_view(
+        self, start: datetime, end: datetime, headers: dict[str, str]
+    ) -> list[dict[str, Any]]:
         params: dict[str, str] = {
             "startDateTime": start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "endDateTime": end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -189,7 +191,7 @@ class PersonalOutlookCalendarProvider:
             response = self._client.get(
                 url,
                 params=params if url == view_url else None,
-                headers=self._headers(),
+                headers=headers,
             )
             response.raise_for_status()
             body = response.json()
@@ -203,20 +205,35 @@ class PersonalOutlookCalendarProvider:
             tzinfo=_LOCAL_TZ
         )
 
-        email = self._account_email()
-        raw_events = self._calendar_view(start, end)
-        colors: dict[str, str] = {}
-        if any(raw.get("categories") for raw in raw_events):
-            colors = self._category_colors.get(f"{_GRAPH_BASE}/me", self._headers(), "me")
-        events = [_map_event(raw, email, colors) for raw in raw_events]
-        events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
+        if self._app is None:
+            accounts = [(self._account_email(), self._token_provider())]
+        else:
+            accounts = [
+                (str(account["username"]), self._acquire_token_silent(account))
+                for account in self._app.get_accounts()
+                if account.get("username")
+            ]
+            if not accounts:
+                self._acquire_token_silent()
 
-        calendar = HouseholdCalendar(
-            id=email,
-            name=email.split("@", 1)[0],
-            color=self._settings.calendar_color_for(0),
-        )
-        return CalendarSnapshot(calendars=[calendar], events=events, range=calendar_range)
+        events: list[CalendarEvent] = []
+        calendars: list[HouseholdCalendar] = []
+        for index, (email, token) in enumerate(accounts):
+            headers = self._headers(token)
+            raw_events = self._calendar_view(start, end, headers)
+            colors: dict[str, str] = {}
+            if any(raw.get("categories") for raw in raw_events):
+                colors = self._category_colors.get(f"{_GRAPH_BASE}/me", headers, email)
+            events.extend(_map_event(raw, email, colors) for raw in raw_events)
+            calendars.append(
+                HouseholdCalendar(
+                    id=email,
+                    name=email.split("@", 1)[0],
+                    color=self._settings.calendar_color_for(index),
+                )
+            )
+        events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
+        return CalendarSnapshot(calendars=calendars, events=events, range=calendar_range)
 
     # -- write ----------------------------------------------------------------
 
