@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
-describe('household dashboard', () => {
+describe('Mission Control dashboard', () => {
   afterEach(() => cleanup())
 
   beforeEach(() => {
@@ -50,7 +50,7 @@ describe('household dashboard', () => {
     await waitFor(() => expect(document.querySelector('.large-event')).toHaveClass('category-dominant'))
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Color events by person/calendar' }))
-    expect(window.localStorage.getItem('homebase.semantic-color-mode')).toBe('people-first')
+    expect(window.localStorage.getItem('mission-control.semantic-color-mode')).toBe('people-first')
     expect(document.querySelector('.large-event')).toHaveClass('calendar-gold')
 
     cleanup()

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
-import './HomeComposition.css'
 
 type Calendar = { id: string; name: string; color: string; enabled: boolean }
 type EventCategory = { id: string; name: string; color: string }
@@ -17,7 +16,7 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const WAKE_HOURS = Array.from({ length: 14 }, (_, index) => index + 7)
 const MOCK_EXCEPTION: HouseholdException = { title: 'Garage door open', detail: 'Open for 43 minutes', action: 'Check garage' }
 const colorClass = (color: string) => `calendar-${color}`
-const COLOR_MODE_KEY = 'homebase.semantic-color-mode'
+const COLOR_MODE_KEY = 'mission-control.semantic-color-mode'
 const readColorMode = (): SemanticColorMode => window.localStorage.getItem(COLOR_MODE_KEY) === 'people-first' ? 'people-first' : 'category-first'
 
 function App() {
@@ -111,9 +110,9 @@ function App() {
   return (
     <main className="kiosk-shell">
       <header className="global-header">
-        <button className="brand-lockup" onClick={goHome} aria-label="Go to Home"><span className="brand-icon">H</span><span><strong>homebase</strong><small>the household calendar</small></span></button>
+        <button className="brand-lockup" onClick={goHome} aria-label="Go to Home"><span className="brand-icon">M</span><span><strong>Mission Control</strong><small>the household calendar</small></span></button>
         <div className="header-date"><span>{formatDate(now)}</span><strong>{formatTime(now)}</strong></div>
-        <div className="header-actions"><span className={`connection ${connection}`}><i />{connection === 'live' ? 'Live sync' : connection === 'offline' ? 'Offline mode' : 'Connecting'}</span><button className="ask-button" aria-label="Ask Homebase"><span className="mic-symbol">◉</span><b>Ask</b></button><button className="add-button" aria-label="Add an event"><span>+</span><b>Add</b></button></div>
+        <div className="header-actions"><span className={`connection ${connection}`}><i />{connection === 'live' ? 'Live sync' : connection === 'offline' ? 'Offline mode' : 'Connecting'}</span><button className="ask-button" aria-label="Ask Mission Control"><span className="mic-symbol">◉</span><b>Ask</b></button><button className="add-button" aria-label="Add an event"><span>+</span><b>Add</b></button></div>
       </header>
 
       <section className="view-frame">
@@ -144,9 +143,9 @@ function MonthView({ viewDate, now, events, calendarById, onSelect, onNavigate, 
   return <div className="month-view"><div className="view-heading"><div><p className="section-kicker">Planning view</p><h1>{viewDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h1></div><div className="view-nav"><button className="today-button" onClick={() => onNavigate(0)}>Today</button><button onClick={() => onNavigate(-1)} aria-label="Previous month">‹</button><button onClick={() => onNavigate(1)} aria-label="Next month">›</button></div></div><div className="weekday-row">{WEEKDAYS.map((day) => <span key={day}>{day}</span>)}</div><div className="month-grid">{days.map((day) => { const dayEvents = eventsByDay.get(toIsoDate(day)) ?? []; const today = isSameDay(day, now); return <div className={`day-cell ${day.getMonth() !== viewDate.getMonth() ? 'muted-day' : ''} ${today ? 'today' : ''}`} key={toIsoDate(day)}><div className="day-heading"><span className="day-number">{day.getDate()}</span>{today && <span className="today-label">Today</span>}</div><div className="day-events">{dayEvents.slice(0, 4).map((event) => <EventChip event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}{dayEvents.length > 4 && <span className="more-events">+{dayEvents.length - 4} more</span>}</div></div> })}</div></div>
 }
 
-function CategoryMarkers({ categories = [] }: { categories?: EventCategory[] }) { return <span className="category-markers" aria-label={categories.map((category) => category.name).join(', ')}>{categories.map((category) => <i className={`category-dot category-${category.color}`} title={category.name} key={category.id} />)}</span> }
+function CategoryMarkers({ categories = [] }: { categories?: EventCategory[] }) { if (!categories.length) return null; return <span className="category-markers" aria-label={categories.map((category) => category.name).join(', ')}>{categories.map((category) => <i className={`category-dot category-${category.color}`} title={category.name} key={category.id} />)}</span> }
 function semanticEventClass(event: CalendarEvent, calendar: Calendar | undefined, colorMode: SemanticColorMode) { const category = event.categories?.[0]; return colorMode === 'category-first' && category ? `category-dominant category-${category.color}` : colorClass(calendar?.color ?? 'coral') }
-function IdentityMarker({ calendar }: { calendar?: Calendar }) { return <span className={`identity-marker ${colorClass(calendar?.color ?? 'coral')}`} aria-label={calendar?.name} /> }
+function IdentityMarker({ calendar }: { calendar?: Calendar }) { if (!calendar) return null; return <span className={`identity-marker ${colorClass(calendar.color)}`} aria-label={calendar.name} /> }
 function LargeEvent({ event, calendar, onSelect, colorMode, past = false }: EventProps & { colorMode: SemanticColorMode; past?: boolean }) { return <button className={`large-event ${semanticEventClass(event, calendar, colorMode)} ${past ? 'past' : ''}`} onClick={() => onSelect(event)}><span className="large-event-time">{event.all_day ? 'ALL DAY' : formatEventTime(event.starts_at)}</span><span className="large-event-main"><strong>{event.title}</strong>{event.location && <small>{event.location}</small>}</span><span className="event-owner"><IdentityMarker calendar={calendar} /><CategoryMarkers categories={colorMode === 'people-first' ? event.categories : []} />{calendar?.name}</span><span className="event-arrow">›</span></button> }
 function CompactEvent({ event, calendar, onSelect, colorMode }: EventProps & { colorMode: SemanticColorMode }) { return <button className="compact-event" onClick={() => onSelect(event)}><span className={`compact-dot ${colorMode === 'category-first' ? semanticEventClass(event, calendar, colorMode) : colorClass(calendar?.color ?? 'coral')}`} /><span><strong>{event.title}</strong><small><IdentityMarker calendar={colorMode === 'category-first' ? calendar : undefined} /><CategoryMarkers categories={colorMode === 'people-first' ? event.categories : []} />{event.all_day ? 'All day' : formatEventTime(event.starts_at)}</small></span></button> }
 function WeekEvent({ event, calendar, onSelect, colorMode }: EventProps & { colorMode: SemanticColorMode }) { const start = new Date(event.starts_at); const end = new Date(event.ends_at); const top = ((start.getHours() + start.getMinutes() / 60) - 7) / 14 * 100; const height = Math.max(((end.getTime() - start.getTime()) / 3_600_000) / 14 * 100, 8); return <button className={`week-event ${semanticEventClass(event, calendar, colorMode)}`} style={{ top: `${Math.max(top, 1)}%`, height: `${Math.min(height, 97 - Math.max(top, 1))}%` }} onClick={() => onSelect(event)}><strong>{event.title}</strong><span><IdentityMarker calendar={colorMode === 'category-first' ? calendar : undefined} /><CategoryMarkers categories={colorMode === 'people-first' ? event.categories : []} />{event.all_day ? 'All day' : formatEventTime(event.starts_at)}</span></button> }
