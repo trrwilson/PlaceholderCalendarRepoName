@@ -26,5 +26,6 @@ frontend/blob-report/
 !.vscode/extensions.json
 !.vscode/tasks.json
 !.vscode/launch.json
+.claude/worktrees/
 .DS_Store
 Thumbs.db

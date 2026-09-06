@@ -41,7 +41,10 @@ class CalendarEvent(BaseModel):
     def end_follows_start(self) -> "CalendarEvent":
         if self.ends_at <= self.starts_at:
             raise ValueError("ends_at must be after starts_at")
-        if self.all_day and (self.starts_at.time() != datetime.min.time() or self.ends_at.time() != datetime.min.time()):
+        if self.all_day and (
+            self.starts_at.time() != datetime.min.time()
+            or self.ends_at.time() != datetime.min.time()
+        ):
             raise ValueError("all-day events must use midnight boundaries")
         return self
 

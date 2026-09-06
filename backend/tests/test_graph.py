@@ -70,9 +70,7 @@ def test_missing_credentials_raises_runtime_error() -> None:
 @respx.mock
 def test_maps_timed_event_to_domain() -> None:
     respx.post(TOKEN_URL).mock(return_value=token_response())
-    respx.get(CALENDAR_VIEW).mock(
-        return_value=httpx.Response(200, json={"value": [timed_event()]})
-    )
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
 
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
@@ -85,11 +83,7 @@ def test_maps_timed_event_to_domain() -> None:
     assert event.title == "Product stand-up"
     assert event.location == "Study nook"
     assert event.all_day is False
-    expected = (
-        datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
-        .astimezone(_LOCAL_TZ)
-        .replace(tzinfo=None)
-    )
+    expected = datetime(2026, 9, 5, 9, 0, tzinfo=UTC).astimezone(_LOCAL_TZ).replace(tzinfo=None)
     assert event.starts_at == expected
     assert event.starts_at.tzinfo is None
 
@@ -109,11 +103,7 @@ def test_tz_aware_datetime_is_converted_to_naive_local() -> None:
     )
 
     (event,) = snapshot.events
-    expected = (
-        datetime(2026, 9, 5, 14, 30, tzinfo=UTC)
-        .astimezone(_LOCAL_TZ)
-        .replace(tzinfo=None)
-    )
+    expected = datetime(2026, 9, 5, 14, 30, tzinfo=UTC).astimezone(_LOCAL_TZ).replace(tzinfo=None)
     assert event.starts_at == expected
 
 

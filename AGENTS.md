@@ -7,36 +7,42 @@ this file.
 
 ## What this project is
 
-**Homebase** is a touch-first household calendar dashboard for a wall-mounted 27-inch
-4K (3840x2160, 16:9) touchscreen running a full-screen browser 24/7. It is an *ambient
-household appliance*, not a desktop web app and not an Outlook/Google Calendar clone.
+**Mission Control** is a touch-first household calendar dashboard for a wall-mounted
+27-inch 4K (3840x2160, 16:9) touchscreen running a full-screen browser 24/7. It is an
+*ambient household appliance*, not a desktop web app and not an Outlook/Google Calendar
+clone.
 
 - The browser client is disposable and mostly stateless: it renders provider-neutral
   calendar snapshots and owns only view state (current mode, focused date, filters).
 - The server owns everything durable: provider access, OAuth tokens, credentials,
   household state, and any future AI/audio/video processing.
-- Current milestone uses an in-memory mock calendar provider. No external
-  integrations, no persistence, no auth yet.
+- The default calendar provider is an in-memory mock. A configuration-driven Microsoft
+  Graph (Outlook) provider also exists (`MISSION_CONTROL_CALENDAR_PROVIDER=graph`),
+  app-only / read-focused, with no in-app account management. No persistence, no auth
+  for the frontend yet.
 
-Long-term direction (do **not** build until explicitly asked): Microsoft Graph and
-Google Calendar providers, Home Assistant, microphone/voice, speech-to-text and
-text-to-speech, an AI agent that calls explicit application tools, and optional local
-media processing. `.prompts/` holds the dated prompt history that produced the repo
-and is useful background.
+Long-term direction (do **not** build until explicitly asked): a Google Calendar
+provider, Home Assistant, microphone/voice, speech-to-text and text-to-speech, an AI
+agent that calls explicit application tools, and optional local media processing.
+`.prompts/` holds the dated prompt history that produced the repo and is useful
+background.
 
 ## Repository layout
 
 ```
 backend/                FastAPI service (Python 3.12+)
   app/main.py            ASGI app + CORS
-  app/api.py             HTTP + WebSocket routes under /api
+  app/api.py             HTTP + WebSocket routes under /api; provider selection
+  app/config.py          MISSION_CONTROL_* settings (pydantic-settings)
   app/models.py          Pydantic v2 domain + API models (the contract)
   app/calendar/provider.py  CalendarProvider protocol + MockCalendarProvider
+  app/calendar/graph.py  MicrosoftGraphCalendarProvider (config-driven, app-only)
   tests/                 pytest
+  .env.example           documented MISSION_CONTROL_* variables
   pyproject.toml
 frontend/                React 19 + TypeScript (strict) + Vite
   src/App.tsx            App shell + Home/Week/Month views + helpers
-  src/*.css              Design tokens and layout
+  src/App.css            Design tokens, layout, semantic markers (single stylesheet)
   src/App.test.tsx       Vitest + Testing Library
   e2e/                   Playwright kiosk-layout checks
 .prompts/                Historical build prompts (context, not instructions)
@@ -80,10 +86,12 @@ frontend/                React 19 + TypeScript (strict) + Vite
 - Categories carry an optional stable id, display name, source color, and zero or more
   values, without leaking provider SDK types into React. Names stay authoritative;
   accessibility and contrast beat exact provider colors.
-- The frontend currently maps category colors to a small fixed CSS class set
-  (`blue/teal/green/red/pink`). When real providers arrive, add an explicit
-  color-name → token mapping on the server or frontend so an unrecognized provider
-  color degrades gracefully instead of rendering nothing.
+- Calendar identity colors render through shared `.calendar-<name>` marker classes in
+  `App.css` (swatches, dots, bars, event surfaces), so a new `CalendarColor` needs a
+  token plus those rules. Category colors still map to a fixed CSS class set
+  (`blue/teal/green/red/pink`); the Graph provider already clamps arbitrary Outlook
+  category names onto that set. When adding providers, keep unrecognized colors
+  degrading to a neutral marker rather than rendering nothing.
 - Keep identity/category treatment consistent across Home, Week, Month, filters, and
   detail. Popovers dismiss on outside interaction, Escape, and navigation without
   swallowing intended inside clicks.
@@ -91,12 +99,19 @@ frontend/                React 19 + TypeScript (strict) + Vite
 ## Architecture & boundaries
 
 - **Provider-neutral domain.** Frontend and API speak only the models in
-  `app/models.py`. Future `MicrosoftGraphCalendarProvider` / `GoogleCalendarProvider`
-  return these models, never provider SDK types. New providers must satisfy the
-  `CalendarProvider` protocol; annotate provider seams with that protocol, not the
-  concrete class.
-- **Persistence.** The provider is intentionally in-memory. A SQLite-backed
-  implementation should drop in behind the same protocol without any frontend change.
+  `app/models.py`. Providers (`MockCalendarProvider`, `MicrosoftGraphCalendarProvider`,
+  a future `GoogleCalendarProvider`) return these models, never provider SDK types, and
+  convert any timezone-aware datetimes to naive local time at the boundary. New
+  providers satisfy the `CalendarProvider` protocol; seams are annotated with that
+  protocol, not a concrete class. `api.py` picks the provider from
+  `get_settings().calendar_provider` and caches it; the Graph import is lazy so the
+  mock path never needs Graph credentials.
+- **Microsoft Graph provider.** `app/calendar/graph.py`, client-credentials (app-only)
+  auth, one `HouseholdCalendar` per configured mailbox. Onboarding is purely backend
+  configuration (`.env` / `MISSION_CONTROL_GRAPH_*`); there is no frontend account
+  management and it is not a near-term goal. Keep write support minimal.
+- **Persistence.** No datastore yet. A SQLite-backed provider or token cache should
+  drop in behind the same protocol without any frontend change.
 - **Real-time.** `/api/ws` is a deliberately small typed endpoint. Do not build a
   generalized event bus. `ApplicationMessage` in `app/models.py` is the intended
   server→client envelope; wire it when the first real push exists (today the endpoint
@@ -141,8 +156,10 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
 - calendar time-range querying and mock-provider behavior
 - domain-model validation (event time ordering, all-day boundaries, range ordering)
 - category vs. calendar-identity classification staying separate
-- API endpoint behavior via `fastapi.testclient` / `httpx` (health, `/api/calendar`
-  range params and defaults) — add this; it is currently missing
+- Graph provider: event mapping, all-day handling, tz→naive conversion, pagination,
+  token caching, missing-credential errors (all HTTP mocked with `respx`, no network)
+- API endpoint behavior via `fastapi.testclient` (health, `/api/calendar` range params
+  and defaults) — still missing, add it
 - meaningful frontend interactions (mode switching, event detail, filters, color mode)
 - Playwright: each primary mode fits the kiosk viewport with no document overflow at
   3840x2160 and 1920x1080
@@ -158,6 +175,8 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
 
 ## Current non-goals (do not start without an explicit request)
 
-Microsoft Graph, Google Calendar, Home Assistant, authentication, persistence/SQLite,
-speech recognition or synthesis, LLM/agent integration, Docker, Redis, Postgres,
-message brokers, cloud infrastructure.
+Google Calendar, Home Assistant, frontend authentication / account management,
+persistence/SQLite, speech recognition or synthesis, LLM/agent integration, Docker,
+Redis, Postgres, message brokers, cloud infrastructure. (A Microsoft Graph *read*
+provider exists; do not expand it into write-heavy sync or delegated user auth without
+being asked.)

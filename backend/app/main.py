@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router
 
-app = FastAPI(title="Household Dashboard API", version="0.1.0")
+app = FastAPI(title="Mission Control API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

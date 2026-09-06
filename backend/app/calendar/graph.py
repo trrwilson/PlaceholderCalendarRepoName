@@ -119,8 +119,7 @@ class MicrosoftGraphCalendarProvider:
             )
         if not settings.graph_calendar_users:
             raise RuntimeError(
-                "Microsoft Graph calendar provider requires "
-                "MISSION_CONTROL_GRAPH_CALENDAR_USERS"
+                "Microsoft Graph calendar provider requires MISSION_CONTROL_GRAPH_CALENDAR_USERS"
             )
 
         self._settings = settings
@@ -189,9 +188,9 @@ class MicrosoftGraphCalendarProvider:
 
     def snapshot(self, calendar_range: CalendarRange) -> CalendarSnapshot:
         start = datetime.combine(calendar_range.starts_on, time.min).replace(tzinfo=_LOCAL_TZ)
-        end = datetime.combine(
-            calendar_range.ends_on + timedelta(days=1), time.min
-        ).replace(tzinfo=_LOCAL_TZ)
+        end = datetime.combine(calendar_range.ends_on + timedelta(days=1), time.min).replace(
+            tzinfo=_LOCAL_TZ
+        )
 
         events: list[CalendarEvent] = []
         for user in self._settings.graph_calendar_users:

@@ -44,7 +44,9 @@ async def get_calendar(
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
-        await websocket.send_json({"type": "connected", "message": "Dashboard live connection ready"})
+        await websocket.send_json(
+            {"type": "connected", "message": "Dashboard live connection ready"}
+        )
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

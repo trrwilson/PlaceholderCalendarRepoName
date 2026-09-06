@@ -9,14 +9,23 @@ from app.models import CalendarEvent, CalendarRange
 
 def test_snapshot_filters_events_to_requested_range() -> None:
     provider = MockCalendarProvider(date(2026, 9, 5))
-    snapshot = provider.snapshot(CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5)))
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
 
-    assert {event.id for event in snapshot.events} == {"school-dropoff", "standup", "swim", "dinner"}
+    assert {event.id for event in snapshot.events} == {
+        "school-dropoff",
+        "standup",
+        "swim",
+        "dinner",
+    }
 
 
 def test_mock_provider_has_distinct_calendars_and_overlapping_events() -> None:
     provider = MockCalendarProvider(date(2026, 9, 5))
-    snapshot = provider.snapshot(CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 15)))
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 15))
+    )
 
     assert len(snapshot.calendars) == 4
     assert len({calendar.color for calendar in snapshot.calendars}) == 4
@@ -25,7 +34,9 @@ def test_mock_provider_has_distinct_calendars_and_overlapping_events() -> None:
 
 def test_mock_events_preserve_category_classification_separately_from_calendar_identity() -> None:
     provider = MockCalendarProvider(date(2026, 9, 5))
-    snapshot = provider.snapshot(CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 15)))
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 15))
+    )
     events = {event.id: event for event in snapshot.events}
 
     assert events["dinner"].categories == []
