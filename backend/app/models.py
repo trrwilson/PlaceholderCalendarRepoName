@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -70,3 +71,18 @@ class ApplicationMessage(BaseModel):
     type: str
     message: str
     snapshot: CalendarSnapshot | None = None
+
+
+class CalendarAuthStatus(BaseModel):
+    """State of the calendar provider's sign-in, for the kiosk connect UI."""
+
+    provider: str
+    state: Literal["connected", "connecting", "disconnected", "not_applicable"]
+    account: str | None = None
+    # Present while state == "connecting": show these so a phone can finish sign-in.
+    user_code: str | None = None
+    verification_uri: str | None = None
+    verification_uri_complete: str | None = None
+    verification_qr: str | None = None  # data: URI for an SVG QR code
+    expires_in: int | None = None
+    error: str | None = None

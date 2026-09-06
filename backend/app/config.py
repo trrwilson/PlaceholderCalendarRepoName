@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Personal-account (outlook.com / hotmail.com) delegated sign-in.
     graph_authority: str = "https://login.microsoftonline.com/consumers"
     graph_token_cache: str = ".msal_token_cache.json"
+    # The calendar sign-in endpoints reveal the account and can sign out; by
+    # default they only answer requests from the local network / loopback.
+    allow_remote_auth: bool = False
 
     # Mailboxes to surface; each UPN / email becomes one HouseholdCalendar.
     graph_calendar_users: Annotated[list[str], NoDecode] = []

@@ -1,8 +1,9 @@
-"""One-time sign-in for the personal Outlook calendar provider.
+"""Headless sign-in for the personal Outlook calendar provider.
 
-Run from the ``backend/`` directory:
+The kiosk can do this from its UI (device-code + QR); this CLI is the equivalent
+for a server with no display. Run from the ``backend/`` directory:
 
-    python -m app.auth login     # device-code sign-in (opens a code to enter in a browser)
+    python -m app.auth login     # device-code sign-in
     python -m app.auth status    # show the signed-in account
     python -m app.auth logout    # forget the account and delete the token cache
 
@@ -15,39 +16,26 @@ from __future__ import annotations
 
 import sys
 
-from app.calendar.outlook_personal import GRAPH_SCOPES, load_msal_app, save_cache
+from app.calendar import personal_auth
+from app.calendar.outlook_personal import cache_path, shared_msal_app
 from app.config import get_settings
 
 
 def login() -> int:
     settings = get_settings()
-    app, cache, path = load_msal_app(settings)
-
-    if app.get_accounts():
-        print(f"Already signed in as {app.get_accounts()[0]['username']}.")
-        print("Run `python -m app.auth logout` first to switch accounts.")
+    result = personal_auth.run_device_flow_blocking(
+        settings, lambda message: print(message, flush=True)
+    )
+    if result.state == "connected":
+        print(f"Signed in as {result.account}. Token cache: {cache_path(settings)}")
         return 0
-
-    flow = app.initiate_device_flow(scopes=GRAPH_SCOPES)
-    if "user_code" not in flow:
-        print(f"Could not start device-code sign-in: {flow.get('error_description', flow)}")
-        return 1
-
-    print(flow["message"], flush=True)  # "open https://microsoft.com/devicelogin and enter CODE"
-    result = app.acquire_token_by_device_flow(flow)  # blocks until the browser step completes
-
-    if "access_token" not in result:
-        print(f"Sign-in failed: {result.get('error_description', result)}")
-        return 1
-
-    save_cache(cache, path)
-    print(f"Signed in as {app.get_accounts()[0]['username']}. Token cache: {path}")
-    return 0
+    print(f"Sign-in failed: {result.error}")
+    return 1
 
 
 def status() -> int:
     settings = get_settings()
-    app, _cache, path = load_msal_app(settings)
+    app, _cache, path = shared_msal_app(settings)
     accounts = app.get_accounts()
     if not accounts:
         suffix = "" if path.exists() else " (missing)"
@@ -59,11 +47,7 @@ def status() -> int:
 
 def logout() -> int:
     settings = get_settings()
-    app, cache, path = load_msal_app(settings)
-    for account in app.get_accounts():
-        app.remove_account(account)
-    save_cache(cache, path)
-    path.unlink(missing_ok=True)
+    personal_auth.sign_out(settings)
     print("Signed out; token cache removed.")
     return 0
 
