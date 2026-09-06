@@ -58,6 +58,24 @@ describe('Mission Control dashboard', () => {
     await waitFor(() => expect(document.querySelector('.large-event')).toHaveClass('calendar-gold'))
   })
 
+  it('defaults the week to Monday and persists a Sunday choice', async () => {
+    render(<App />)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
+    await waitFor(() => expect(document.querySelector('.weekday-row span')).toHaveTextContent('Mon'))
+    expect(document.querySelectorAll('.weekday-row span')[6]).toHaveTextContent('Sun')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    expect(screen.getByRole('button', { name: 'Monday' })).toHaveClass('selected')
+    fireEvent.click(screen.getByRole('button', { name: 'Sunday' }))
+    expect(window.localStorage.getItem('mission-control.week-start')).toBe('sunday')
+    await waitFor(() => expect(document.querySelector('.weekday-row span')).toHaveTextContent('Sun'))
+
+    cleanup()
+    render(<App />)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
+    await waitFor(() => expect(document.querySelector('.weekday-row span')).toHaveTextContent('Sun'))
+  })
+
   it('filters a calendar behind the People control', async () => {
     render(<App />)
     fireEvent.click(screen.getAllByRole('button', { name: 'Home' })[0])
