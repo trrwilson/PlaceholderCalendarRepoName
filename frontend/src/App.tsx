@@ -23,6 +23,16 @@ const COLOR_MODE_KEY = 'mission-control.semantic-color-mode'
 const readColorMode = (): SemanticColorMode => window.localStorage.getItem(COLOR_MODE_KEY) === 'people-first' ? 'people-first' : 'category-first'
 const WEEK_START_KEY = 'mission-control.week-start'
 const readWeekStart = (): WeekStart => window.localStorage.getItem(WEEK_START_KEY) === 'sunday' ? 'sunday' : 'monday'
+const CALENDAR_PALETTE = ['coral', 'ocean', 'gold', 'fern', 'violet'] as const
+const CALENDAR_COLORS_KEY = 'mission-control.calendar-colors'
+const readCalendarColors = (): Record<string, string> => {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(CALENDAR_COLORS_KEY) ?? '{}')
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {}
+  } catch {
+    return {}
+  }
+}
 const weekStartDay = (weekStart: WeekStart) => weekStart === 'sunday' ? 0 : 1
 const orderedWeekdays = (weekStart: WeekStart) => Array.from({ length: 7 }, (_, index) => WEEKDAYS[(index + weekStartDay(weekStart)) % 7])
 
@@ -37,6 +47,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [colorMode, setColorMode] = useState<SemanticColorMode>(readColorMode)
   const [weekStart, setWeekStart] = useState<WeekStart>(readWeekStart)
+  const [calendarColors, setCalendarColors] = useState<Record<string, string>>(readCalendarColors)
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null)
   const [auth, setAuth] = useState<CalendarAuth | null>(null)
   const [connectOpen, setConnectOpen] = useState(false)
@@ -111,6 +122,10 @@ function App() {
   }, [weekStart])
 
   useEffect(() => {
+    window.localStorage.setItem(CALENDAR_COLORS_KEY, JSON.stringify(calendarColors))
+  }, [calendarColors])
+
+  useEffect(() => {
     const range = rangeForView(mode, viewDate, now, weekStart)
     const params = new URLSearchParams({ starts_on: toIsoDate(range.start), ends_on: toIsoDate(range.end) })
     fetch(`${API_URL}/api/calendar?${params}`)
@@ -129,7 +144,11 @@ function App() {
     return () => socket.close()
   }, [])
 
-  const calendars = snapshot?.calendars ?? []
+  const providerCalendars = snapshot?.calendars ?? []
+  const calendars = providerCalendars.map((calendar) => {
+    const override = calendarColors[calendar.id]
+    return override && override !== calendar.color ? { ...calendar, color: override } : calendar
+  })
   const calendarById = new Map(calendars.map((calendar) => [calendar.id, calendar]))
   const visibleEvents = (snapshot?.events ?? []).filter((event) => enabledCalendars.includes(event.calendar_id))
   const todayEvents = visibleEvents.filter((event) => isSameDay(new Date(event.starts_at), now)).sort(sortEvents)
@@ -151,6 +170,16 @@ function App() {
     setSettingsOpen(false)
   }
 
+  function chooseCalendarColor(calendarId: string, color: string) {
+    const providerColor = providerCalendars.find((calendar) => calendar.id === calendarId)?.color
+    setCalendarColors((current) => {
+      const next = { ...current }
+      if (color === providerColor) delete next[calendarId]
+      else next[calendarId] = color
+      return next
+    })
+  }
+
   function toggleCalendar(calendarId: string) {
     setEnabledCalendars((current) => current.includes(calendarId) ? current.filter((id) => id !== calendarId) : [...current, calendarId])
   }
@@ -169,7 +198,7 @@ function App() {
         {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={visibleEvents} calendarById={calendarById} onSelect={setSelectedEvent} onNavigate={navigate} colorMode={colorMode} weekStart={weekStart} />}
       </section>
 
-      <footer className="bottom-dock"><nav><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></nav><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span>{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span>{calendar.name}</span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings">⚙<span>Settings</span></button>{settingsOpen && <div className="settings-popover" role="dialog" aria-label="Settings" onKeyDown={(event) => { if (event.key === 'Escape') setSettingsOpen(false) }}><strong>Event colors</strong><button className={colorMode === 'category-first' ? 'selected' : ''} onClick={() => setColorMode('category-first')}>Color events by category</button><button className={colorMode === 'people-first' ? 'selected' : ''} onClick={() => setColorMode('people-first')}>Color events by person/calendar</button><strong>Week starts on</strong><button className={weekStart === 'monday' ? 'selected' : ''} onClick={() => setWeekStart('monday')}>Monday</button><button className={weekStart === 'sunday' ? 'selected' : ''} onClick={() => setWeekStart('sunday')}>Sunday</button></div>}</div></footer>
+      <footer className="bottom-dock"><nav><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></nav><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span>{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span>{calendar.name}</span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings">⚙<span>Settings</span></button>{settingsOpen && <div className="settings-popover" role="dialog" aria-label="Settings" onKeyDown={(event) => { if (event.key === 'Escape') setSettingsOpen(false) }}><strong>Event colors</strong><button className={colorMode === 'category-first' ? 'selected' : ''} onClick={() => setColorMode('category-first')}>Color events by category</button><button className={colorMode === 'people-first' ? 'selected' : ''} onClick={() => setColorMode('people-first')}>Color events by person/calendar</button><strong>Week starts on</strong><button className={weekStart === 'monday' ? 'selected' : ''} onClick={() => setWeekStart('monday')}>Monday</button><button className={weekStart === 'sunday' ? 'selected' : ''} onClick={() => setWeekStart('sunday')}>Sunday</button>{calendars.length > 0 && <><strong>Calendar colors</strong>{calendars.map((calendar) => <div className="calendar-color-row" key={calendar.id}><span className="calendar-color-name"><span className={`calendar-swatch ${colorClass(calendar.color)}`} />{calendar.name}</span><span className="calendar-color-options" role="group" aria-label={`${calendar.name} color`}>{CALENDAR_PALETTE.map((color) => <button type="button" key={color} className={`color-dot ${colorClass(color)} ${calendar.color === color ? 'selected' : ''}`} aria-label={`${calendar.name}: ${color}`} aria-pressed={calendar.color === color} onClick={() => chooseCalendarColor(calendar.id, color)} />)}</span></div>)}</>}</div>}</div></footer>
       {selectedEvent && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
       {connectOpen && auth && <CalendarConnect auth={auth} onStart={beginConnect} onCancel={cancelConnect} onClose={() => setConnectOpen(false)} />}
     </main>

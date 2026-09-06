@@ -13,7 +13,8 @@ this file.
 clone.
 
 - The browser client is disposable and mostly stateless: it renders provider-neutral
-  calendar snapshots and owns only view state (current mode, focused date, filters).
+  calendar snapshots and owns only view state (current mode, focused date, filters)
+  and app-only presentation preferences (colour mode, week start, per-calendar colour).
 - The server owns everything durable: provider access, OAuth tokens, credentials,
   household state, and any future AI/audio/video processing.
 - The default calendar provider is an in-memory mock. A configuration-driven Microsoft
@@ -98,6 +99,16 @@ frontend/                React 19 + TypeScript (strict) + Vite
 - Keep identity/category treatment consistent across Home, Week, Month, filters, and
   detail. Popovers dismiss on outside interaction, Escape, and navigation without
   swallowing intended inside clicks.
+- **Per-calendar colour is viewer presentation, not provider data.** Providers hand
+  each `HouseholdCalendar` a default `CalendarColor`; the kiosk lets a household
+  member re-assign any calendar to another palette colour from Settings → "Calendar
+  colours". The choice is stored per-viewer in `localStorage`
+  (`mission-control.calendar-colors`, a `{calendarId: CalendarColor}` map), applied by
+  remapping the snapshot's calendars before render, and never written back to a
+  provider. Re-picking the provider default drops the override. This is the same
+  class of app-only presentation state as the category-first / people-first mode and
+  the week-start choice — presentation preferences live on the frontend; account
+  onboarding and credentials stay backend-config only.
 
 ## Architecture & boundaries
 
@@ -178,7 +189,8 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
   defaults / reversed-range 422, and `/api/calendar/auth*` (state machine, local guard,
   provider guard) with MSAL patched
 - meaningful frontend interactions (mode switching, event detail, filters, color mode,
-  week start, calendar sign-in prompt + device-code sheet)
+  week start, per-calendar color override + persistence, calendar sign-in prompt +
+  device-code sheet)
 - Playwright: each primary mode fits the kiosk viewport with no document overflow at
   3840x2160 and 1920x1080
 

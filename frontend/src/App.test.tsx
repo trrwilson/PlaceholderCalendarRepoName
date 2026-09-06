@@ -76,6 +76,36 @@ describe('Mission Control dashboard', () => {
     await waitFor(() => expect(document.querySelector('.weekday-row span')).toHaveTextContent('Sun'))
   })
 
+  it('overrides a calendar identity color from Settings and persists the choice', async () => {
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.large-event')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Color events by person/calendar' }))
+    await waitFor(() => expect(document.querySelector('.large-event')).toHaveClass('calendar-gold'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Jordan: violet' }))
+    await waitFor(() => expect(document.querySelector('.large-event')).toHaveClass('calendar-violet'))
+    expect(JSON.parse(window.localStorage.getItem('mission-control.calendar-colors') as string)).toEqual({ jordan: 'violet' })
+
+    cleanup()
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Color events by person/calendar' }))
+    await waitFor(() => expect(document.querySelector('.large-event')).toHaveClass('calendar-violet'))
+  })
+
+  it('clears a calendar override when the provider default is reselected', async () => {
+    window.localStorage.setItem('mission-control.calendar-colors', JSON.stringify({ jordan: 'violet' }))
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Color events by person/calendar' }))
+    await waitFor(() => expect(document.querySelector('.large-event')).toHaveClass('calendar-violet'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Jordan: gold' }))
+    await waitFor(() => expect(document.querySelector('.large-event')).toHaveClass('calendar-gold'))
+    expect(JSON.parse(window.localStorage.getItem('mission-control.calendar-colors') as string)).toEqual({})
+  })
+
   it('filters a calendar behind the People control', async () => {
     render(<App />)
     fireEvent.click(screen.getAllByRole('button', { name: 'Home' })[0])
