@@ -43,7 +43,16 @@ describe('Mission Control dashboard', () => {
     expect(document.querySelector('.large-event')).toHaveStyle({ '--category-color': '#27ae60' })
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
     expect(screen.getByRole('button', { name: 'Color events by category' })).toHaveClass('selected')
-    expect(document.querySelector('.large-event.calendar-fern')).toBeInTheDocument()
+
+    // An event with no provider category still renders through the dominant treatment — a generic
+    // neutral swatch rather than the calendar identity colour — so it aligns with categorised ones.
+    const uncategorized = document.querySelectorAll('.large-event')[1]
+    expect(uncategorized).toHaveClass('category-dominant')
+    expect(uncategorized).not.toHaveClass('calendar-fern')
+    expect(uncategorized).toHaveStyle({ '--category-color': '#6e8596' })
+    // ...and it now carries the calendar-identity triangle, like every other category-first card.
+    expect(uncategorized.querySelector('.secondary-triangle')).toBeInTheDocument()
+    expect(uncategorized).toHaveStyle({ '--event-accent': 'var(--fern)' })
   })
 
   it('persists people-first mode and falls back to calendar identity without categories', async () => {
@@ -62,19 +71,19 @@ describe('Mission Control dashboard', () => {
   it('defaults the week to Monday and persists a Sunday choice', async () => {
     render(<App />)
     fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
-    await waitFor(() => expect(document.querySelector('.weekday-row span')).toHaveTextContent('Mon'))
-    expect(document.querySelectorAll('.weekday-row span')[6]).toHaveTextContent('Sun')
+    await waitFor(() => expect(document.querySelector('.weekday-tag')).toHaveTextContent('Mon'))
+    expect(document.querySelectorAll('.weekday-tag')[6]).toHaveTextContent('Sun')
 
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
     expect(screen.getByRole('button', { name: 'Monday' })).toHaveClass('selected')
     fireEvent.click(screen.getByRole('button', { name: 'Sunday' }))
     expect(window.localStorage.getItem('mission-control.week-start')).toBe('sunday')
-    await waitFor(() => expect(document.querySelector('.weekday-row span')).toHaveTextContent('Sun'))
+    await waitFor(() => expect(document.querySelector('.weekday-tag')).toHaveTextContent('Sun'))
 
     cleanup()
     render(<App />)
     fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
-    await waitFor(() => expect(document.querySelector('.weekday-row span')).toHaveTextContent('Sun'))
+    await waitFor(() => expect(document.querySelector('.weekday-tag')).toHaveTextContent('Sun'))
   })
 
   it('overrides a calendar identity color from Settings and persists the choice', async () => {
@@ -133,6 +142,30 @@ describe('Mission Control dashboard', () => {
     fireEvent.click(people)
     fireEvent.click(screen.getAllByRole('button', { name: 'Week' })[0])
     expect(document.querySelector('.filter-row')).not.toBeInTheDocument()
+  })
+
+  it('pins a multi-day event as a Home banner and spans it across Week and Month', async () => {
+    const today = new Date()
+    const midnight = (offset: number) => new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset).toISOString()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({
+      calendars: [{ id: 'family', name: 'Family', color: 'coral', enabled: true }],
+      events: [{ id: 'break', calendar_id: 'family', title: 'School break', starts_at: midnight(-1), ends_at: midnight(2), location: null, all_day: true, categories: [] }],
+    }) }))
+
+    render(<App />)
+
+    const banner = await screen.findByRole('button', { name: /School break/ })
+    expect(banner).toHaveClass('today-banner')
+    expect(banner).toHaveTextContent('Day 2 of 3')
+    expect(document.querySelector('.large-agenda')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Week' })[0])
+    await waitFor(() => expect(document.querySelector('.allday-lane .span-bar')).toHaveTextContent('School break'))
+    expect(document.querySelector('.week-column .week-event')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
+    await waitFor(() => expect(document.querySelector('.month-week-spans .span-bar')).toHaveTextContent('School break'))
+    expect(document.querySelector('.day-events .event-chip')).not.toBeInTheDocument()
   })
 
   it('dismisses Settings outside and with Escape', async () => {

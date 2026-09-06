@@ -11,6 +11,125 @@ Do not make Phase 2 a dependency of Phase 1.
 
 Before implementation, inspect the repository, existing architecture, configuration conventions, deployment documentation, and current likely host environment. The most likely host is Windows, but Linux remains possible. Do not assume a particular camera, detection framework, ML runtime, or display-power mechanism without verifying suitability.
 
+---
+
+## Status
+
+**Planning. Architecture decisions locked in 2026-09-05; not yet implemented.** The
+directive above and the requirement sections below ("Product requirements" onward) are the
+original brief and remain the design target. The three sections immediately following this
+one record the decisions taken and the feasibility review done on 2026-09-05, and take
+precedence where they are more specific than the original brief.
+
+## Decisions locked in (2026-09-05)
+
+| Question | Decision |
+| --- | --- |
+| Production topology | A single Windows kiosk PC physically attached to the 27" Pisichen display, running both the browser frontend and the FastAPI backend locally. Network services may exist elsewhere later, but presence detection and display-power control must operate on this host. |
+| Camera ownership | **Backend-owned.** Webcam acquisition and person detection run in the FastAPI process (hardware-dependent capability; only a local process can drive display power). React consumes semantic presence/diagnostic state and reports user activity — it never opens the camera. |
+| Detector / model / cadence / capture backend | Not pre-decided. Research and verify against current dependencies; tune and measure on representative hardware. Software-code license *and* model-weight license both reviewed and documented before adoption; no silent auto-download of unreviewed weights. |
+| Display power control | Actual physical monitor standby while the Windows host and local services keep running. **Do not assume DDC/CI.** Probe the real monitor + Windows environment, select the most reliable mechanism by evidence, keep it behind the `DisplayController` seam. A no-op controller is the dev/CI fallback. Never suspend/hibernate the host. |
+| OS power-policy coordination | A documented kiosk deployment prerequisite (disable the Windows "turn off display" / sleep timers so the policy owns display power). Not solvable in code alone. |
+| Settings persistence | Out of scope for Phase 1. Presence configuration stays environment / config-file based (`MISSION_CONTROL_PRESENCE_*`). The UI primarily exposes diagnostics. Shape the config accessor and the diagnostic/settings models so a runtime-writable store can shadow env later without a refactor. |
+| User-activity seam | A small provider-neutral seam so touch, active voice interaction, future wake-word activation, and camera presence all feed the inactivity policy without those subsystems depending on one another. |
+| Single-process hardware ownership | The camera is opened once, in backend lifespan startup, only when presence is enabled. Guard with a named mutex / lockfile so `--reload` or an accidental second worker logs and backs off instead of competing for the device. Presence loop defaults off in dev; production runs a single worker. |
+| Durable docs | Architectural + ML/model-licensing guidance goes in `AGENTS.md` (`.github/copilot-instructions.md` stays a thin pointer). Licenses / provenance for ML code and model weights documented independently in a new project-level dependency/licensing document. |
+
+## Feasibility assessment (2026-09-05)
+
+Phase 1 is feasible and can largely be built and CI-tested without hardware; the remaining
+unknowns are empirical and belong on the real kiosk.
+
+- **Backend capture + detection.** A lifespan-started worker *thread* (OpenCV
+  `VideoCapture.read()` blocks; native calls release the GIL, so ~1–2 fps alongside
+  request handling is negligible). Settle during a spike: MSMF vs DSHOW capture backend;
+  device selection by name/path rather than index; reopen-with-backoff on disconnect
+  (`read()` returns `False`, it does not raise) with the "camera lost" state surfaced in
+  diagnostics and failing safe (hold display awake). `opencv-python` / `onnxruntime` /
+  `mediapipe` all ship cp312 Windows wheels today; `mediapipe` currently caps near 3.12.
+- **Monitor standby — the main empirical unknown.** Windows options, preferred order
+  where supported:
+  - `SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)` — real DPMS
+    standby, system-wide (fine for one display). Works from a normal-user process in the
+    interactive session; a session-0 service cannot do this, so the backend must run in
+    the kiosk user's session. Wake with `SC_MONITORPOWER, -1` or a synthetic `SendInput`.
+  - DDC/CI VCP `0xD6` via `dxva2.dll` (`GetPhysicalMonitorsFromHMONITOR` →
+    `SetVCPFeature`) — better wake behaviour where it works, but off-brand 4K panels are
+    unreliable and capability strings can be absent or inaccurate. Probe at startup,
+    verify it changes panel state, fall back to `SC_MONITORPOWER`.
+  - Rejected: brightness-to-zero (backlight stays on), `SetDisplayConfig` detach
+    (disruptive window reflow), HDMI-CEC (not on PC GPUs).
+  `DisplayController.probe()` records which mechanism is live for diagnostics; the
+  controller stays dumb (`wake()` / `sleep()` / `status()`) and "don't re-issue identical
+  commands" lives in the policy.
+- **Activity seam.** The policy consumes two signal kinds: `note_activity(source, at)`
+  discrete pulses (`TOUCH` / `VOICE` / `WAKE_WORD` / `CAMERA`, extensible) and
+  `set_presence(state, at)` from the detector. Touch/voice reach it via a new
+  `POST /api/presence/activity`; the detector calls in-process; a future wake-word
+  detector needs no change elsewhere. `CAMERA PRESENT` holds the display awake;
+  `CAMERA ABSENT` starts the inactivity clock; a touch/voice pulse pushes the clock
+  forward even while the camera reports absent (someone sitting still).
+- **Config + diagnostics.** `MISSION_CONTROL_PRESENCE_*` env vars via a dedicated
+  `PresenceSettings` model read through an accessor (the future-store hook).
+  `GET /api/presence` returns effective config + live state (presence, camera status,
+  detector availability, display mechanism + availability, last-activity-per-source,
+  current display state); the frontend polls it like `/api/calendar/auth` and shows a
+  read-only Settings section.
+- **Testing.** The policy is a pure state machine with an injected `now` callable (house
+  style — cf. `MockCalendarProvider`'s injected `today`; no new `freezegun` dependency).
+  Camera and `DisplayController` are fakes. "Diagnostic mode" = real detector + no-op
+  controller + verbose `/api/presence`, which is also the CI configuration. The presence
+  loop must never auto-start under pytest.
+- **Licensing.** Prefer Apache/BSD/MIT for code *and* weights (MediaPipe Tasks, OpenVINO
+  `person-detection-*`, YOLOX, NanoDet, or OpenCV's bundled HOG — BSD, no download,
+  weaker accuracy). Avoid Ultralytics YOLO (AGPL, code and weights). Vendor or
+  checksum-pin weights — several candidate libraries auto-download on first use.
+
+## Open items requiring representative hardware
+
+None block starting (activity seam + no-op controller + config + policy + tests land
+first). These gate completion:
+
+1. **Monitor control mechanism** — probe + validate on the Pisichen panel and the kiosk
+   GPU/driver: does an off→on cycle reliably re-light the panel and how fast; does
+   DDC/CI `0xD6` work at all.
+2. **Touchscreen digitizer spurious wake** — if the panel wakes on HID jitter from the
+   digitizer, "sleep after sustained absence" may never hold.
+3. **Webcam** — model, UVC compliance, native resolution, FOV, mounting height/angle,
+   low-light behaviour: detector cadence / confidence / minimum bounding-box size cannot
+   be tuned without it.
+4. **Kiosk PC specs** — CPU class, RAM, usable iGPU (DirectML / OpenVINO): determines
+   detector choice and lets "representative resource usage" actually be measured.
+
+Still to pin down (no hardware needed):
+
+- Whether the backend also asserts `SetThreadExecutionState(ES_CONTINUOUS |
+  ES_SYSTEM_REQUIRED)` as defence-in-depth on top of the documented power-plan config
+  (recommend both).
+- Which `useVoiceSession` states count as "active voice interaction" (likely
+  `listening` / `thinking` / `speaking`).
+- Activity-report transport and throttle (recommend a plain `POST`, ~1 ping / 10 s plus
+  a periodic heartbeat; not the WebSocket, which has no reconnect today).
+- Where a vendored model lives in the repo (committed small ONNX / Git LFS / checksummed
+  fetch) for offline CI.
+- Whether presence detection needs a visible "camera active" indicator (voice set the
+  precedent with the "Mic on" pill).
+- Phase 1 has no explicit manual override ("sleep now" / "stay awake"); the policy seam
+  should accept an injected override later.
+
+## Recommended implementation order
+
+1. Detector abstraction + inactivity policy + activity seam + unit tests (no hardware).
+2. `PresenceSettings` config + `GET /api/presence` + frontend diagnostics section and
+   activity reporting.
+3. `DisplayController` with the no-op default + a `SC_MONITORPOWER` implementation behind
+   a startup probe.
+4. Camera capture + detector, behind `MISSION_CONTROL_PRESENCE_ENABLED=false` by default.
+5. On the kiosk: probe DDC/CI, tune the detector, measure resource use, validate wake /
+   digitizer behaviour, write the deployment prerequisites.
+
+---
+
 ## Product requirements
 
 Mission Control is a continuously running household appliance on a wall-mounted touchscreen with an attached webcam.

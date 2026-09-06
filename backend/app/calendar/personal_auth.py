@@ -107,7 +107,18 @@ def begin_sign_in(settings: Settings) -> CalendarAuthStatus:
                     daemon=True,
                 )
                 _thread.start()
-    return _status(settings)
+
+    status = _status(settings)
+    # For an already-connected household, _status() still reports "connected" even
+    # when the device flow could not be started (network / throttling). The caller
+    # that just asked to add a calendar must see that failure rather than a silent
+    # no-op, so surface it on this immediate response.
+    with _lock:
+        stalled = _pending is None and _flow_error is not None
+        error = _flow_error
+    if stalled and status.error is None:
+        return status.model_copy(update={"error": error})
+    return status
 
 
 def _complete(cache, path, app, flow: dict) -> None:

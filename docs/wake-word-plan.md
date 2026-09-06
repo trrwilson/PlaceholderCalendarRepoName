@@ -8,6 +8,12 @@ The wake phrase is:
 
 Mission Control already has a functional tap/push-to-talk voice path using the browser microphone and Gemini Live. Wake-word activation should build on that existing voice architecture rather than replace or duplicate it unnecessarily.
 
+> **Status (2026-09-05): not started; gated on push-to-talk stabilization.** A
+> feasibility assessment and the pre-work context an implementer needs are captured in
+> [Feasibility assessment & pre-work context](#feasibility-assessment--pre-work-context)
+> at the end of this document. Read that section before acting on the plan above — it
+> resolves several questions the body leaves open and corrects a few stale references.
+
 The primary deployment host is likely Windows, but Linux remains possible. Do not assume a specific wake-word engine, microphone architecture, or OS integration before inspecting the repository and corroborating current options.
 
 ---
@@ -492,3 +498,158 @@ Report:
 - licensing/model provenance
 - automated validation results
 - remaining limitations
+
+---
+
+# Feasibility assessment & pre-work context
+
+Added 2026-09-05 after reading this plan against the shipped voice implementation
+(`frontend/src/voice/*`, `backend/app/voice/*`, `App.tsx` wiring), the sibling planning
+docs, and `AGENTS.md`. This section records what is already done, what is genuinely
+open, and the order things must happen in, so a later implementation session does not
+re-derive it.
+
+## Verdict
+
+Feasible, medium complexity, almost entirely frontend work. No hard blocker of the kind
+`docs/eufy-sdk-integration.md` has (there the SDK does not exist yet). The plan body is
+sound on product, UX states, testing, and privacy, but it leaves the two decisions that
+actually gate implementation unmade, and it under-credits work already shipped for
+push-to-talk. It is correctly sequenced **after** push-to-talk is stable.
+
+## The decision that blocks everything: microphone ownership
+
+The plan flags this ("Critical Architecture Decision") but defers it to "investigate".
+Repo context narrows it more than the plan admits:
+
+- **There is no local host process today.** Deployment is a kiosk Chrome tab pointed at
+  Vite + FastAPI. The backend is explicitly designed to be possibly-remote (LAN-gated
+  endpoints, `allow_remote_auth`). Nothing on the display host can reach the microphone
+  outside the browser. `AGENTS.md` also lists "no Docker / no infra" and "no always-on
+  mic" as standing non-goals.
+- **Option A / C (local audio service)** means introducing a new deployable plus an IPC
+  channel to trigger `startTurn()` in the browser. `/api/ws` + the `ApplicationMessage`
+  envelope is stubbed for roughly this, but it is server→client only, has no reconnect,
+  and this is a large lift that fights the repo's stated direction.
+- **Option B (browser-resident detector)** fits the existing architecture with zero new
+  deployment surface: the browser already owns the mic, holds the Gemini session, and
+  runs the state machine. Shape: a Web Worker + `AudioWorklet` tap on one shared
+  `MediaStream`.
+
+**Coupling to the camera plan:** `docs/camera-support-plan.md` *also* needs a local host
+process (display-power control, local webcam inference). If that lands first, a shared
+"Mission Control host agent" becomes justified and Option A / C becomes reasonable for
+both features. So the answer here depends on whether the camera host-agent happens
+first.
+
+**Recommendation:** browser-resident (Option B) unless/until a host agent already exists
+for the camera plan. Candidate browser engines: Picovoice Porcupine Web (official WASM
+SDK) or a community openWakeWord web port — see licensing table below.
+
+## What is already done (plan under-credits these)
+
+- **Hands-free end-of-turn is essentially solved.** `backend/app/voice/tokens.py`
+  already configures Gemini Live automatic VAD (`start/end_of_speech_sensitivity: HIGH`,
+  `prefix_padding_ms: 300`, `silence_duration_ms: 700`) precisely because push-to-talk
+  users do not reliably tap Stop. The "End-of-Utterance Handling" section is mostly
+  already satisfied; wake word inherits it.
+- **The activation seam exists.** `useVoiceSession` exposes `startTurn()` / `stopTurn()`;
+  the hook docstring and `AGENTS.md` both say a wake front end calls these.
+  `surface: 'kiosk'` is already threaded through the token request.
+- **Echo mitigation partly exists.** `echoCancellation: true` is set on capture;
+  barge-in / flush-on-interrupt is implemented in `AudioSink`. The plan's "suspend
+  detection while speaking + debounce" is a small addition on top.
+- **`prewarmVoice()`** already pulls the lazy `@google/genai` chunk and the capture
+  worklet into cache on mount.
+
+## Current voice architecture — the seams to build on
+
+| Concern | File | Note for wake word |
+| --- | --- | --- |
+| State machine | `frontend/src/voice/useVoiceSession.ts` | `idle→connecting→listening→thinking→speaking→idle` + `error`/`unavailable`. Add an `armed` state distinct from `idle`. `startTurn()`/`stopTurn()` are the entry points. |
+| Mic capture | `frontend/src/voice/audio.ts` `MicCapture` | Creates **and fully tears down** its `AudioContext` + `getUserMedia` stream per turn. Needs refactoring to a long-lived shared mic source. |
+| Capture worklet | `frontend/src/voice/pcm-capture-worklet.js` | Emits ~100 ms Float32 batches at native rate; main thread downsamples to 16 kHz PCM16. A wake worklet can mirror this. |
+| Playback | `frontend/src/voice/audio.ts` `AudioSink` | 24 kHz PCM queue with flush-on-interrupt; already handles barge-in. |
+| Live session | `frontend/src/voice/session.ts` `GeminiVoiceSession` | `sendAudio(base64)` takes PCM chunks — buffered pre-roll can be flushed through it. Connect = token fetch + lazy SDK import + `live.connect`, multi-second. |
+| Token / VAD config | `backend/app/voice/tokens.py` | VAD, thinking-budget-0, voice, transcription all locked into the ephemeral token. |
+| UI wiring | `frontend/src/App.tsx` (~L194–221, 257, 269) | `voiceActions`, the Ask button, `VoiceOverlay`, `VoiceToast`, the "Mic on" badge. |
+
+## Real work, by area
+
+- **Mic lifecycle refactor (enabler, do early, low risk).** Split "own the mic source"
+  from "capture a turn" in `audio.ts` so a wake worklet and the existing `pcm-capture`
+  worklet can both subscribe to one persistent stream/context.
+- **Rolling pre-roll buffer (the sharp edge).** Audio only reaches Gemini after
+  `session.connect()` completes; by wake time the user is already talking. Add a ~2–3 s
+  PCM ring buffer (16 kHz mono ≈ 100 KB) in the wake worklet; on detection keep
+  buffering, call `startTurn()`, then flush buffered post-wake chunks via `sendAudio()`
+  before going live. Whether to strip the wake phrase and how much pre-roll to keep are
+  answerable only on hardware.
+- **State machine.** Add `armed`; `armed → connecting` on detection with an immediate
+  `VoiceOverlay` acknowledgement (do not wait for Gemini). Re-arm after each turn;
+  suppress detection during `speaking`.
+- **Privacy indicator.** The "Mic on" badge currently means "a turn is live". With
+  always-on capture the mic is always live — the badge's meaning and the kiosk's
+  persistent mic-permission grant (voice plan open Q5, still unresolved) both need
+  answers.
+
+## Engine + model — corroborate at implementation time; licensing already tilts it
+
+Verify current terms when starting (assessment written against ~Jan 2026 knowledge).
+
+| | openWakeWord | Picovoice Porcupine |
+| --- | --- | --- |
+| Runtime license | Apache-2.0 | Apache-2.0 SDK, but an AccessKey is required |
+| Custom model | Trained from synthetic TTS; **you own the output** | Generated in Picovoice Console, governed by their terms; free tier is personal/eval |
+| "Local by default" | Yes | AccessKey validation phones home at startup |
+| Windows / browser | Python solid; **browser support is unofficial** (community ONNX/TF.js ports) | Excellent official Windows + **official Web SDK (WASM)** |
+| Custom-phrase accuracy | Good, generally below Porcupine | Best-in-class |
+
+This plan's stated priorities (own the phrase, clear licensing for runtime *and* model,
+local-by-default) point at **openWakeWord**, at the cost of possibly-worse detection and
+an unofficial browser story. Suggested pre-commitment for the doc: openWakeWord unless
+hardware testing shows unacceptable accuracy, then reconsider Porcupine *with a
+documented licensing decision*. Rule out the Web Speech API explicitly — Chrome routes
+its audio to Google servers, violating local-by-default. "Mission Control" is a
+favorable phrase: two long words, low false-trigger rate.
+
+## Corrections to the plan body
+
+- **Step 5** says update `.github/copilot-instructions.md` with durable principles — that
+  file is now only a pointer; the content belongs in `AGENTS.md`. The same durable "ML
+  model artifacts get independent license/provenance review" instruction is wanted by
+  `docs/camera-support-plan.md` — write it once, jointly.
+- `AGENTS.md` lists "no wake word / always-on mic" as an explicit non-goal in two places;
+  the implementation task must lift that.
+- The plan states no latency budget. Define acceptable wake→"● Listening" (e.g.
+  <300 ms) and wake→first-audio-captured.
+- Config keys should follow the `MISSION_CONTROL_` prefix (see `backend/app/config.py`),
+  e.g. `WAKE_WORD_ENABLED`, `WAKE_WORD_THRESHOLD`, `WAKE_WORD_COOLDOWN_MS`,
+  `WAKE_WORD_MODEL_PATH`.
+
+## Prerequisites (why this waits on push-to-talk)
+
+Wake word makes latency *feel* worse (the user is already mid-sentence), multiplies the
+mic/`AudioContext` lifecycle complexity, and the plan's own "deterministic way to tell
+wake-word problems from Gemini problems" only holds if push-to-talk is genuinely
+reliable. Before starting:
+
+1. **Push-to-talk verified end-to-end on real kiosk hardware** — audible reply confirmed
+   (still unverified per the voice-plan diagnostics notes; `voice.testtone` exists for
+   this).
+2. **Token-endpoint calendar-name caching** — remove the synchronous Graph snapshot on
+   the activation path (`backend/app/api.py`, already flagged in a code comment).
+3. **`MicCapture` refactor** to separate mic-source ownership from per-turn capture (can
+   land early, independent of the rest).
+4. **Microphone-ownership decision** — browser-resident vs host agent, coupled to the
+   camera plan.
+5. **Kiosk Chrome persistent mic-permission** solved for production
+   (`--use-fake-ui-for-media-stream` is not acceptable per the voice plan).
+
+## Testing
+
+The plan's 11 app-level state-machine tests are appropriate and match the existing
+pattern exactly — `frontend/src/voice/useVoiceSession.test.ts` already mocks `./session`
+and `./audio`; a `WakeDetector` seam mocks the same way. The Playwright `VITE_VOICE_FAKE`
+approach extends to a scripted fake wake trigger. No new backend endpoint is needed on
+the browser-resident path.

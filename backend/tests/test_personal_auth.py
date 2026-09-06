@@ -146,6 +146,24 @@ def test_begin_sign_in_surfaces_initiate_failure(client, monkeypatch):
     assert body["error"] == "app not found"
 
 
+def test_begin_sign_in_surfaces_failure_even_when_a_household_is_connected(client, monkeypatch):
+    monkeypatch.setattr(
+        msal.PublicClientApplication,
+        "get_accounts",
+        lambda self, **kw: [{"username": "mia@outlook.com", "home_account_id": "h"}],
+    )
+    monkeypatch.setattr(
+        msal.PublicClientApplication,
+        "initiate_device_flow",
+        lambda self, **kw: {"error_description": "temporarily throttled"},
+    )
+    body = client.post("/api/calendar/auth/device").json()
+    # Still connected (the existing calendar is fine) but the add attempt failed
+    # loudly instead of looking like a no-op.
+    assert body["state"] == "connected"
+    assert body["error"] == "temporarily throttled"
+
+
 def test_complete_persists_token_and_clears_error(tmp_path):
     personal_auth._pending = {
         "user_code": "X",

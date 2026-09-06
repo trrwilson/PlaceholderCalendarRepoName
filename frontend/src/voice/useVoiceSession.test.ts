@@ -18,11 +18,12 @@ const h = vi.hoisted(() => {
     VoiceSessionError,
     state: {
       emit: (() => {}) as (event: VoiceEvent) => void,
+      level: (() => {}) as (rms: number) => void,
       connectBehavior: (() => Promise.resolve()) as () => Promise<void>,
       micStart: (() => Promise.resolve()) as () => Promise<void>,
     },
     spies: {
-      endAudioStream: vi.fn(),
+      endActivity: vi.fn(),
       close: vi.fn(),
       respondTool: vi.fn(),
     },
@@ -37,7 +38,8 @@ vi.mock('./session', () => ({
       h.state.emit = onEvent
     }
     connect = () => h.state.connectBehavior()
-    endAudioStream = h.spies.endAudioStream
+    startActivity = vi.fn()
+    endActivity = h.spies.endActivity
     sendAudio = vi.fn()
     respondTool = h.spies.respondTool
     close = h.spies.close
@@ -47,14 +49,30 @@ vi.mock('./session', () => ({
 vi.mock('./audio', () => ({
   MicCapture: class {
     activate = vi.fn()
-    start = () => h.state.micStart()
+    start = (_chunk: (b: string) => void, onLevel?: (rms: number) => void) => {
+      if (onLevel) h.state.level = onLevel
+      return h.state.micStart()
+    }
     stop = vi.fn()
   },
   AudioSink: class {
     activate = vi.fn()
-    enqueue = vi.fn()
+    state = vi.fn(() => 'running')
+    pending = vi.fn(() => false)
+    playTestTone = vi.fn()
+    enqueue = vi.fn(() => true)
     flush = vi.fn()
     close = vi.fn()
+  },
+}))
+
+vi.mock('./instrument', () => ({
+  prewarmVoice: () => Promise.resolve(),
+  VoiceTimeline: class {
+    mark = vi.fn()
+    elapsed = vi.fn(() => 0)
+    summary = vi.fn(() => '')
+    entries = []
   },
 }))
 
@@ -79,7 +97,7 @@ describe('useVoiceSession', () => {
 
     act(() => result.current.stopTurn())
     expect(result.current.status).toBe('thinking')
-    expect(h.spies.endAudioStream).toHaveBeenCalled()
+    expect(h.spies.endActivity).toHaveBeenCalled()
 
     act(() => h.state.emit({ type: 'assistant-transcript', text: 'Here is Friday' }))
     act(() => h.state.emit({ type: 'turn-complete' }))
@@ -102,22 +120,85 @@ describe('useVoiceSession', () => {
 
     expect(actions.showView).toHaveBeenCalledWith('week', null)
     await waitFor(() =>
-      expect(h.spies.respondTool).toHaveBeenCalledWith('1', 'show_view', expect.objectContaining({ ok: true })),
+      expect(h.spies.respondTool).toHaveBeenCalledWith(
+        '1',
+        'show_view',
+        { output: expect.objectContaining({ ok: true }) },
+      ),
     )
   })
 
-  it('accumulates incremental user transcription into one utterance', async () => {
+  it('concatenates settled transcription fragments verbatim and shows an interim preview first', async () => {
     const { result } = renderHook(() => useVoiceSession(options))
     await act(async () => {
       await result.current.startTurn()
     })
 
-    act(() => h.state.emit({ type: 'user-transcript', text: 'what', final: false }))
-    act(() => h.state.emit({ type: 'user-transcript', text: "'s", final: false }))
-    act(() => h.state.emit({ type: 'user-transcript', text: 'tomorrow', final: false }))
+    // Low-latency preview before anything has settled.
+    act(() => h.state.emit({ type: 'user-transcript', text: "what's tomo", final: false }))
+    expect(result.current.transcript.user).toBe("what's tomo")
+
+    // Settled fragments arrive with their own spacing and are joined as-is —
+    // no trimming, no separator guessing ("What 's to morrow?" was the bug).
+    act(() => h.state.emit({ type: 'user-transcript', text: "what's", final: true }))
+    act(() => h.state.emit({ type: 'user-transcript', text: ' tomorrow', final: true }))
     act(() => h.state.emit({ type: 'user-transcript', text: '?', final: true }))
 
     expect(result.current.transcript.user).toBe("what's tomorrow?")
+
+    // Once settled text exists, a late interim fragment does not clobber it.
+    act(() => h.state.emit({ type: 'user-transcript', text: 'stale', final: false }))
+    expect(result.current.transcript.user).toBe("what's tomorrow?")
+  })
+
+  it('ends the turn on its own after speech is followed by a pause', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+      expect(result.current.status).toBe('listening')
+
+      // Speak for a bit...
+      for (let i = 0; i < 8; i += 1) {
+        act(() => h.state.level(0.05))
+        vi.advanceTimersByTime(100)
+      }
+      expect(result.current.status).toBe('listening')
+
+      // ...then go quiet past the hold window.
+      for (let i = 0; i < 12; i += 1) {
+        act(() => h.state.level(0.001))
+        vi.advanceTimersByTime(100)
+      }
+
+      expect(result.current.status).toBe('thinking')
+      expect(h.spies.endActivity).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives up instead of hanging when the model never responds after the turn', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+      act(() => result.current.stopTurn())
+      expect(result.current.status).toBe('thinking')
+
+      await act(async () => {
+        vi.advanceTimersByTime(20_000)
+      })
+
+      expect(result.current.status).toBe('error')
+      expect(result.current.error?.kind).toBe('session')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('goes unavailable with kind "disabled" when the backend says voice is off', async () => {

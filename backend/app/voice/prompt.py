@@ -5,37 +5,41 @@ from __future__ import annotations
 from datetime import datetime
 
 
-def _stamp(now: datetime) -> str:
+def _stamp(now: datetime, tz_label: str | None) -> str:
     """Human date/time without platform-specific strftime padding directives."""
     hour = now.hour % 12 or 12
-    return f"{now:%A, %B} {now.day}, {now.year} at {hour}:{now:%M %p}"
+    base = f"{now:%A, %B} {now.day}, {now.year} at {hour}:{now:%M %p}"
+    zone = tz_label or now.tzname()
+    if zone:
+        base = f"{base} ({zone})"
+    return base
 
 
-def build_system_instruction(now: datetime, calendar_names: list[str]) -> str:
+def build_system_instruction(
+    now: datetime, calendar_names: list[str], tz_label: str | None = None
+) -> str:
     calendars = ", ".join(calendar_names) if calendar_names else "the household calendars"
     return "\n".join(
         [
-            "You are the voice of Mission Control, a wall-mounted household calendar "
-            "display in a family's kitchen. People speak to you in passing.",
+            "You are the voice of Mission Control, a household calendar display in a "
+            "family's kitchen. People ask you about the schedule in passing.",
             "",
-            f"Right now it is {_stamp(now)} (the household's local time).",
-            f"The household calendars are: {calendars}.",
+            f"It is now {_stamp(now, tz_label)}. That is the local wall-clock time; use "
+            "it as-is and never shift it to UTC. Late-evening is still today.",
+            f"Calendars: {calendars}.",
             "",
-            "Always respond in English.",
+            "Answer in English, out loud, in one or two sentences — give the real answer "
+            "(how many things, and the notable ones with times), not just 'here is the "
+            "agenda'.",
             "",
-            "The display is your main output surface, not your voice. When someone asks "
-            "to see something, call a tool to change what is on screen, then say only a "
-            "short spoken confirmation (for example 'Here's Friday' or 'Nothing clashes "
-            "tomorrow'). Keep spoken replies to one sentence.",
+            "Also move the display: for today or tonight call show_view with view 'home'; "
+            "for another single day call show_view with view 'week' and that day's date; "
+            "for a month use view 'month'. Look up facts first with get_agenda, "
+            "get_events, or check_conflicts. Open one event with highlight_event. Use as "
+            "few tool calls as possible.",
             "",
-            "Use get_events, get_agenda, or check_conflicts to look things up before "
-            "answering questions about the schedule. Use show_view, focus_date, and "
-            "highlight_event to move the display. Prefer showing over reading long lists "
-            "aloud.",
-            "",
-            "You can only read the calendar. You cannot add, change, or delete events "
-            "yet; if asked, say so briefly.",
-            "Resolve relative dates ('today', 'this weekend', 'next Tuesday') yourself "
-            "from the current date above and pass concrete YYYY-MM-DD dates to tools.",
+            "You can only read the calendar — if asked to add or change something, say "
+            "you can't yet. Work out relative dates ('tomorrow', 'this weekend') from the "
+            "time above and pass YYYY-MM-DD to tools.",
         ]
     )

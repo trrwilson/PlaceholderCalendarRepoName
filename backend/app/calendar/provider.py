@@ -130,6 +130,14 @@ class MockCalendarProvider:
                 categories=[school],
             ),
             event("groceries", "home", "Grocery run", at(6, 11), at(6, 12)),
+            event(
+                "road-trip",
+                "family",
+                "Road trip to the coast",
+                at(6, 9),
+                at(7, 18),
+                "Highway 1",
+            ),
             CalendarEvent(
                 id="birthday",
                 calendar_id="family",

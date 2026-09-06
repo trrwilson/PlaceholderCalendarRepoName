@@ -82,9 +82,16 @@ class VoiceTokenRequest(BaseModel):
     ``surface`` identifies the requesting screen. It is unused today (one kiosk),
     but is accepted now so a future multi-screen setup can route a spoken command
     to a specific display without an API change.
+
+    The backend may run in UTC, so the assistant's "today" is stamped from the
+    kiosk's own clock: ``client_time`` is the local wall-clock time as an ISO
+    string without offset (e.g. ``2026-09-05T23:30:00``) and ``timezone`` is the
+    IANA name (e.g. ``America/Los_Angeles``) used only as a label.
     """
 
     surface: str | None = None
+    timezone: str | None = None
+    client_time: str | None = None
 
 
 class VoiceToken(BaseModel):

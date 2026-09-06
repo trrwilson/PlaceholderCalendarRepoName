@@ -120,20 +120,33 @@ async def voice_token(
     calendar_provider: CalendarProvider = Depends(get_provider),
 ) -> VoiceToken:
     """Mint a constrained ephemeral token for the kiosk's Gemini Live session."""
+    from app.voice.trace import note, timed
+
     _require_local(request)
+    note("token request received")
     today = date.today()
-    calendar_names = [
-        calendar.name
-        for calendar in calendar_provider.snapshot(
-            CalendarRange(starts_on=today, ends_on=today)
-        ).calendars
-    ]
+    # NOTE: this is a synchronous provider call on the token path; for the
+    # Outlook provider it is a blocking Graph request and shows up as dead time
+    # in the kiosk's `connecting` phase. It only supplies calendar names for the
+    # system prompt — a future change should cache these.
+    with timed("calendar snapshot (for prompt calendar names)"):
+        calendar_names = [
+            calendar.name
+            for calendar in calendar_provider.snapshot(
+                CalendarRange(starts_on=today, ends_on=today)
+            ).calendars
+        ]
     try:
-        return await mint_token(
-            get_settings(),
-            calendar_names=calendar_names,
-            surface=body.surface if body else None,
-        )
+        with timed("mint ephemeral token (Google auth_tokens.create)"):
+            token = await mint_token(
+                get_settings(),
+                calendar_names=calendar_names,
+                surface=body.surface if body else None,
+                timezone=body.timezone if body else None,
+                client_time=body.client_time if body else None,
+            )
+        note("token minted and returned")
+        return token
     except VoiceUnavailable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

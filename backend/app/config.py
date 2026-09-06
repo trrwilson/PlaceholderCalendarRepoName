@@ -67,8 +67,12 @@ class Settings(BaseSettings):
         ),
     )
     voice_enabled: bool = False
-    # Verify against current Google docs; native-audio dialog model id.
-    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-09-2025"
+    # Current native-audio Live model that the v1alpha ephemeral-token path
+    # accepts (it is the model in Google's own ephemeral-token JS example).
+    # `gemini-3.1-flash-live-preview` is newer but needs v1beta, which the
+    # ephemeral-token flow does not support. The older `...-09-2025` connected
+    # but went silent + 1011'd after a tool call.
+    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
     # Any prebuilt Gemini voice name (e.g. Zephyr, Puck, Charon, Kore, Aoede).
     gemini_voice: str = "Zephyr"
     # Optional BCP-47 code. Left blank for native-audio (it auto-detects and the

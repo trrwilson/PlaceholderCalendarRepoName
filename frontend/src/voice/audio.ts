@@ -20,14 +20,27 @@ function downsample(samples: Float32Array, fromRate: number, toRate: number): Fl
   if (fromRate <= toRate) return samples
   const ratio = fromRate / toRate
   const out = new Float32Array(Math.floor(samples.length / ratio))
-  for (let i = 0; i < out.length; i += 1) out[i] = samples[Math.floor(i * ratio)]
+  // Average every source sample that maps to an output sample rather than
+  // picking one. This is a cheap low-pass: plain decimation aliases high
+  // frequencies down into the speech band, which degrades both the transcript
+  // and the server-side voice-activity detector.
+  for (let i = 0; i < out.length; i += 1) {
+    const start = Math.floor(i * ratio)
+    const end = Math.min(samples.length, Math.floor((i + 1) * ratio))
+    let sum = 0
+    for (let j = start; j < end; j += 1) sum += samples[j]
+    out[i] = end > start ? sum / (end - start) : samples[start] ?? 0
+  }
   return out
 }
 
 function pcm16Base64ToFloat(data: string): Float32Array {
   const binary = atob(data)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+  // Drop a trailing odd byte rather than letting `new Int16Array` throw a
+  // RangeError on a chunk boundary — one lost sample is inaudible.
+  const usableBytes = binary.length - (binary.length % 2)
+  const bytes = new Uint8Array(usableBytes)
+  for (let i = 0; i < usableBytes; i += 1) bytes[i] = binary.charCodeAt(i)
   const pcm = new Int16Array(bytes.buffer)
   const out = new Float32Array(pcm.length)
   for (let i = 0; i < pcm.length; i += 1) out[i] = pcm[i] / 0x8000
@@ -49,7 +62,10 @@ export class MicCapture {
     })
   }
 
-  async start(onChunk: (base64: string) => void): Promise<void> {
+  async start(
+    onChunk: (base64: string) => void,
+    onLevel?: (rms: number) => void,
+  ): Promise<void> {
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     })
@@ -60,8 +76,18 @@ export class MicCapture {
     const source = context.createMediaStreamSource(this.stream)
     this.node = new AudioWorkletNode(context, 'pcm-capture')
     const rate = context.sampleRate
+    let chunks = 0
+    console.info('[voice] mic capture context', { state: context.state, sampleRate: rate })
     this.node.port.onmessage = (event: MessageEvent<Float32Array>) => {
-      onChunk(floatToPcm16Base64(downsample(event.data, rate, INPUT_RATE)))
+      chunks += 1
+      if (chunks === 1) console.info('[voice] first mic worklet batch', { nativeSamples: event.data.length })
+      const down = downsample(event.data, rate, INPUT_RATE)
+      onChunk(floatToPcm16Base64(down))
+      if (onLevel) {
+        let sum = 0
+        for (let i = 0; i < down.length; i += 1) sum += down[i] * down[i]
+        onLevel(Math.sqrt(sum / down.length))
+      }
     }
     source.connect(this.node)
     // The processor emits no audio, so this is silent; connecting it keeps the
@@ -85,9 +111,15 @@ export class MicCapture {
 /** Plays a queue of base64 PCM16 chunks gaplessly; can be flushed on interruption. */
 export class AudioSink {
   private context: AudioContext | null = null
+  private gain: GainNode | null = null
   private cursor = 0
   private sources = new Set<AudioBufferSourceNode>()
+  private played = 0
+  private decodedSeconds = 0
   private readonly onDrained: () => void
+  // A small lead so the first buffer is not scheduled at exactly currentTime
+  // (which some browsers drop or click on).
+  private static readonly LEAD_SECONDS = 0.12
 
   constructor(onDrained: () => void) {
     this.onDrained = onDrained
@@ -97,53 +129,130 @@ export class AudioSink {
    * Create and resume the context while handling the Ask tap. Creating it only
    * when response audio arrives is too late for browsers' user-gesture policy
    * and leaves the context suspended (and therefore silent).
+   *
+   * The context runs at the hardware rate (no `sampleRate` hint): passing an
+   * explicit rate throws on some browsers, and the 24 kHz output buffers are
+   * resampled to the device rate on playback anyway.
    */
-activate(): void {
-  if (!this.context) {
-    this.context = new AudioContext({ sampleRate: OUTPUT_RATE })
-
-    console.debug('[voice] speaker context created', {
-      state: this.context.state,
-      sampleRate: this.context.sampleRate,
-    })
-
-    this.context.addEventListener('statechange', () => {
-      console.debug('[voice] speaker context state:', this.context?.state)
-    })
+  activate(): void {
+    if (!this.context) {
+      const Ctor: typeof AudioContext =
+        window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      this.context = new Ctor()
+      this.gain = this.context.createGain()
+      this.gain.gain.value = 1
+      this.gain.connect(this.context.destination)
+      console.info('[voice] speaker context created', {
+        state: this.context.state,
+        sampleRate: this.context.sampleRate,
+        destinationChannels: this.context.destination.channelCount,
+        maxChannels: this.context.destination.maxChannelCount,
+      })
+      this.context.addEventListener('statechange', () => {
+        console.info('[voice] speaker context state ->', this.context?.state)
+      })
+    }
+    if (this.context.state === 'suspended') {
+      void this.context
+        .resume()
+        .then(() => console.info('[voice] speaker context resumed ->', this.context?.state))
+        .catch((error) => console.warn('[voice] speaker context could not resume', error))
+    }
   }
 
-  void this.context.resume().then(() => {
-    console.debug('[voice] speaker context resumed', {
-      state: this.context?.state,
-      sampleRate: this.context?.sampleRate,
-    })
-  }).catch((error) => {
-    console.warn('[voice] speaker audio context could not resume', error)
-  })
-}
+  /** Current AudioContext state, for instrumentation. `'closed'` when there is none. */
+  state(): string {
+    return this.context?.state ?? 'closed'
+  }
 
-  enqueue(base64: string): void {
+  /** True while buffers are still scheduled or playing. */
+  pending(): boolean {
+    return this.sources.size > 0
+  }
+
+  /**
+   * Play a 0.4 s test tone through the same graph as response audio. Enabled
+   * with `localStorage['voice.testtone'] = '1'`; lets us confirm the output
+   * path independently of whether Gemini's audio is arriving/decoding.
+   */
+  playTestTone(): void {
     this.activate()
     const context = this.context
-    if (!context) return
-    const samples = pcm16Base64ToFloat(base64)
-    if (!samples.length) return
+    if (!context || !this.gain) return
+    const osc = context.createOscillator()
+    osc.frequency.value = 440
+    const g = context.createGain()
+    g.gain.value = 0.15
+    osc.connect(g).connect(this.gain)
+    const t = context.currentTime + 0.05
+    osc.start(t)
+    osc.stop(t + 0.4)
+    console.info('[voice] test tone scheduled', { state: context.state, at: t })
+  }
+
+  /** Returns true when a buffer was actually scheduled for playback. */
+  enqueue(base64: string): boolean {
+    this.activate()
+    const context = this.context
+    if (!context || !this.gain) return false
+    let samples: Float32Array
+    try {
+      samples = pcm16Base64ToFloat(base64)
+    } catch (error) {
+      console.warn('[voice] could not decode a response-audio chunk', error)
+      return false
+    }
+    if (!samples.length) return false
     const buffer = context.createBuffer(1, samples.length, OUTPUT_RATE)
     buffer.copyToChannel(samples, 0)
     const source = context.createBufferSource()
     source.buffer = buffer
-    source.connect(context.destination)
-    const startAt = Math.max(context.currentTime, this.cursor)
+    source.connect(this.gain)
+    const now = context.currentTime
+    if (this.cursor && this.cursor < now) {
+      console.warn('[voice] playback underrun — audio arrived slower than real time', {
+        behindMs: Math.round((now - this.cursor) * 1000),
+      })
+    }
+    const startAt = Math.max(now + AudioSink.LEAD_SECONDS, this.cursor)
     source.start(startAt)
     this.cursor = startAt + buffer.duration
+    this.decodedSeconds += buffer.duration
     this.sources.add(source)
+    this.played += 1
+    if (this.played === 1) {
+      console.info('[voice] first response-audio buffer scheduled', {
+        state: context.state,
+        gain: this.gain.gain.value,
+        startInMs: Math.round((startAt - now) * 1000),
+        chunkMs: Math.round(buffer.duration * 1000),
+      })
+    }
+    if (this.played % 25 === 0) {
+      console.info('[voice] audio still playing', {
+        chunks: this.played,
+        decodedSec: Math.round(this.decodedSeconds * 10) / 10,
+        aheadMs: Math.round((this.cursor - now) * 1000),
+        state: context.state,
+      })
+    }
     source.onended = () => {
       this.sources.delete(source)
-      if (!this.sources.size) this.onDrained()
+      if (!this.sources.size) {
+        console.info('[voice] audio sink drained', {
+          chunks: this.played,
+          decodedSec: Math.round(this.decodedSeconds * 10) / 10,
+        })
+        this.onDrained()
+      }
     }
+    return true
   }
 
   flush(): void {
+    if (this.sources.size) {
+      console.info('[voice] audio sink flushed', { stillScheduled: this.sources.size })
+    }
     this.sources.forEach((source) => {
       try {
         source.stop()
@@ -153,11 +262,14 @@ activate(): void {
     })
     this.sources.clear()
     this.cursor = 0
+    this.played = 0
+    this.decodedSeconds = 0
   }
 
   close(): void {
     this.flush()
     void this.context?.close()
     this.context = null
+    this.gain = null
   }
 }

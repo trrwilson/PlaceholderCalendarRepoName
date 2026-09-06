@@ -79,7 +79,7 @@ def test_token_minted_with_locked_constraints(
     assert response.status_code == 200
     body = response.json()
     assert body["token"] == "auth_tokens/opaque"
-    assert body["model"] == "gemini-2.5-flash-native-audio-preview-09-2025"
+    assert body["model"] == "gemini-2.5-flash-native-audio-preview-12-2025"
     assert body["surface"] == "kitchen"
 
     config = recorder["create"].await_args.kwargs["config"]
@@ -98,5 +98,34 @@ def test_token_minted_with_locked_constraints(
     }
     assert "Family" in str(constraint.config.system_instruction)
     activity_detection = constraint.config.realtime_input_config.automatic_activity_detection
-    assert activity_detection.disabled is False
-    assert activity_detection.silence_duration_ms == 650
+    # Manual activity detection — the kiosk brackets each turn itself.
+    assert activity_detection.disabled is True
+    assert constraint.config.thinking_config.thinking_budget == 0
+
+
+def test_token_stamps_the_kiosk_clock_not_the_server_clock(
+    client: TestClient, voice_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder: dict = {}
+    monkeypatch.setattr(tokens, "_build_client", _fake_client_factory(recorder))
+
+    # The kiosk says it is late Saturday; the stamp must reflect that even though
+    # the test host's own clock is something else entirely.
+    response = client.post(
+        "/api/voice/token",
+        json={
+            "surface": "kitchen",
+            "timezone": "America/Los_Angeles",
+            "client_time": "2026-09-05T23:30:00",
+        },
+    )
+    assert response.status_code == 200
+
+    instruction = str(
+        recorder["create"]
+        .await_args.kwargs["config"]
+        .live_connect_constraints.config.system_instruction
+    )
+    assert "Saturday, September 5, 2026 at 11:30 PM" in instruction
+    assert "America/Los_Angeles" in instruction
+    assert "never shift it to UTC" in instruction

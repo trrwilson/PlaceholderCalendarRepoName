@@ -306,6 +306,159 @@ Frontend (`src/voice/`):
    `mint_token` (currently unused) so a future design can route by screen without an API
    change; tool effects are applied to local view state for now.
 
+## Diagnostics (2026-09-05)
+
+Push-to-talk latency / behaviour issues were investigated and partly fixed:
+
+- **Transcription no longer re-spaces fragments.** `useVoiceSession` was trimming
+  each Live transcription fragment and re-inserting separators by heuristic,
+  which turned "What's tomorrow?" into "What 's to morrow?". Gemini streams
+  VERBATIM fragments that already carry whitespace; they are now concatenated
+  as-is. `inputTranscription` is the settled text; `interimInputTranscription`
+  is shown only as a preview until settled text arrives.
+- **Response audio is more robust.** The playback `AudioContext` no longer
+  forces a 24 kHz rate (which throws on some browsers); odd-length PCM chunks no
+  longer throw; a decode failure can't wedge the state machine in `speaking`;
+  and a spurious `interrupted` outside `listening` no longer flushes the reply.
+  Mic down-sampling now averages instead of decimating (less aliasing → better
+  transcript + server VAD).
+- **Instrumentation.** `frontend/src/voice/instrument.ts` (`VoiceTimeline`)
+  stamps every turn milestone (`tap → token → sdk → live-open → mic-started →
+  input-transcript-first → stop-tap → tool-call → tool-response →
+  audio-first-chunk → turn-complete → turn-finished`) to the console; disable
+  with `localStorage['voice.trace'] = 'off'`. `session.ts` also logs
+  `setup-complete`, `usage`, `generation-complete`, `turn-complete-reason`,
+  `model-text-part` / `model-other-part` / `unhandled-message`,
+  `tool-call-cancelled` and `live-close` (with reason/code), so a turn that
+  produces no audio can be diagnosed. `prewarmVoice()` pulls the lazy SDK chunk
+  + worklet into cache on mount. Backend `app/voice/trace.py` logs the
+  token-endpoint steps; the calendar-snapshot call on the token path is a known
+  synchronous Graph request that should be cached.
+- **Response watchdog.** If the model makes no progress (audio, text, or a tool
+  call) for 20 s after the user's turn, the session is torn down with a
+  retryable error instead of hanging. This is a guard, not a fix.
+
+### Root cause of the no-response failure (2026-09-05)
+
+1. **Stale model.** The default `gemini-2.5-flash-native-audio-preview-09-2025`
+   connected, transcribed, and made a tool call, then produced **no output at
+   all** after the tool response (no audio / output-transcript / text part) and
+   the socket closed after ~64 s with `code 1011 "Internal error encountered."`
+   Default is now `gemini-2.5-flash-native-audio-preview-12-2025` — the current
+   native-audio model, and the one in Google's ephemeral-token example.
+2. **API version ↔ model coupling.** Ephemeral tokens work **only on `v1alpha`**
+   (ai.google.dev/gemini-api/docs/ephemeral-tokens: "only works for the live
+   API, and only with the v1alpha version"; the JS SDK warns the same at
+   runtime). A detour to `v1beta` + `gemini-3.1-flash-live-preview` (which needs
+   v1beta) gave `code 1008 "... not found for API version ..."`. So both sides
+   stay on `v1alpha` and the model must be a native-audio *preview* id.
+   `gemini-3.1-flash-live-preview` is unavailable to this flow until ephemeral
+   tokens support v1beta.
+3. **Tool response shape.** Now `{ output: <result> }` / `{ error: <message> }`
+   per Gemini's `FunctionResponse` contract (was the raw dispatcher object).
+
+⚠️ The env var overrides the default — if `backend/.env` still has
+`MISSION_CONTROL_GEMINI_LIVE_MODEL=gemini-live-2.5-flash-preview` (a wrong id
+tried mid-debugging), delete that line.
+
+### Second live run (2026-09-05) — model works E2E, three new issues
+
+With `...-12-2025` the whole turn completed (75 audio chunks / 245 KB arrived,
+scheduled into a running context) but: (1) **17 s** from first mic chunk to
+first transcript, (2) the overlay rendered pages of the model's **thinking
+text**, then a rapid final append, (3) still no audible speech. Fixes:
+
+- **Thinking.** `...-12-2025` is a thinking model and its reasoning streams as
+  `modelTurn` **text parts**. `session.ts` no longer renders text parts (logs
+  size only — the spoken reply is `outputTranscription`). Backend now sets
+  `thinking_config = {thinking_budget: 0, include_thoughts: false}` — the ~10 s
+  of inter-tool reasoning was pure latency for a look-up assistant.
+- **Endpointing.** The user does not tap Stop, so automatic VAD must end the
+  turn; default sensitivity took 17 s. Now `START/END_SENSITIVITY_HIGH`,
+  `prefix_padding_ms: 300`, `silence_duration_ms: 700`.
+- **Audio path.** `AudioSink` now routes through a `GainNode` (logs channel
+  counts), schedules with a 120 ms lead, logs every 25th chunk + drain + flush,
+  and — key — a `closing` socket event no longer tears the sink down while
+  buffers are still playing (it marks the turn done and lets it drain, with a
+  15 s safety net). A **test tone** (`localStorage['voice.testtone'] = '1'`)
+  plays a 440 Hz beep on connect through the same graph — if that is silent too,
+  the problem is the kiosk's audio output/route, not the code.
+
+### Third live run (2026-09-05) — audio confirmed, latency still unusable
+
+Audio was a **system-wide** output problem on the kiosk; once fixed, the reply
+(and the test tone) play fine. But the turn took ~1 min: ~20 s "Listening",
+transcript dumped all at once, ~10 s more before audio, and `show_view` put
+nothing useful on screen. Fixes:
+
+- **Client-side end-of-speech.** Service VAD still would not endpoint the turn
+  (the `automatic_activity_detection` constraint may not be honoured through the
+  ephemeral-token path). `useVoiceSession` now watches the mic RMS: once it has
+  heard speech (`SPEECH_RMS 0.01`) and then ~1 s below it, it ends the turn
+  itself; hard cap `MAX_LISTEN_MS 15 s`. Server VAD stays on as a backstop.
+  `[voice] mic level` logs the RMS each second so the threshold can be tuned.
+- **Thinking, again.** `thinking_config` was added but the run predated it —
+  keep it (`thinking_budget 0`).
+- **`show_view` was useless for "tomorrow".** The model called
+  `show_view('home')`, and Home only shows *today*. `prompt.py` now tells it to
+  call `show_view('week', <that date>)` for any day/date question so the day is
+  actually on screen, and to keep tool calls to the minimum.
+- **Listening cue** promoted to default (`playTestTone` on entering `listening`);
+  off with `localStorage['voice.cue'] = 'off'`. Placeholder tone for now.
+
+### Fourth live run (2026-09-05) — 8 s turn, two content bugs
+
+Turn time down to ~8 s (client endpoint fired at 4.4 s, transcript 37 ms later,
+audio 6.7 s). Remaining:
+
+- **Timezone.** Backend runs in UTC; `datetime.now()` made the agent think it
+  was already Sunday at 11:30 pm Saturday Pacific. The kiosk now sends
+  `client_time` (local wall clock, no offset) + `timezone` (IANA label) with the
+  token request; `prompt.py` stamps from that and says "do not convert to UTC".
+  No server tz database needed (this Windows box has no `tzdata`).
+- **"What's today" was useless.** The prompt (my earlier edit) forced
+  `show_view('week', date)` for every day question — but Home is the right view
+  for *today*, and the spoken reply was a content-free "here's the agenda".
+  `prompt.py` now: today/tonight/now -> Home; other single day -> Week; and the
+  agent must speak a brief real answer (count + notable items), not just a
+  pointer to the screen. This walks back the strict "confirmation only" rule
+  from the original plan — a voice user in passing wants to *hear* the answer.
+
+### Fifth live run (2026-09-05) — model produced nothing, watchdog fired
+
+Identical timeline up to `audio-stream-end` at 4.7 s, then **nothing** — no
+input transcript, no tool call, no audio — until the 20 s watchdog. Clean 1000
+close (server was fine; the model just didn't answer). Same "silent model"
+shape as the first 1011. Mitigations:
+
+- **Stray audio after `audioStreamEnd`.** The mic `onChunk` callback could fire
+  once more after the turn ended and send a late audio frame, which invalidates
+  the "end" and makes the service wait forever. It now checks the status ref
+  (flipped synchronously in `endUserTurn`) and drops anything after `listening`.
+- **Prompt simplified.** The bulleted decision-tree / pseudo-code version was
+  replaced with short prose — less for a native-audio model to trip on.
+- **Watchdog 20 s → 12 s** so a stall fails fast instead of a long dead wait.
+- **`mic level` logs peak RMS** (not the instantaneous value) vs. the threshold.
+
+### Sixth run + the fix: manual activity detection (2026-09-05)
+
+The silent-turn failure was **consistent, not flaky**: 3 of 4 runs, the model
+produced nothing after `audioStreamEnd` — no input transcript, no reply, clean
+1000 close. RMS detection itself was working well (`peakRms 0.066` on speech vs
+`0.001` quiet, threshold `0.01`).
+
+Root cause: **automatic service VAD + a client `audioStreamEnd` is not a
+reliable end-of-turn signal here.** Switched to **manual activity detection**:
+
+- Backend: `automatic_activity_detection.disabled = true`.
+- `session.ts`: `startActivity()` (`sendRealtimeInput({activityStart:{}})`)
+  before the first mic frame; `endActivity()` (`{activityEnd:{}}`) when the
+  RMS silence detector fires. `audioStreamEnd` / `endAudioStream()` removed.
+- The kiosk now fully owns the turn boundary. `MAX_LISTEN_MS 15 s` still caps it.
+
+If the model still stalls after this, the fallbacks are a backend WS proxy (so
+we own the whole lifecycle) or text + a separate TTS call.
+
 ## Follow-ups / not done
 
 - Confirm the exact native-audio Live model id and region availability against current
