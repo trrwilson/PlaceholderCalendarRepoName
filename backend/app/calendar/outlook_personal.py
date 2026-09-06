@@ -26,6 +26,7 @@ from app.calendar.graph import (
     _LOCAL_TZ,
     _PAGE_SIZE,
     _SELECT_FIELDS,
+    CategoryColorCache,
     _local_tz_name,
     _map_event,
 )
@@ -136,6 +137,7 @@ class PersonalOutlookCalendarProvider:
     ) -> None:
         self._settings = settings
         self._client = client or httpx.Client(timeout=30.0)
+        self._category_colors = CategoryColorCache(self._client)
         self._app: msal.PublicClientApplication | None = None
         if token_provider is not None:
             self._token_provider = token_provider
@@ -202,7 +204,11 @@ class PersonalOutlookCalendarProvider:
         )
 
         email = self._account_email()
-        events = [_map_event(raw, email) for raw in self._calendar_view(start, end)]
+        raw_events = self._calendar_view(start, end)
+        colors: dict[str, str] = {}
+        if any(raw.get("categories") for raw in raw_events):
+            colors = self._category_colors.get(f"{_GRAPH_BASE}/me", self._headers(), "me")
+        events = [_map_event(raw, email, colors) for raw in raw_events]
         events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
 
         calendar = HouseholdCalendar(

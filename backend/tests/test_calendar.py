@@ -43,7 +43,9 @@ def test_mock_events_preserve_category_classification_separately_from_calendar_i
     assert [category.name for category in events["swim"].categories] == ["Sports"]
     assert {category.name for category in events["soccer"].categories} == {"Sports", "School"}
     assert events["swim"].calendar_id == "jordan"
-    assert events["swim"].categories[0].color != events["swim"].calendar_id
+    category_color = events["swim"].categories[0].color
+    assert category_color != events["swim"].calendar_id
+    assert category_color.startswith("#") and len(category_color) == 7
 
 
 def test_event_rejects_invalid_time_order() -> None:

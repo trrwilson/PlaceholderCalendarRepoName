@@ -10,6 +10,7 @@ from app.config import Settings
 from app.models import CalendarEvent, CalendarRange, CalendarSnapshot
 
 CALENDAR_VIEW = "https://graph.microsoft.com/v1.0/me/calendarView"
+MASTER_CATEGORIES = "https://graph.microsoft.com/v1.0/me/outlook/masterCategories"
 
 
 def make_settings(tmp_path, **overrides: object) -> Settings:
@@ -104,6 +105,28 @@ def test_maps_me_calendar_view_to_snapshot(tmp_path) -> None:
     expected = datetime(2026, 9, 5, 9, 0, tzinfo=UTC).astimezone(_LOCAL_TZ).replace(tzinfo=None)
     assert event.starts_at == expected
     assert event.starts_at.tzinfo is None
+
+
+@respx.mock
+def test_resolves_category_colors_from_master_categories(tmp_path) -> None:
+    respx.get(CALENDAR_VIEW).mock(
+        return_value=httpx.Response(200, json={"value": [timed_event(categories=["Family"])]})
+    )
+    master = respx.get(MASTER_CATEGORIES).mock(
+        return_value=httpx.Response(
+            200,
+            json={"value": [{"id": "Family", "displayName": "Family", "color": "preset5"}]},
+        )
+    )
+    provider = build_provider(tmp_path)
+
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    (event,) = snapshot.events
+    assert event.categories[0].color == "#16a085"
+    assert master.called
 
 
 @respx.mock

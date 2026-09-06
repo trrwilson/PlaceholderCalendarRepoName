@@ -15,17 +15,20 @@ clone.
 - The browser client is disposable and mostly stateless: it renders provider-neutral
   calendar snapshots and owns only view state (current mode, focused date, filters).
 - The server owns everything durable: provider access, OAuth tokens, credentials,
-  household state, and any future AI/audio/video processing.
+  household state, and AI/audio/video processing — with one deliberate exception, the
+  voice assistant's Gemini Live session, which the browser holds directly using a
+  short-lived backend-minted token (see **Voice assistant** below).
 - The default calendar provider is an in-memory mock. A configuration-driven Microsoft
   Graph (Outlook) provider also exists (`MISSION_CONTROL_CALENDAR_PROVIDER=graph`),
   app-only / read-focused, with no in-app account management. No persistence, no auth
   for the frontend yet.
 
-Long-term direction (do **not** build until explicitly asked): a Google Calendar
-provider, Home Assistant, microphone/voice, speech-to-text and text-to-speech, an AI
-agent that calls explicit application tools, and optional local media processing.
-`.prompts/` holds the dated prompt history that produced the repo and is useful
-background.
+An initial voice assistant now exists: tap-to-talk, Gemini Live (native audio),
+read-only — it answers schedule questions and drives the dashboard. Long-term
+direction (do **not** build until explicitly asked): a Google Calendar provider,
+Home Assistant, wake-word activation, voice-driven calendar writes, and optional
+local media processing. `.prompts/` holds the dated prompt history that produced the
+repo and is useful background.
 
 ## Repository layout
 
@@ -40,6 +43,7 @@ backend/                FastAPI service (Python 3.12+)
   app/calendar/outlook_personal.py  PersonalOutlookCalendarProvider (MSA, delegated/MSAL)
   app/calendar/personal_auth.py  device-code sign-in for the kiosk + CLI
   app/auth.py            `python -m app.auth {login,status,logout}` headless sign-in
+  app/voice/            mints constrained Gemini Live ephemeral tokens (tokens/tools/prompt)
   tests/                 pytest
   .env.example           documented MISSION_CONTROL_* variables
   pyproject.toml
@@ -86,15 +90,20 @@ frontend/                React 19 + TypeScript (strict) + Vite
   palette (`CalendarColor`: coral, ocean, gold, fern, violet). **Event category** is a
   restrained secondary marker. Never paint one large surface with both classifications
   competing.
-- Categories carry an optional stable id, display name, source color, and zero or more
-  values, without leaking provider SDK types into React. Names stay authoritative;
-  accessibility and contrast beat exact provider colors.
+- Categories carry a stable id, display name, and a concrete `#rrggbb` color, without
+  leaking provider SDK types into React. Names stay authoritative; accessibility and
+  contrast beat exact provider colors.
 - Calendar identity colors render through shared `.calendar-<name>` marker classes in
   `App.css` (swatches, dots, bars, event surfaces), so a new `CalendarColor` needs a
-  token plus those rules. Category colors still map to a fixed CSS class set
-  (`blue/teal/green/red/pink`); the Graph provider already clamps arbitrary Outlook
-  category names onto that set. When adding providers, keep unrecognized colors
-  degrading to a neutral marker rather than rendering nothing.
+  token plus those rules. Category color is different: the provider resolves it to a
+  hex value (`EventCategory.color`), the frontend passes that through a
+  `--category-color` custom property, and `.category-dominant` / `.category-dot` /
+  `.category-label` derive their fill (and a `color-mix` tint for event surfaces) from
+  it — no per-color CSS. The Graph/personal-Outlook providers read the mailbox's
+  `masterCategories` list and map each Outlook `presetN` swatch to hex
+  (`_PRESET_HEX` in `graph.py`); a name missing from that list, or a mailbox the
+  provider can't read categories from, degrades to the neutral `_NEUTRAL_CATEGORY_HEX`
+  marker. Keep any new provider's category colors as hex with the same neutral fallback.
 - Keep identity/category treatment consistent across Home, Week, Month, filters, and
   detail. Popovers dismiss on outside interaction, Escape, and navigation without
   swallowing intended inside clicks.
@@ -131,9 +140,38 @@ frontend/                React 19 + TypeScript (strict) + Vite
   generalized event bus. `ApplicationMessage` in `app/models.py` is the intended
   server→client envelope; wire it when the first real push exists (today the endpoint
   only sends a hello).
-- **Future voice/AI** flows through explicit application tools
-  (`get_calendar_events`, `create_calendar_event`, `show_agenda`,
-  `control_home_entity`, …). Agent code must never touch providers directly.
+
+## Voice assistant
+
+Initial voice support (see `docs/voice-support-plan.md`). Tap-to-talk, **read-only** —
+it answers schedule questions and moves the display; it cannot change the calendar.
+
+- **Direct-connect via ephemeral token.** `POST /api/voice/token` (loopback/LAN-gated,
+  409 unless `MISSION_CONTROL_VOICE_ENABLED`) calls Google's `auth_tokens.create` and
+  returns a short-lived token with the model, system instruction, tools, voice, and
+  transcription config **locked in**. The Gemini API key
+  (`GEMINI_API_KEY_MISSION_CONTROL`, aliased in `config.py`) never leaves the backend.
+  The kiosk opens the Gemini Live session itself (`frontend/src/voice/`), streaming mic
+  audio and playing the reply; `@google/genai` is lazy-loaded.
+- **One session per turn.** Simple and robust against Live session limits. A wake-word
+  front end would call the same `startTurn()` / `stopTurn()` on the hook.
+- **Classified failures + recovery.** `useVoiceSession` tags every failed turn with a
+  `VoiceError.kind` (`disabled` / `network` / `microphone` / `session` / `unknown`).
+  After 3 in a row — or an immediate `disabled` (backend 409) — `status` goes
+  `unavailable`: the Ask button reads "Voice off" and a transient `VoiceToast` names the
+  reason. `disabled` also disables the button until reload; every other kind stays
+  tappable (and the toast offers "Try again"). `VoiceOverlay` shows the retryable
+  `error` state before the third strike.
+- **Tools = explicit application tools, never providers.** `backend/app/voice/tools.py`
+  is the contract, mirrored in `frontend/src/voice/tools.ts`. `show_view` / `focus_date`
+  / `highlight_event` mutate local view state only; `get_events` / `get_agenda` /
+  `check_conflicts` are answered from `GET /api/calendar`. Agent code must never reach a
+  calendar provider directly. Adding a tool = update both files (the backend copy is
+  what gets locked into the token).
+- **The display is the output surface.** Spoken replies are one-sentence confirmations;
+  the dashboard carries the answer. The `VoiceOverlay` is transient, not a chat panel.
+- `surface` is accepted on the token request and threaded through unused — reserved for
+  a future multi-screen setup where one screen's command drives another.
 
 ## The frontend/backend contract
 
@@ -179,8 +217,13 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
   provider guard) with MSAL patched
 - meaningful frontend interactions (mode switching, event detail, filters, color mode,
   week start, calendar sign-in prompt + device-code sheet)
+- voice: `/api/voice/token` (disabled → 409, missing key → 409, non-LAN → 403, minted
+  token locks tools + calendar names) with the `google-genai` client faked; frontend
+  tool dispatch and the `useVoiceSession` state machine with `@google/genai` mocked
 - Playwright: each primary mode fits the kiosk viewport with no document overflow at
-  3840x2160 and 1920x1080
+  3840x2160 and 1920x1080; the Ask button starts a turn, and a 409 disables it and shows
+  the "Voice is turned off" toast. Unit: `VoiceToast` (headline per kind, retry only when
+  recoverable, auto-dismiss) and `useVoiceSession` failure classification / retry.
 
 ## Definition of done
 
@@ -194,7 +237,9 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
 ## Current non-goals (do not start without an explicit request)
 
 Google Calendar, Home Assistant, frontend authentication / account management,
-persistence/SQLite, speech recognition or synthesis, LLM/agent integration, Docker,
-Redis, Postgres, message brokers, cloud infrastructure. (Microsoft Graph *read*
-providers exist for both tenant and personal accounts; do not expand them into
-write-heavy two-way sync without being asked.)
+persistence/SQLite, Docker, Redis, Postgres, message brokers, cloud infrastructure.
+Voice exists but stays **read-only and tap-to-talk** — no voice-driven calendar
+writes, no wake word / always-on mic, no conversation persistence, no local speech
+processing without an explicit request. (Microsoft Graph *read* providers exist for
+both tenant and personal accounts; do not expand them into write-heavy two-way sync
+without being asked.)

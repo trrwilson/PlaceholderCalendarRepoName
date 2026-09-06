@@ -1,5 +1,4 @@
 .large-event.past { opacity: .52; }
-.category-dominant.category-blue { color: #285d78; background: #c7e3ed; }.category-dominant.category-teal { color: #286b67; background: #c7e4df; }.category-dominant.category-green { color: #3b7045; background: #cce3ca; }.category-dominant.category-red { color: #8a403b; background: #f3d2cc; }.category-dominant.category-pink { color: #7f4560; background: #edd4df; }
 :root {
   --ink: #223235; --ink-soft: #596a6d; --muted: #81908d; --canvas: #e8ece5; --surface: #fbfcf8; --warm: #f7f4e9; --line: #c5cfca; --line-dark: #9eafa8; --coral: #ed765c; --coral-pale: #f6c9bb; --ocean: #9acdd1; --gold: #e8c66e; --fern: #9fc89e; --violet: #c6b1d2; font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
 }
@@ -36,17 +35,17 @@
 .identity-marker.calendar-fern, .identity-dot.calendar-fern, .compact-dot.calendar-fern, .detail-bar.calendar-fern { background: var(--fern); }
 .identity-marker.calendar-violet, .identity-dot.calendar-violet, .compact-dot.calendar-violet, .detail-bar.calendar-violet { background: var(--violet); }
 
+/* Category display colour arrives from the provider as a concrete hex on
+   --category-color (Outlook master-category swatch, mock seed, …); everything
+   category-tinted derives from that one custom property. */
+.category-dominant { color: color-mix(in srgb, var(--category-color, #6e8596) 62%, #14211f); background: color-mix(in srgb, var(--category-color, #6e8596) 16%, var(--surface)); }
 .category-markers { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; vertical-align: middle; }
-.category-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #6e8596; }
-.category-dot.category-blue, .category-label.category-blue i { background: #4d8db3; }
-.category-dot.category-teal, .category-label.category-teal i { background: #4d9b91; }
-.category-dot.category-green, .category-label.category-green i { background: #5b9b68; }
-.category-dot.category-red, .category-label.category-red i { background: #c45b55; }
-.category-dot.category-pink, .category-label.category-pink i { background: #c36c91; }
+.category-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--category-color, #6e8596); }
+.compact-dot.category-dominant { background: var(--category-color, var(--line-dark)); }
 .detail-categories { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 22px; color: var(--ink-soft); font-size: clamp(14px, .8vw, 27px); }
 .detail-categories > span:first-child { width: 100%; color: var(--muted); font-size: .75em; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .category-label { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 8px; color: var(--ink); background: var(--warm); }
-.category-label i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.category-label i { width: 8px; height: 8px; border-radius: 50%; background: var(--category-color, currentColor); }
 
 @media (max-width: 760px) {
   .home-grid { height: auto; }
@@ -65,3 +64,40 @@
 .connect-wait { color: var(--muted); font-size: clamp(13px, .78vw, 26px); }
 .connect-error { padding: 10px 14px; border-radius: 10px; color: #8a403b; background: #f3d2cc; font-size: clamp(13px, .8vw, 26px); text-align: left; }
 .connect-sheet .detail-actions { justify-content: flex-start; }
+
+/* --- Voice assistant (tap-to-talk) --- */
+.ask-button:disabled { opacity: .5; cursor: not-allowed; }
+.ask-button.voice-listening { color: #fff; background: var(--coral); border-color: var(--coral); }
+.ask-button.voice-connecting, .ask-button.voice-thinking, .ask-button.voice-speaking { border-color: var(--coral); color: #b5462f; }
+.ask-button.voice-listening .mic-symbol { animation: voice-blink 1s steps(2, start) infinite; }
+@keyframes voice-blink { 50% { opacity: .25; } }
+.mic-live { display: inline-flex; align-items: center; gap: 7px; color: var(--coral); font-size: clamp(12px, .68vw, 24px); font-weight: 700; }
+.mic-live i { width: .6em; height: .6em; border-radius: 50%; background: var(--coral); animation: voice-blink 1s steps(2, start) infinite; }
+
+.voice-overlay { position: fixed; z-index: 12; right: clamp(18px, 1.5vw, 58px); bottom: clamp(64px, 8vh, 150px); width: min(560px, 44vw); display: grid; gap: 10px; padding: clamp(16px, 1.2vw, 34px); border: 2px solid var(--line-dark); border-radius: 18px; background: var(--surface); box-shadow: 0 22px 60px #263c3b33; }
+.voice-overlay.voice-error { border-color: #cf947e; background: #f9e2d3; }
+.voice-overlay-head { display: flex; align-items: center; gap: 12px; }
+.voice-overlay-head strong { font-size: clamp(15px, .9vw, 30px); }
+.voice-pulse { width: 14px; height: 14px; border-radius: 50%; background: var(--muted); }
+.voice-connecting .voice-pulse { background: #d29c43; }
+.voice-listening .voice-pulse, .voice-speaking .voice-pulse { background: var(--coral); animation: voice-blink 1s steps(2, start) infinite; }
+.voice-thinking .voice-pulse { background: #347878; animation: voice-blink 1.4s ease-in-out infinite; }
+.voice-error .voice-pulse { background: #ca5b50; }
+.voice-action { margin-left: auto; min-height: 44px; padding: 0 16px; border: 2px solid var(--line-dark); border-radius: 10px; background: var(--warm); font-size: clamp(13px, .72vw, 24px); font-weight: 700; }
+.voice-said { margin: 0; font-size: clamp(16px, 1vw, 32px); }
+.voice-said span { display: inline-block; margin-right: 8px; color: var(--muted); font-size: .72em; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.voice-reply { margin: 0; color: var(--ink-soft); font-size: clamp(14px, .82vw, 27px); }
+.voice-hint { margin: 0; color: var(--muted); font-size: clamp(13px, .75vw, 25px); }
+.voice-error-text { margin: 0; color: #8a403b; font-size: clamp(13px, .8vw, 26px); }
+@media (max-width: 1100px) { .mic-live { display: none; } .voice-overlay { width: min(420px, 70vw); } }
+@media (max-width: 760px) { .voice-overlay { right: 3vw; left: 3vw; width: auto; bottom: 96px; } }
+
+/* --- Voice failure toast (transient; shown as the Ask button switches off) --- */
+.voice-toast { position: fixed; z-index: 13; left: 50%; bottom: clamp(72px, 9vh, 170px); transform: translateX(-50%); display: flex; align-items: center; gap: clamp(12px, 1vw, 28px); max-width: min(680px, 92vw); padding: clamp(12px, 1vw, 26px) clamp(16px, 1.2vw, 34px); border: 2px solid #cf947e; border-radius: 14px; color: #6d3e32; background: #f9e2d3; box-shadow: 0 18px 50px #263c3b2e; animation: voice-toast-in .18s ease-out; }
+@keyframes voice-toast-in { from { opacity: 0; transform: translate(-50%, 10px); } }
+.voice-toast-body { display: grid; gap: 2px; }
+.voice-toast-body strong { font-size: clamp(15px, .9vw, 30px); }
+.voice-toast-body span { color: #7a4a3c; font-size: clamp(13px, .78vw, 26px); }
+.voice-toast-retry { min-height: 44px; padding: 0 16px; border: 2px solid #cf947e; border-radius: 10px; background: transparent; color: #6d3e32; font-size: clamp(13px, .72vw, 24px); font-weight: 700; white-space: nowrap; }
+.voice-toast-close { flex: 0 0 auto; width: 38px; height: 38px; border: 0; border-radius: 50%; background: #f0cdb8; font-size: 1.4em; line-height: 1; }
+@media (max-width: 760px) { .voice-toast { flex-wrap: wrap; left: 3vw; right: 3vw; transform: none; max-width: none; } }

@@ -5,7 +5,8 @@ Mission Control is a touch-first household calendar dashboard designed for a ful
 schedule for glanceable, ambient viewing. The current milestone exercises Home / Week /
 Month navigation, agenda display, calendar identity colors, an event detail sheet, a
 category-vs-person color mode, a configurable start-of-week (default Monday), an on-kiosk
-calendar sign-in flow, and a minimal live WebSocket connection.
+calendar sign-in flow, a minimal live WebSocket connection, and an initial tap-to-talk
+voice assistant (Gemini Live, read-only).
 
 ## Architecture
 
@@ -26,6 +27,9 @@ calendar sign-in flow, and a minimal live WebSocket connection.
   read from the environment and an optional `.env` file.
 - `backend/app/api.py`: HTTP calendar/health endpoints and the minimal WebSocket endpoint
   at `/api/ws`.
+- `backend/app/voice/` + `POST /api/voice/token`: mints a short-lived, capability-locked
+  Gemini Live ephemeral token so the kiosk can run the voice session directly without the
+  API key. `frontend/src/voice/` holds the tap-to-talk session, audio, and tools.
 - `backend/tests/`: focused provider, model, and Graph-mapping tests.
 - `AGENTS.md`: durable architecture, product constraints, conventions, and definition of
   done for future coding-agent work (`.github/copilot-instructions.md` points here).
@@ -92,6 +96,17 @@ account management. Two providers exist:
   registration with the **application** Graph permission `Calendars.Read` and admin consent.
 
 `backend/.env.example` documents every variable and the registration steps for both.
+
+### Enabling the voice assistant
+
+Voice is off by default. In `backend/.env` set `MISSION_CONTROL_VOICE_ENABLED=true` and
+provide a Gemini API key as `GEMINI_API_KEY_MISSION_CONTROL` (from Google AI Studio;
+`MISSION_CONTROL_GEMINI_API_KEY` also works). The key stays on the backend — the kiosk
+gets only a short-lived token from `POST /api/voice/token` (loopback/LAN-only, same as
+calendar sign-in). Tap **Ask** in the header, speak, tap again to finish. The assistant
+answers schedule questions and moves the display; it cannot change the calendar. The
+model, voice, and language are `MISSION_CONTROL_GEMINI_*` settings — verify the
+native-audio model id against current Google documentation.
 
 ## Validation
 

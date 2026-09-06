@@ -11,6 +11,9 @@ from app.models import CalendarRange, CalendarSnapshot
 TOKEN_URL = "https://login.microsoftonline.com/test-tenant/oauth2/v2.0/token"
 CALENDAR_VIEW = "https://graph.microsoft.com/v1.0/users/alex@example.com/calendarView"
 EVENTS_URL = "https://graph.microsoft.com/v1.0/users/alex@example.com/events"
+MASTER_CATEGORIES = (
+    "https://graph.microsoft.com/v1.0/users/alex@example.com/outlook/masterCategories"
+)
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -149,13 +152,28 @@ def test_empty_subject_is_coalesced() -> None:
     assert event.title == "(no title)"
 
 
+def _master_categories(**names_to_presets: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "value": [
+                {"id": name, "displayName": name, "color": preset}
+                for name, preset in names_to_presets.items()
+            ]
+        },
+    )
+
+
 @respx.mock
-def test_maps_categories_with_slugified_ids() -> None:
+def test_maps_categories_with_slugified_ids_and_master_colors() -> None:
     respx.post(TOKEN_URL).mock(return_value=token_response())
     respx.get(CALENDAR_VIEW).mock(
         return_value=httpx.Response(
             200, json={"value": [timed_event(categories=["Sports", "Work Travel"])]}
         )
+    )
+    master = respx.get(MASTER_CATEGORIES).mock(
+        return_value=_master_categories(Sports="preset4", **{"Work Travel": "preset7"})
     )
 
     provider = MicrosoftGraphCalendarProvider(make_settings())
@@ -164,11 +182,56 @@ def test_maps_categories_with_slugified_ids() -> None:
     )
 
     (event,) = snapshot.events
-    assert [(c.id, c.name) for c in event.categories] == [
-        ("sports", "Sports"),
-        ("work-travel", "Work Travel"),
+    assert [(c.id, c.name, c.color) for c in event.categories] == [
+        ("sports", "Sports", "#27ae60"),
+        ("work-travel", "Work Travel", "#2d9cdb"),
     ]
-    assert all(c.color for c in event.categories)
+    assert master.called
+
+
+@respx.mock
+def test_category_missing_from_master_list_falls_back_to_neutral() -> None:
+    respx.post(TOKEN_URL).mock(return_value=token_response())
+    respx.get(CALENDAR_VIEW).mock(
+        return_value=httpx.Response(200, json={"value": [timed_event(categories=["Mystery"])]})
+    )
+    respx.get(MASTER_CATEGORIES).mock(return_value=_master_categories(Sports="preset4"))
+
+    provider = MicrosoftGraphCalendarProvider(make_settings())
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    (event,) = snapshot.events
+    assert event.categories[0].color == "#6e8596"
+
+
+@respx.mock
+def test_master_categories_fetched_once_and_reused() -> None:
+    respx.post(TOKEN_URL).mock(return_value=token_response())
+    respx.get(CALENDAR_VIEW).mock(
+        return_value=httpx.Response(200, json={"value": [timed_event(categories=["Sports"])]})
+    )
+    master = respx.get(MASTER_CATEGORIES).mock(return_value=_master_categories(Sports="preset4"))
+
+    provider = MicrosoftGraphCalendarProvider(make_settings())
+    window = CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    provider.snapshot(window)
+    provider.snapshot(window)
+
+    assert master.call_count == 1
+
+
+@respx.mock
+def test_snapshot_without_categories_skips_master_categories_fetch() -> None:
+    respx.post(TOKEN_URL).mock(return_value=token_response())
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    master = respx.get(MASTER_CATEGORIES).mock(return_value=_master_categories())
+
+    provider = MicrosoftGraphCalendarProvider(make_settings())
+    provider.snapshot(CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5)))
+
+    assert not master.called
 
 
 @respx.mock

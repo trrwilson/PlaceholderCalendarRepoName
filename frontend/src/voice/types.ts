@@ -1,0 +1,37 @@
+export type ViewMode = 'home' | 'week' | 'month'
+export type VoiceStatus =
+  | 'idle'
+  | 'connecting'
+  | 'listening'
+  | 'thinking'
+  | 'speaking'
+  | 'error'
+  | 'unavailable'
+
+export interface VoiceTranscript {
+  user: string
+  assistant: string
+}
+
+/**
+ * Where a failed turn broke, so the UI can say something useful and decide
+ * whether a retry is worth offering:
+ * - `disabled`   backend says voice is off / unconfigured (409) — not retryable
+ * - `network`    couldn't reach the token endpoint or load the SDK
+ * - `microphone` getUserMedia denied / no device / device busy
+ * - `session`    the Gemini Live connection itself failed or dropped
+ * - `unknown`    anything else
+ */
+export type VoiceErrorKind = 'disabled' | 'network' | 'microphone' | 'session' | 'unknown'
+
+export interface VoiceError {
+  kind: VoiceErrorKind
+  message: string
+}
+
+/** What the voice agent is allowed to do to the on-screen dashboard. */
+export interface DashboardActions {
+  showView(view: ViewMode, date: Date | null): void
+  focusDate(date: Date): void
+  highlightEvent(query: string): { matched: boolean; title?: string; when?: string }
+}

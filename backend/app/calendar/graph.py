@@ -29,7 +29,46 @@ _SCOPE = "https://graph.microsoft.com/.default"
 _TOKEN_LEEWAY_SECONDS = 60
 _SELECT_FIELDS = "id,subject,start,end,isAllDay,location,categories"
 _PAGE_SIZE = 100
-_CATEGORY_COLORS = ("blue", "teal", "green", "red", "pink")
+
+# Outlook stores a category's display colour on the mailbox's *master category*
+# list (``GET .../outlook/masterCategories``) as one of 25 named swatches
+# (``color: "presetN"``); an event only carries category *names*. We resolve the
+# names against that list and hand the frontend a concrete hex value. The hex
+# below approximates the Outlook-on-the-web palette — hue fidelity matters more
+# than an exact per-client match (see AGENTS.md "Semantic color").
+_PRESET_HEX: dict[str, str] = {
+    "preset0": "#e74c3c",  # Red
+    "preset1": "#e8890c",  # Orange
+    "preset2": "#a1662f",  # Brown
+    "preset3": "#f2c94c",  # Yellow
+    "preset4": "#27ae60",  # Green
+    "preset5": "#16a085",  # Teal
+    "preset6": "#808000",  # Olive
+    "preset7": "#2d9cdb",  # Blue
+    "preset8": "#9b59b6",  # Purple
+    "preset9": "#c2185b",  # Cranberry
+    "preset10": "#95a5a6",  # Steel
+    "preset11": "#5d6d7e",  # DarkSteel
+    "preset12": "#bdc3c7",  # Gray
+    "preset13": "#7f8c8d",  # DarkGray
+    "preset14": "#2c3e50",  # Black
+    "preset15": "#c0392b",  # DarkRed
+    "preset16": "#d35400",  # DarkOrange
+    "preset17": "#6e4b3a",  # DarkBrown
+    "preset18": "#c9a227",  # DarkYellow
+    "preset19": "#1e8449",  # DarkGreen
+    "preset20": "#0e6655",  # DarkTeal
+    "preset21": "#556b2f",  # DarkOlive
+    "preset22": "#1f618d",  # DarkBlue
+    "preset23": "#6c3483",  # DarkPurple
+    "preset24": "#8e1b4e",  # DarkCranberry
+}
+# Category not on the master list (e.g. deleted) or mapped to ``none``: a neutral
+# marker, matching the frontend's default category dot.
+_NEUTRAL_CATEGORY_HEX = "#6e8596"
+# ``masterCategories`` changes rarely; a kiosk polls the snapshot every ~30s, so
+# cache the per-mailbox colour map rather than refetching it each time.
+_MASTER_CATEGORIES_TTL_SECONDS = 600.0
 
 _LOCAL_TZ: tzinfo = datetime.now().astimezone().tzinfo or UTC
 
@@ -72,12 +111,57 @@ def _slugify(value: str) -> str:
     return slug.strip("-") or "category"
 
 
-def _category(name: str) -> EventCategory:
-    color = _CATEGORY_COLORS[sum(map(ord, name)) % len(_CATEGORY_COLORS)]
+def _category(name: str, colors: dict[str, str]) -> EventCategory:
+    color = colors.get(name.casefold(), _NEUTRAL_CATEGORY_HEX)
     return EventCategory(id=_slugify(name), name=name, color=color)
 
 
-def _map_event(raw: dict[str, Any], calendar_id: str) -> CalendarEvent:
+def _parse_master_categories(payload: dict[str, Any]) -> dict[str, str]:
+    """Map a ``masterCategories`` response to ``{casefolded name: hex colour}``."""
+    colors: dict[str, str] = {}
+    for entry in payload.get("value", []):
+        name = (entry.get("displayName") or "").strip()
+        if not name:
+            continue
+        preset = (entry.get("color") or "").casefold()
+        colors[name.casefold()] = _PRESET_HEX.get(preset, _NEUTRAL_CATEGORY_HEX)
+    return colors
+
+
+class CategoryColorCache:
+    """Per-mailbox cache of Outlook category display colours.
+
+    A failed refresh reuses the previous value (or an empty map), so a transient
+    Graph error just degrades categories to neutral markers instead of failing
+    the whole snapshot.
+    """
+
+    def __init__(self, client: httpx.Client, ttl: float = _MASTER_CATEGORIES_TTL_SECONDS) -> None:
+        self._client = client
+        self._ttl = ttl
+        self._entries: dict[str, tuple[float, dict[str, str]]] = {}
+
+    def get(self, mailbox_url: str, headers: dict[str, str], scope: str) -> dict[str, str]:
+        now = _time.monotonic()
+        cached = self._entries.get(scope)
+        if cached is not None and now < cached[0]:
+            return cached[1]
+        colors = cached[1] if cached is not None else {}
+        try:
+            response = self._client.get(f"{mailbox_url}/outlook/masterCategories", headers=headers)
+            response.raise_for_status()
+            colors = _parse_master_categories(response.json())
+        except httpx.HTTPError:
+            pass
+        self._entries[scope] = (now + self._ttl, colors)
+        return colors
+
+
+def _map_event(
+    raw: dict[str, Any],
+    calendar_id: str,
+    category_colors: dict[str, str] | None = None,
+) -> CalendarEvent:
     all_day = bool(raw.get("isAllDay"))
     if all_day:
         starts_at = _parse_naive(raw["start"]["dateTime"])
@@ -87,7 +171,8 @@ def _map_event(raw: dict[str, Any], calendar_id: str) -> CalendarEvent:
         ends_at = _to_local_naive(raw["end"])
 
     location = (raw.get("location") or {}).get("displayName") or None
-    categories = [_category(name) for name in raw.get("categories", []) if name]
+    colors = category_colors or {}
+    categories = [_category(name, colors) for name in raw.get("categories", []) if name]
 
     return CalendarEvent(
         id=raw["id"],
@@ -134,6 +219,7 @@ class MicrosoftGraphCalendarProvider:
         ]
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+        self._category_colors = CategoryColorCache(self._client)
 
     # -- auth ---------------------------------------------------------------
 
@@ -194,11 +280,17 @@ class MicrosoftGraphCalendarProvider:
 
         events: list[CalendarEvent] = []
         for user in self._settings.graph_calendar_users:
-            for raw in self._calendar_view(user, start, end):
-                events.append(_map_event(raw, user))
+            raw_events = self._calendar_view(user, start, end)
+            colors = self._category_colors_for(user, raw_events)
+            events.extend(_map_event(raw, user, colors) for raw in raw_events)
 
         events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
         return CalendarSnapshot(calendars=self._calendars, events=events, range=calendar_range)
+
+    def _category_colors_for(self, user: str, raw_events: list[dict[str, Any]]) -> dict[str, str]:
+        if not any(raw.get("categories") for raw in raw_events):
+            return {}
+        return self._category_colors.get(f"{_GRAPH_BASE}/users/{user}", self._headers(), user)
 
     # -- write ----------------------------------------------------------------
 
@@ -221,4 +313,10 @@ class MicrosoftGraphCalendarProvider:
             headers={**self._headers(), "Content-Type": "application/json"},
         )
         response.raise_for_status()
-        return _map_event(response.json(), user)
+        created = response.json()
+        colors = (
+            self._category_colors.get(f"{_GRAPH_BASE}/users/{user}", self._headers(), user)
+            if created.get("categories")
+            else {}
+        )
+        return _map_event(created, user, colors)

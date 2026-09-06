@@ -23,7 +23,10 @@ class HouseholdCalendar(BaseModel):
 class EventCategory(BaseModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    color: str = Field(min_length=1)
+    # The category's display colour, resolved from the provider (e.g. an Outlook
+    # master-category swatch) to a concrete ``#rrggbb`` the frontend renders
+    # directly. Names stay authoritative; unknown colours degrade to a neutral hex.
+    color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
 
 
 class CalendarEvent(BaseModel):
@@ -71,6 +74,30 @@ class ApplicationMessage(BaseModel):
     type: str
     message: str
     snapshot: CalendarSnapshot | None = None
+
+
+class VoiceTokenRequest(BaseModel):
+    """Optional hints from the kiosk when it asks for a voice token.
+
+    ``surface`` identifies the requesting screen. It is unused today (one kiosk),
+    but is accepted now so a future multi-screen setup can route a spoken command
+    to a specific display without an API change.
+    """
+
+    surface: str | None = None
+
+
+class VoiceToken(BaseModel):
+    """A short-lived Gemini Live API ephemeral token for the kiosk browser.
+
+    The browser opens the Live session directly with this; the Gemini API key
+    stays on the backend. ``expires_at`` is when a session must have *started* by.
+    """
+
+    token: str
+    expires_at: datetime
+    model: str
+    surface: str | None = None
 
 
 class CalendarAuthStatus(BaseModel):

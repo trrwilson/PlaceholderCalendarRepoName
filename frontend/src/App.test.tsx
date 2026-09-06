@@ -10,7 +10,7 @@ describe('Mission Control dashboard', () => {
     const today = new Date()
     const startsAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 16).toISOString()
     const endsAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 17, 15).toISOString()
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ calendars: [{ id: 'jordan', name: 'Jordan', color: 'gold', enabled: true }, { id: 'home', name: 'Home', color: 'fern', enabled: true }], events: [{ id: 'swim', calendar_id: 'jordan', title: 'Swim practice', starts_at: startsAt, ends_at: endsAt, location: 'Riverside pool', all_day: false, categories: [{ id: 'sports', name: 'Sports', color: 'green' }, { id: 'school', name: 'School', color: 'blue' }] }, { id: 'dinner', calendar_id: 'home', title: 'Taco night', starts_at: startsAt, ends_at: endsAt, location: null, all_day: false, categories: [] }] }) }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ calendars: [{ id: 'jordan', name: 'Jordan', color: 'gold', enabled: true }, { id: 'home', name: 'Home', color: 'fern', enabled: true }], events: [{ id: 'swim', calendar_id: 'jordan', title: 'Swim practice', starts_at: startsAt, ends_at: endsAt, location: 'Riverside pool', all_day: false, categories: [{ id: 'sports', name: 'Sports', color: '#27ae60' }, { id: 'school', name: 'School', color: '#2d9cdb' }] }, { id: 'dinner', calendar_id: 'home', title: 'Taco night', starts_at: startsAt, ends_at: endsAt, location: null, all_day: false, categories: [] }] }) }))
     vi.stubGlobal('WebSocket', class { addEventListener() {} close() {} })
   })
 
@@ -37,9 +37,10 @@ describe('Mission Control dashboard', () => {
     expect(screen.getByText('School')).toBeInTheDocument()
   })
 
-  it('defaults to category-first and uses the primary category surface', async () => {
+  it('defaults to category-first and paints the primary category colour from the provider', async () => {
     render(<App />)
-    await waitFor(() => expect(document.querySelector('.large-event')).toHaveClass('category-dominant', 'category-green'))
+    await waitFor(() => expect(document.querySelector('.large-event')).toHaveClass('category-dominant'))
+    expect(document.querySelector('.large-event')).toHaveStyle({ '--category-color': '#27ae60' })
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
     expect(screen.getByRole('button', { name: 'Color events by category' })).toHaveClass('selected')
     expect(document.querySelector('.large-event.calendar-fern')).toBeInTheDocument()

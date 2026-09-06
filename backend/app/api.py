@@ -8,7 +8,14 @@ from pydantic import ValidationError
 import app.calendar.personal_auth as personal_auth
 from app.calendar.provider import CalendarProvider, MockCalendarProvider
 from app.config import get_settings
-from app.models import CalendarAuthStatus, CalendarRange, CalendarSnapshot
+from app.models import (
+    CalendarAuthStatus,
+    CalendarRange,
+    CalendarSnapshot,
+    VoiceToken,
+    VoiceTokenRequest,
+)
+from app.voice import VoiceUnavailable, mint_token
 
 router = APIRouter(prefix="/api")
 
@@ -104,6 +111,31 @@ def calendar_auth_signout(request: Request) -> CalendarAuthStatus:
     if settings.calendar_provider != "outlook_personal":
         raise HTTPException(status_code=409, detail="calendar provider is not 'outlook_personal'")
     return personal_auth.sign_out(settings)
+
+
+@router.post("/voice/token", response_model=VoiceToken)
+async def voice_token(
+    request: Request,
+    body: VoiceTokenRequest | None = None,
+    calendar_provider: CalendarProvider = Depends(get_provider),
+) -> VoiceToken:
+    """Mint a constrained ephemeral token for the kiosk's Gemini Live session."""
+    _require_local(request)
+    today = date.today()
+    calendar_names = [
+        calendar.name
+        for calendar in calendar_provider.snapshot(
+            CalendarRange(starts_on=today, ends_on=today)
+        ).calendars
+    ]
+    try:
+        return await mint_token(
+            get_settings(),
+            calendar_names=calendar_names,
+            surface=body.surface if body else None,
+        )
+    except VoiceUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.websocket("/ws")

@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.models import CalendarColor
@@ -26,6 +26,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     calendar_provider: Literal["mock", "graph", "outlook_personal"] = "mock"
@@ -50,6 +51,31 @@ class Settings(BaseSettings):
     @classmethod
     def _parse_list(cls, value: object) -> object:
         return _split_csv(value)
+
+    # -- Voice assistant (Gemini Live, native-audio) --------------------------
+    # The kiosk browser talks to the Gemini Live API directly using a
+    # short-lived ephemeral token minted by POST /api/voice/token; this key
+    # never leaves the backend. It is provisioned as GEMINI_API_KEY_MISSION_CONTROL
+    # (outside the MISSION_CONTROL_ prefix), but MISSION_CONTROL_GEMINI_API_KEY
+    # also works.
+    gemini_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "GEMINI_API_KEY_MISSION_CONTROL",
+            "MISSION_CONTROL_GEMINI_API_KEY",
+            "gemini_api_key",
+        ),
+    )
+    voice_enabled: bool = False
+    # Verify against current Google docs; native-audio dialog model id.
+    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-09-2025"
+    # Any prebuilt Gemini voice name (e.g. Zephyr, Puck, Charon, Kore, Aoede).
+    gemini_voice: str = "Zephyr"
+    # Optional BCP-47 code. Left blank for native-audio (it auto-detects and the
+    # system prompt pins the response language); set for half-cascade models.
+    gemini_language_code: str = ""
+    # Ephemeral-token lifetime. A session must START within this window.
+    voice_token_ttl_seconds: int = 600
 
     def calendar_color_for(self, index: int) -> CalendarColor:
         """Assign a stable CalendarColor to the configured user at ``index``.

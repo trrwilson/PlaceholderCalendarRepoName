@@ -65,11 +65,11 @@ class MockCalendarProvider:
                 categories=categories or [],
             )
 
-        school = EventCategory(id="school", name="School", color="blue")
-        work = EventCategory(id="work", name="Work", color="teal")
-        sports = EventCategory(id="sports", name="Sports", color="green")
-        medical = EventCategory(id="medical", name="Medical", color="red")
-        birthday = EventCategory(id="birthday", name="Birthday", color="pink")
+        school = EventCategory(id="school", name="School", color="#2d9cdb")
+        work = EventCategory(id="work", name="Work", color="#16a085")
+        sports = EventCategory(id="sports", name="Sports", color="#27ae60")
+        medical = EventCategory(id="medical", name="Medical", color="#e74c3c")
+        birthday = EventCategory(id="birthday", name="Birthday", color="#c2185b")
 
         return [
             event(
@@ -118,7 +118,7 @@ class MockCalendarProvider:
                 at(3, 9),
                 at(3, 10, 30),
                 "North field",
-                [sports, EventCategory(id="school", name="School", color="blue")],
+                [sports, EventCategory(id="school", name="School", color="#2d9cdb")],
             ),
             CalendarEvent(
                 id="camp",
