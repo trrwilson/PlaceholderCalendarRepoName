@@ -17,6 +17,10 @@ def _build_provider() -> CalendarProvider:
         from app.calendar.graph import MicrosoftGraphCalendarProvider
 
         return MicrosoftGraphCalendarProvider(settings)
+    if settings.calendar_provider == "outlook_personal":
+        from app.calendar.outlook_personal import PersonalOutlookCalendarProvider
+
+        return PersonalOutlookCalendarProvider(settings)
     return MockCalendarProvider()
 
 

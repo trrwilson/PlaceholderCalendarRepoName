@@ -21,6 +21,10 @@ frontend/blob-report/
 .env.*
 !.env.example
 
+# OAuth token cache (contains refresh tokens)
+*.msal_token_cache.json
+.msal_token_cache*
+
 # Editors and OS
 .vscode/*
 !.vscode/extensions.json

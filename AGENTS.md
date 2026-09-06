@@ -36,7 +36,9 @@ backend/                FastAPI service (Python 3.12+)
   app/config.py          MISSION_CONTROL_* settings (pydantic-settings)
   app/models.py          Pydantic v2 domain + API models (the contract)
   app/calendar/provider.py  CalendarProvider protocol + MockCalendarProvider
-  app/calendar/graph.py  MicrosoftGraphCalendarProvider (config-driven, app-only)
+  app/calendar/graph.py  MicrosoftGraphCalendarProvider (tenant, app-only) + shared mapping
+  app/calendar/outlook_personal.py  PersonalOutlookCalendarProvider (MSA, delegated/MSAL)
+  app/auth.py            `python -m app.auth {login,status,logout}` personal-account sign-in
   tests/                 pytest
   .env.example           documented MISSION_CONTROL_* variables
   pyproject.toml
@@ -100,18 +102,23 @@ frontend/                React 19 + TypeScript (strict) + Vite
 
 - **Provider-neutral domain.** Frontend and API speak only the models in
   `app/models.py`. Providers (`MockCalendarProvider`, `MicrosoftGraphCalendarProvider`,
-  a future `GoogleCalendarProvider`) return these models, never provider SDK types, and
-  convert any timezone-aware datetimes to naive local time at the boundary. New
-  providers satisfy the `CalendarProvider` protocol; seams are annotated with that
-  protocol, not a concrete class. `api.py` picks the provider from
-  `get_settings().calendar_provider` and caches it; the Graph import is lazy so the
-  mock path never needs Graph credentials.
-- **Microsoft Graph provider.** `app/calendar/graph.py`, client-credentials (app-only)
-  auth, one `HouseholdCalendar` per configured mailbox. Onboarding is purely backend
-  configuration (`.env` / `MISSION_CONTROL_GRAPH_*`); there is no frontend account
-  management and it is not a near-term goal. Keep write support minimal.
-- **Persistence.** No datastore yet. A SQLite-backed provider or token cache should
-  drop in behind the same protocol without any frontend change.
+  `PersonalOutlookCalendarProvider`, a future `GoogleCalendarProvider`) return these
+  models, never provider SDK types, and convert any timezone-aware datetimes to naive
+  local time at the boundary. New providers satisfy the `CalendarProvider` protocol;
+  seams are annotated with that protocol, not a concrete class. `api.py` picks the
+  provider from `get_settings().calendar_provider` and caches it; each real provider is
+  imported lazily so the mock path never needs `msal`/Graph credentials.
+- **Two Microsoft providers, different auth.** App-only client-credentials only works
+  for Azure AD tenants (`graph.py`). Personal accounts (outlook.com/hotmail.com) require
+  delegated auth, so `outlook_personal.py` uses MSAL device-code sign-in via
+  `app/auth.py` and a git-ignored on-disk refresh-token cache
+  (`MISSION_CONTROL_GRAPH_TOKEN_CACHE`). Both share the event-mapping helpers in
+  `graph.py` (imported by name), are read-focused, and onboard purely through backend
+  config with no frontend account management — not a near-term goal. Keep write support
+  minimal (`outlook_personal` is read-only and raises on `create_event`).
+- **Persistence.** No datastore yet; the MSAL token cache is a single JSON file. A
+  SQLite-backed provider or token store should drop in behind the same protocol without
+  any frontend change.
 - **Real-time.** `/api/ws` is a deliberately small typed endpoint. Do not build a
   generalized event bus. `ApplicationMessage` in `app/models.py` is the intended
   server→client envelope; wire it when the first real push exists (today the endpoint
@@ -156,8 +163,9 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
 - calendar time-range querying and mock-provider behavior
 - domain-model validation (event time ordering, all-day boundaries, range ordering)
 - category vs. calendar-identity classification staying separate
-- Graph provider: event mapping, all-day handling, tz→naive conversion, pagination,
-  token caching, missing-credential errors (all HTTP mocked with `respx`, no network)
+- Graph providers: event mapping, all-day handling, tz→naive conversion, pagination,
+  token caching, missing-credential / not-signed-in errors (HTTP mocked with `respx`,
+  MSAL exercised offline against a temp cache — no network)
 - API endpoint behavior via `fastapi.testclient` (health, `/api/calendar` range params
   and defaults) — still missing, add it
 - meaningful frontend interactions (mode switching, event detail, filters, color mode)
@@ -177,6 +185,6 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
 
 Google Calendar, Home Assistant, frontend authentication / account management,
 persistence/SQLite, speech recognition or synthesis, LLM/agent integration, Docker,
-Redis, Postgres, message brokers, cloud infrastructure. (A Microsoft Graph *read*
-provider exists; do not expand it into write-heavy sync or delegated user auth without
-being asked.)
+Redis, Postgres, message brokers, cloud infrastructure. (Microsoft Graph *read*
+providers exist for both tenant and personal accounts; do not expand them into
+write-heavy two-way sync without being asked.)

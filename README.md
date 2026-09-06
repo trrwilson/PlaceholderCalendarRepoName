@@ -4,7 +4,8 @@ Mission Control is a touch-first household calendar dashboard designed for a ful
 27-inch 4K wall display. It runs continuously in a kiosk browser and shows the household's
 schedule for glanceable, ambient viewing. The current milestone exercises Home / Week /
 Month navigation, agenda display, calendar identity colors, an event detail sheet, a
-category-vs-person color mode, and a minimal live WebSocket connection.
+category-vs-person color mode, a configurable start-of-week (default Monday), and a
+minimal live WebSocket connection.
 
 ## Architecture
 
@@ -14,10 +15,14 @@ category-vs-person color mode, and a minimal live WebSocket connection.
 - `backend/app/calendar/provider.py`: the `CalendarProvider` protocol with the in-memory
   `MockCalendarProvider` (default).
 - `backend/app/calendar/graph.py`: `MicrosoftGraphCalendarProvider` — configuration-driven,
-  app-only (client-credentials) read access to one or more Outlook mailboxes, mapped to the
-  same domain models.
-- `backend/app/config.py`: `MISSION_CONTROL_*` settings (provider selection + Graph
-  credentials), read from the environment and an optional `.env` file.
+  app-only (client-credentials) read access to Azure AD tenant mailboxes, mapped to the same
+  domain models.
+- `backend/app/calendar/outlook_personal.py`: `PersonalOutlookCalendarProvider` — delegated
+  (MSAL device-code) read access to a personal outlook.com / hotmail.com account.
+- `backend/app/auth.py`: `python -m app.auth {login,status,logout}` for the one-time
+  personal-account sign-in.
+- `backend/app/config.py`: `MISSION_CONTROL_*` settings (provider selection + credentials),
+  read from the environment and an optional `.env` file.
 - `backend/app/api.py`: HTTP calendar/health endpoints and the minimal WebSocket endpoint
   at `/api/ws`.
 - `backend/tests/`: focused provider, model, and Graph-mapping tests.
@@ -60,12 +65,28 @@ Open `http://localhost:5173`. The frontend expects the API at `http://localhost:
 
 ### Using a real Outlook calendar
 
-By default the backend serves in-memory mock data. To serve live Outlook calendars, copy
-`backend/.env.example` to `backend/.env` and set `MISSION_CONTROL_CALENDAR_PROVIDER=graph`
-plus the `MISSION_CONTROL_GRAPH_*` values. The `.env.example` file documents the Azure app
-registration prerequisites (an app registration with the **application** Graph permission
-`Calendars.Read` and admin consent). Onboarding is entirely backend configuration; there is
-no in-app account management yet.
+By default the backend serves in-memory mock data. Onboarding a real calendar is entirely
+backend configuration — copy `backend/.env.example` to `backend/.env` — with no in-app
+account management. Two providers exist:
+
+- **Personal account** (outlook.com / hotmail.com): set
+  `MISSION_CONTROL_CALENDAR_PROVIDER=outlook_personal` and `MISSION_CONTROL_GRAPH_CLIENT_ID`
+  (a "personal Microsoft accounts" app registration with public client flows enabled — no
+  client secret, no tenant admin). Then sign in once from `backend/`:
+
+  ```powershell
+  python -m app.auth login     # enter the printed code at microsoft.com/devicelogin
+  python -m app.auth status
+  ```
+
+  The refresh token is cached to `MISSION_CONTROL_GRAPH_TOKEN_CACHE` (git-ignored) and
+  renewed silently; re-run `login` only if it is revoked. Read-only.
+
+- **Azure AD tenant** (work/school mailboxes): set `MISSION_CONTROL_CALENDAR_PROVIDER=graph`
+  plus the `MISSION_CONTROL_GRAPH_*` tenant/client/secret/users values. Needs an app
+  registration with the **application** Graph permission `Calendars.Read` and admin consent.
+
+`backend/.env.example` documents every variable and the registration steps for both.
 
 ## Validation
 

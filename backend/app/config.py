@@ -28,11 +28,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    calendar_provider: Literal["mock", "graph"] = "mock"
+    calendar_provider: Literal["mock", "graph", "outlook_personal"] = "mock"
 
     graph_tenant_id: str | None = None
     graph_client_id: str | None = None
     graph_client_secret: str | None = None
+
+    # Personal-account (outlook.com / hotmail.com) delegated sign-in.
+    graph_authority: str = "https://login.microsoftonline.com/consumers"
+    graph_token_cache: str = ".msal_token_cache.json"
 
     # Mailboxes to surface; each UPN / email becomes one HouseholdCalendar.
     graph_calendar_users: Annotated[list[str], NoDecode] = []
