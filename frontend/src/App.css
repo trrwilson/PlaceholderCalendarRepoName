@@ -19,10 +19,19 @@
 .dock-actions .filter-popover { top: auto; right: 0; bottom: calc(100% + 8px); }
 .settings-toggle { display: inline-flex; align-items: center; gap: 7px; min-height: clamp(40px, 3vw, 98px); padding: 0 clamp(12px, .8vw, 28px); border: 2px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink-soft); font-size: clamp(14px, .75vw, 25px); }
 .settings-toggle:first-letter { font-size: 1.3em; }
-.settings-popover { position: absolute; z-index: 6; right: 0; bottom: calc(100% + 8px); display: grid; gap: 7px; width: min(360px, 42vw); padding: 14px; border: 2px solid var(--line-dark); border-radius: 14px; background: var(--surface); box-shadow: 0 15px 40px #263c3b22; }
+.settings-popover { position: absolute; z-index: 6; right: 0; bottom: calc(100% + 8px); display: grid; gap: 7px; width: min(360px, 42vw); max-height: 72vh; padding: 14px; overflow-y: auto; border: 2px solid var(--line-dark); border-radius: 14px; background: var(--surface); box-shadow: 0 15px 40px #263c3b22; }
 .settings-popover strong { padding: 4px 7px 8px; color: var(--muted); font-size: .78em; letter-spacing: .1em; text-transform: uppercase; }
 .settings-popover button { min-height: 50px; padding: 8px 10px; border: 2px solid transparent; border-radius: 8px; background: transparent; text-align: left; font-size: clamp(14px, .8vw, 27px); }
 .settings-popover button.selected { border-color: var(--line-dark); background: var(--warm); font-weight: 700; }
+.calendar-color-row { display: grid; gap: 8px; padding: 6px 7px; }
+.calendar-color-name { display: flex; align-items: center; gap: 8px; font-size: clamp(14px, .8vw, 27px); }
+.calendar-color-options { display: flex; gap: clamp(8px, .6vw, 18px); }
+.settings-popover .color-dot { flex: 0 0 auto; width: clamp(34px, 2.6vw, 66px); height: clamp(34px, 2.6vw, 66px); min-height: 0; padding: 0; border: 3px solid transparent; border-radius: 50%; background: var(--coral); box-shadow: inset 0 0 0 2px #ffffff88; }
+.settings-popover .color-dot.calendar-ocean { background: var(--ocean); }
+.settings-popover .color-dot.calendar-gold { background: var(--gold); }
+.settings-popover .color-dot.calendar-fern { background: var(--fern); }
+.settings-popover .color-dot.calendar-violet { background: var(--violet); }
+.settings-popover .color-dot.selected { border-color: var(--ink); }
 .bottom-dock { gap: clamp(12px, 1vw, 36px); }
 .bottom-dock nav { margin-right: auto; }
 

@@ -4,9 +4,9 @@ Mission Control is a touch-first household calendar dashboard designed for a ful
 27-inch 4K wall display. It runs continuously in a kiosk browser and shows the household's
 schedule for glanceable, ambient viewing. The current milestone exercises Home / Week /
 Month navigation, agenda display, calendar identity colors, an event detail sheet, a
-category-vs-person color mode, a configurable start-of-week (default Monday), an on-kiosk
-calendar sign-in flow, a minimal live WebSocket connection, and an initial tap-to-talk
-voice assistant (Gemini Live, read-only).
+category-vs-person color mode, per-calendar identity color overrides, a configurable
+start-of-week (default Monday), an on-kiosk calendar sign-in flow, a minimal live
+WebSocket connection, and an initial tap-to-talk voice assistant (Gemini Live, read-only).
 
 ## Architecture
 
