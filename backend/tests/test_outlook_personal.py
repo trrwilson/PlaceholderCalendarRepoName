@@ -46,9 +46,12 @@ def build_provider(tmp_path, **overrides: object) -> PersonalOutlookCalendarProv
 # --- configuration / auth -------------------------------------------------------
 
 
-def test_missing_client_id_raises(tmp_path) -> None:
-    with pytest.raises(RuntimeError, match="GRAPH_CLIENT_ID"):
-        PersonalOutlookCalendarProvider(make_settings(tmp_path, graph_client_id=None))
+def test_missing_client_id_falls_back_to_public_device_client(tmp_path) -> None:
+    from app.calendar.outlook_personal import DEFAULT_DEVICE_CLIENT_ID
+
+    provider = PersonalOutlookCalendarProvider(make_settings(tmp_path, graph_client_id=None))
+    assert provider._app is not None
+    assert provider._app.client_id == DEFAULT_DEVICE_CLIENT_ID
 
 
 def test_not_signed_in_raises_with_login_hint(tmp_path) -> None:

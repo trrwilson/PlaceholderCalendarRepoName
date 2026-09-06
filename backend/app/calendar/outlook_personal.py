@@ -35,6 +35,14 @@ from app.models import CalendarEvent, CalendarRange, CalendarSnapshot, Household
 GRAPH_SCOPES = ["Calendars.Read"]
 SIGN_IN_HINT = "sign in from the kiosk or run `python -m app.auth login`"
 
+# "Microsoft Graph Command Line Tools" — Microsoft's own first-party public
+# device-code client (the one `Connect-MgGraph` uses). It supports personal
+# Microsoft accounts and has Calendars.Read pre-authorized, so the kiosk can sign
+# a household member in with NO Azure app registration. The consent screen will
+# say "Microsoft Graph Command Line Tools"; set MISSION_CONTROL_GRAPH_CLIENT_ID to
+# your own registration for a branded prompt or tighter control.
+DEFAULT_DEVICE_CLIENT_ID = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
+
 # Last observed silent-auth failure, surfaced by the /api/calendar/auth status
 # endpoint so the kiosk can prompt for re-sign-in. Cleared on a fresh sign-in.
 auth_error: str | None = None
@@ -48,8 +56,7 @@ def load_msal_app(
     settings: Settings,
 ) -> tuple[msal.PublicClientApplication, msal.SerializableTokenCache, Path]:
     """Build a fresh MSAL public client and deserialize its on-disk token cache."""
-    if not settings.graph_client_id:
-        raise RuntimeError("Personal Outlook provider requires MISSION_CONTROL_GRAPH_CLIENT_ID")
+    client_id = settings.graph_client_id or DEFAULT_DEVICE_CLIENT_ID
 
     path = cache_path(settings)
     cache = msal.SerializableTokenCache()
@@ -57,7 +64,7 @@ def load_msal_app(
         cache.deserialize(path.read_text(encoding="utf-8"))
 
     app = msal.PublicClientApplication(
-        settings.graph_client_id,
+        client_id,
         authority=settings.graph_authority,
         token_cache=cache,
     )
@@ -78,7 +85,7 @@ def shared_msal_app(
     The provider, the device-flow endpoints, and the CLI all share one client so
     a sign-in performed through any of them is visible to the others.
     """
-    key = settings.graph_client_id or ""
+    key = settings.graph_client_id or DEFAULT_DEVICE_CLIENT_ID
     with _shared_lock:
         entry = _shared.get(key)
         if entry is None:
