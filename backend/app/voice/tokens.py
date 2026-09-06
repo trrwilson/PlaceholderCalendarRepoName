@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from app.config import Settings
 from app.models import VoiceToken
@@ -55,7 +55,8 @@ async def mint_token(
 
     from google.genai import types
 
-    now = datetime.now()
+    # Timezone-aware: the Gemini API rejects timestamps without a 'Z' / offset.
+    now = datetime.now(UTC)
     expires_at = now + timedelta(seconds=settings.voice_token_ttl_seconds)
 
     client = _build_client(settings.gemini_api_key)
