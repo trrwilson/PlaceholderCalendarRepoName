@@ -4,8 +4,8 @@ Mission Control is a touch-first household calendar dashboard designed for a ful
 27-inch 4K wall display. It runs continuously in a kiosk browser and shows the household's
 schedule for glanceable, ambient viewing. The current milestone exercises Home / Week /
 Month navigation, agenda display, calendar identity colors, an event detail sheet, a
-category-vs-person color mode, a configurable start-of-week (default Monday), and a
-minimal live WebSocket connection.
+category-vs-person color mode, a configurable start-of-week (default Monday), an on-kiosk
+calendar sign-in flow, and a minimal live WebSocket connection.
 
 ## Architecture
 
@@ -19,8 +19,9 @@ minimal live WebSocket connection.
   domain models.
 - `backend/app/calendar/outlook_personal.py`: `PersonalOutlookCalendarProvider` — delegated
   (MSAL device-code) read access to a personal outlook.com / hotmail.com account.
-- `backend/app/auth.py`: `python -m app.auth {login,status,logout}` for the one-time
-  personal-account sign-in.
+- `backend/app/calendar/personal_auth.py` + `/api/calendar/auth*`: the device-code sign-in
+  the kiosk drives (status polling, start, cancel, sign out); `python -m app.auth
+  {login,status,logout}` is the headless equivalent.
 - `backend/app/config.py`: `MISSION_CONTROL_*` settings (provider selection + credentials),
   read from the environment and an optional `.env` file.
 - `backend/app/api.py`: HTTP calendar/health endpoints and the minimal WebSocket endpoint
@@ -72,7 +73,9 @@ account management. Two providers exist:
 - **Personal account** (outlook.com / hotmail.com): set
   `MISSION_CONTROL_CALENDAR_PROVIDER=outlook_personal` and `MISSION_CONTROL_GRAPH_CLIENT_ID`
   (a "personal Microsoft accounts" app registration with public client flows enabled — no
-  client secret, no tenant admin). Then sign in once from `backend/`:
+  client secret, no tenant admin). Then sign in once, either from the kiosk itself (it
+  shows a "Calendar sign-in" prompt with a QR code and a device code — scan with a phone,
+  sign in there, approve access) or headless from `backend/`:
 
   ```powershell
   python -m app.auth login     # enter the printed code at microsoft.com/devicelogin
@@ -80,7 +83,9 @@ account management. Two providers exist:
   ```
 
   The refresh token is cached to `MISSION_CONTROL_GRAPH_TOKEN_CACHE` (git-ignored) and
-  renewed silently; re-run `login` only if it is revoked. Read-only.
+  renewed silently; you only re-sign-in if it is revoked, and the kiosk prompts when that
+  happens. Read-only. The `/api/calendar/auth*` endpoints are loopback/LAN-only unless
+  `MISSION_CONTROL_ALLOW_REMOTE_AUTH=true`.
 
 - **Azure AD tenant** (work/school mailboxes): set `MISSION_CONTROL_CALENDAR_PROVIDER=graph`
   plus the `MISSION_CONTROL_GRAPH_*` tenant/client/secret/users values. Needs an app

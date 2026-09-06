@@ -38,7 +38,8 @@ backend/                FastAPI service (Python 3.12+)
   app/calendar/provider.py  CalendarProvider protocol + MockCalendarProvider
   app/calendar/graph.py  MicrosoftGraphCalendarProvider (tenant, app-only) + shared mapping
   app/calendar/outlook_personal.py  PersonalOutlookCalendarProvider (MSA, delegated/MSAL)
-  app/auth.py            `python -m app.auth {login,status,logout}` personal-account sign-in
+  app/calendar/personal_auth.py  device-code sign-in for the kiosk + CLI
+  app/auth.py            `python -m app.auth {login,status,logout}` headless sign-in
   tests/                 pytest
   .env.example           documented MISSION_CONTROL_* variables
   pyproject.toml
@@ -110,12 +111,19 @@ frontend/                React 19 + TypeScript (strict) + Vite
   imported lazily so the mock path never needs `msal`/Graph credentials.
 - **Two Microsoft providers, different auth.** App-only client-credentials only works
   for Azure AD tenants (`graph.py`). Personal accounts (outlook.com/hotmail.com) require
-  delegated auth, so `outlook_personal.py` uses MSAL device-code sign-in via
-  `app/auth.py` and a git-ignored on-disk refresh-token cache
-  (`MISSION_CONTROL_GRAPH_TOKEN_CACHE`). Both share the event-mapping helpers in
-  `graph.py` (imported by name), are read-focused, and onboard purely through backend
-  config with no frontend account management — not a near-term goal. Keep write support
-  minimal (`outlook_personal` is read-only and raises on `create_event`).
+  delegated auth, so `outlook_personal.py` uses MSAL device-code sign-in and a
+  git-ignored on-disk refresh-token cache (`MISSION_CONTROL_GRAPH_TOKEN_CACHE`), kept in
+  sync across the provider, the CLI, and the sign-in poll thread via one process-wide
+  MSAL client. Both providers share the event-mapping helpers in `graph.py` (imported by
+  name) and are read-focused (`outlook_personal` raises on `create_event`).
+- **Kiosk sign-in.** `personal_auth.py` runs the device-code flow non-blocking (a daemon
+  thread blocks on MSAL; the kiosk polls `GET /api/calendar/auth`). `POST
+  …/auth/device` starts it and returns the code + an `segno` QR data-URI;
+  `DELETE …/auth/device` cancels; `DELETE …/auth` signs out. These endpoints are
+  loopback/LAN-only unless `allow_remote_auth`. The frontend surfaces "needs sign-in" as
+  a header pill + Home exception card and shows the code/QR in a sheet; credentials are
+  never entered on the kiosk. Onboarding stays backend-config only — no account
+  management UI, no multi-account.
 - **Persistence.** No datastore yet; the MSAL token cache is a single JSON file. A
   SQLite-backed provider or token store should drop in behind the same protocol without
   any frontend change.
@@ -166,9 +174,11 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
 - Graph providers: event mapping, all-day handling, tz→naive conversion, pagination,
   token caching, missing-credential / not-signed-in errors (HTTP mocked with `respx`,
   MSAL exercised offline against a temp cache — no network)
-- API endpoint behavior via `fastapi.testclient` (health, `/api/calendar` range params
-  and defaults) — still missing, add it
-- meaningful frontend interactions (mode switching, event detail, filters, color mode)
+- API endpoint behavior via `fastapi.testclient`: health, `/api/calendar` range params /
+  defaults / reversed-range 422, and `/api/calendar/auth*` (state machine, local guard,
+  provider guard) with MSAL patched
+- meaningful frontend interactions (mode switching, event detail, filters, color mode,
+  week start, calendar sign-in prompt + device-code sheet)
 - Playwright: each primary mode fits the kiosk viewport with no document overflow at
   3840x2160 and 1920x1080
 
