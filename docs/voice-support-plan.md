@@ -19,13 +19,17 @@ Give Mission Control a first, genuinely useful voice capability:
 - **No calendar writes** in this milestone. `get`-style tools only.
 
 > **Timer exception (added with `docs/timer-plan.md`).** Voice may now
-> **set, cancel, and extend a single kitchen timer** — `start_timer`,
-> `cancel_timer`, `extend_timer`, plus read-only `get_timer`. These are the first
+> **set, cancel, extend, pause, resume, and restart a single kitchen timer** —
+> `start_timer`, `cancel_timer`, `extend_timer`, `pause_timer`, `resume_timer`,
+> `restart_timer`, plus read-only `get_timer`. These are the first
 > state-mutating voice tools. They are a deliberate, narrow exception to the
 > read-only rule: timer state is ephemeral, local, single-appliance, and has no
 > external side effect and no calendar/provider write. Calendar writes remain out
 > of scope. `start_timer` takes a duration or an absolute local target time and
 > the six-hour cap is stated in its schema so the agent speaks the rejection.
+> `pause_timer` / `resume_timer` freeze and continue the countdown; `restart_timer`
+> resets it to its original full duration and works while running, paused, or
+> ringing.
 > Dismissing a ringing alarm by voice ("stop") maps to `cancel_timer`; a fired
 > timer does **not** open a voice session on its own (one-session-per-turn), so
 > there is no spoken announcement on fire in this task — the chime + forced Timer
@@ -349,6 +353,28 @@ Push-to-talk latency / behaviour issues were investigated and partly fixed:
   + worklet into cache on mount. Backend `app/voice/trace.py` logs the
   token-endpoint steps; the calendar-snapshot call on the token path is a known
   synchronous Graph request that should be cached.
+- **Audio capture (debug).** `frontend/src/voice/debugRecorder.ts`
+  (`voiceDebugRecorder`) retains the exact PCM the kiosk streamed to the speech
+  provider for the last **10** activations (`sendAudio` chunks, in order, at the
+  provider input rate — 16 kHz Gemini / 24 kHz relay). A push-to-talk capture
+  begins at the first mic chunk; a wake capture leads with the pre-roll
+  `useVoiceSession` flushes in (so it starts shortly before the keyword) and then
+  the live mic. So it is a faithful recording of what the model got. **On by
+  default.**
+  - **In-browser:** `window.__voiceDebug` — no kiosk UI (per the wake section's
+    "no debugging console in the kiosk UI"). `list()` (metadata —
+    provider/model/outcome/transcript/chunk counts/seconds), `wav(id?)` /
+    `wavBytes(id?)` / `samples(id?)`, `save(id?)` (downloads a `.wav`; newest if
+    no id), `clear()`. Ring size is `localStorage['voice.debug.count']`.
+  - **On disk:** each finished capture is POSTed to `POST /api/voice/debug/capture`
+    (LAN-gated; `app/voice/debug_capture.py`), which writes
+    `<stamp>-<ptt|wake>-<provider>.wav` (a real RIFF/PCM16 mono WAV, trivially
+    played back) plus a `<stamp>-….json` sidecar under
+    `MISSION_CONTROL_VOICE_DEBUG_CAPTURE_DIR` (default `backend/voice-captures/`,
+    git-ignored), pruned to `…_KEEP` pairs (default 10). Best-effort: the upload
+    failing (backend down / off) leaves the in-memory ring untouched.
+  - Off with `MISSION_CONTROL_VOICE_DEBUG_CAPTURE_ENABLED=false` (disk) or
+    `localStorage['voice.debug.capture'] = 'off'` (both).
 - **Response watchdog.** If the model makes no progress (audio, text, or a tool
   call) for 20 s after the user's turn, the session is torn down with a
   retryable error instead of hanging. This is a guard, not a fix.
@@ -738,12 +764,104 @@ reports `main-thread-lag {maxLagMs, meanLagMs}` alongside
 - Coverage: the underrun test now asserts the depth actually doubles, and
   `resetLearnedPrebuffer()` keeps the suite order-independent.
 
+### Reverted: the adaptive jitter buffer (2026-09-06, fourth pass)
+
+The Gemini Live path frequently had audible "beep"/click artifacts in its output.
+The jitter buffer above is the prime suspect: on underrun it reset the playback
+cursor to 0 and re-buffered mid-reply, so a single reply could stop and restart
+several times, and each restart is a discontinuity the DAC can click on.
+
+`AudioSink` is back to scheduling each chunk the moment it decodes, contiguously
+off `cursor` — no prebuffer cushion, no `learnedPrebufferSeconds`, no
+cursor-reset on underrun. `underruns` is still counted for the timeline but
+nothing acts on it; `finalizeStream()` is a no-op kept for API compatibility.
+`audio.test.ts` was rewritten to cover plain play-as-it-arrives scheduling. If a
+slow stream stutters again, the fix is a *fixed* lead on the first chunk (hold N
+ms once, never reset), not a re-buffering state machine.
+
 If the probe says server-bound, the remaining option is to stop using a
 native-audio model for the *speaking* half: `gemini-3.5-transcribe-live` or the
 existing Live session for understanding plus a normal text model for the answer,
 spoken by Gemini TTS or the browser's `speechSynthesis`. A kiosk with eight fixed
 intents does not need audio-to-audio nuance, and a locally-synthesised reply
 cannot underrun at all.
+
+### Echo cancellation — phase 1 shipped (2026-09-07)
+
+The cue-silencing workaround from the second pass (`deafUntil = now + cueMs +
+150ms`, `handleLevel` deaf for that whole window) is **removed**. Root cause was
+never the ordering — it was that Chromium's `getUserMedia({ echoCancellation:
+true })` only folds *remote* peer-connection streams into the AEC reference, never
+WebAudio playout, so the cue (and the assistant's own reply) hit the open mic
+uncancelled.
+
+Fix: `frontend/src/voice/aecPlayback.ts` — render `AudioSink` output into a
+`MediaStreamAudioDestinationNode`, loop it through a local `RTCPeerConnection`
+pair, play the far end through an `<audio>` element. Chromium now treats the
+playout as a remote stream and cancels it from capture. `useVoiceSession` keeps
+only a 250 ms `AEC_SETTLE_MS` for canceller convergence (no clock manipulation).
+`getUserMedia` gains `autoGainControl: false` (the app has its own gain stage).
+
+Also fixed alongside it: `OpenWakeWordDetector.suspend()` was dropping pre-roll
+retention the instant a turn opened (`connecting`), seconds before the live mic
+starts — so a single-shot "Mission Control, what's on today" lost everything after
+the phrase. `suspend()` now stops inference only; `takeRetainedAudio()` ends
+retention until `resume()`.
+
+Phase 1 covers audio *this page* plays. Audio from other processes on the kiosk
+box (a debug WAV in a media player, Windows sounds) needs **phase 2**: a Windows
+backend audio worker capturing the mic + WASAPI render loopback as the reference,
+running a real WebRTC APM, streaming clean PCM over `WS /api/voice/capture`;
+`MISSION_CONTROL_VOICE_AEC_ENABLED` is the off switch for a hardware-AEC mic. Not
+built — spike the APM binding (`webrtc-audio-processing` vs `speexdsp`) first.
+
+### Tenth run (2026-09-07) — the quiet tail of a command was being cut off
+
+`mission control, set a timer for five minutes` came back truncated at the "f" of
+"five" (`user-turn-end {reason: 'silence', spoke: true}` ~1.7 s in, mid-word).
+There was no acoustic gap — the waveform is continuous to the cut. The client
+endpointer went deaf; the speaker never paused.
+
+Cause: `handleLevel` refreshed "still talking" only on `rms >= SPEECH_RMS` (0.01,
+absolute). Peak speech RMS that turn was 0.051, so the gate sat at 0.2x the
+loudest speech — inside the utterance's own dynamic range. Prosodic declination
+drops an unstressed final foot 15–20 dB under the stressed head, `autoGainControl:
+false` means nothing levels it, and `noiseSuppression: true` dug the tail down
+further, so "five minutes" fell under 0.01 for the whole 700 ms hold. Via wake
+word the loud head of the phrase is mostly in the pre-roll / first live chunks, so
+the endpointer only ever watches the quiet half — hence "voice-activation
+specific".
+
+Fixes:
+
+- **Relative speech gate.** `handleLevel` tracks the turn's running peak RMS
+  (clamped to `SPEECH_LEVEL_CEILING` 0.25) and, once `spoke` is armed, counts
+  continued speech at `max(SPEECH_RMS_FLOOR 0.004, 0.12 x that)`. Arming `spoke`
+  the first time stays absolute (`SPEECH_RMS`) so room noise can't open a turn.
+  The `[voice] mic level` log now prints `gate` instead of the fixed `threshold`.
+- **Provider VAD is the primary endpoint.** The relay forwards
+  `input_audio_buffer.speech_started` / `speech_stopped` (from `semantic_vad` /
+  `azure_semantic_vad`, which run for the echo canceller with `create_response`
+  off) as `speech-started` / `speech-stopped` VoiceEvents. `speech-stopped` ends
+  the user's turn (`reason: 'server-vad'`); after `speech-started` the mic-level
+  check relaxes to `SERVER_VAD_BACKSTOP_MS` (2.5 s) instead of 700 ms. Semantic
+  VAD does not endpoint an incomplete phrase ("set a timer for…"), which is
+  exactly where a raw-energy detector fails.
+- **`noiseSuppression: false`.** The loopback AEC (phase 1) handles echo now; NS
+  was only hurting the endpointer. `autoGainControl` stays off.
+- **AEC settle window keeps the silence clock fresh.** It still won't arm `spoke`
+  or grow the speech-level estimate in the first 250 ms, but it now stamps
+  `lastVoiceAtRef` each frame so the hold isn't already spent when the window
+  lifts.
+
+Coverage in `useVoiceSession.test.ts`: a quiet tail (0.009 after 0.06) keeps the
+turn open where the old floor cut it; `speech-stopped` ends the turn; the
+mic-level backstop waits longer once `speech-started` has arrived. In
+`test_voice_relay.py`: both VAD signals translate.
+
+Not touched, worth a look if this recurs: `azure_semantic_vad`'s
+`silence_duration_ms` is still 500; if `speech-stopped` ever fires mid-phrase,
+raise it there rather than re-tuning the client backstop.
 
 ## Follow-ups / not done
 

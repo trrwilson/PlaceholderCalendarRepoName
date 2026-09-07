@@ -99,11 +99,20 @@ def _live_config(
     return config
 
 
+def _endpointing(settings: Settings) -> str:
+    """Gemini's effective end-of-speech mode. ``voice_manual_activity`` is the
+    operator escape hatch: on -> ``client`` (service VAD off, kiosk brackets the
+    turn); off -> ``hybrid`` (service VAD streams ASR, kiosk sends
+    ``audioStreamEnd`` on its own silence detection)."""
+    return "client" if settings.voice_manual_activity else "hybrid"
+
+
 class GeminiAdapter:
     """``VoiceProviderAdapter`` for Gemini Live."""
 
     id: VoiceProviderId = "gemini"
     reusable_grant = True  # the ephemeral token is multi-use within its ttl
+    default_endpointing = "hybrid"
 
     def missing_config(self, settings: Settings) -> str | None:
         if not settings.gemini_api_key:
@@ -152,6 +161,6 @@ class GeminiAdapter:
             expires_at=expires_at,
             model=settings.gemini_live_model,
             api_version=settings.gemini_live_api_version,
-            manual_activity=settings.voice_manual_activity,
+            endpointing=_endpointing(settings),
             surface=surface,
         )

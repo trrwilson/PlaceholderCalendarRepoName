@@ -1,5 +1,5 @@
 import ipaddress
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -19,6 +19,8 @@ from app.models import (
     TimerMutationResult,
     VoiceConfig,
     VoiceConfigUpdate,
+    VoiceDebugCapture,
+    VoiceDebugCaptureStored,
     VoiceProviderInfo,
     VoiceToken,
     VoiceTokenRequest,
@@ -28,6 +30,8 @@ from app.realtime import connections
 from app.timers import TimerError, get_timer_store
 from app.voice import VoiceUnavailable, get_voice_token, reset_voice_token_cache
 from app.voice.base import PROVIDER_LABELS
+from app.voice.debug_capture import VoiceCaptureError, store_capture
+from app.voice.local.interpreter import LocalInterpretRequest
 from app.voice.providers import (
     effective_provider,
     implemented_providers,
@@ -247,6 +251,134 @@ def voice_wake_config(request: Request) -> WakeWordConfig:
     )
 
 
+@router.post("/voice/debug/capture", response_model=VoiceDebugCaptureStored)
+def voice_debug_capture(request: Request, body: VoiceDebugCapture) -> VoiceDebugCaptureStored:
+    """Persist one retained voice activation's audio to disk for debugging.
+
+    The kiosk POSTs the headered WAV it streamed to the speech provider for a
+    turn; the backend writes it (plus a ``.json`` sidecar) under
+    ``MISSION_CONTROL_VOICE_DEBUG_CAPTURE_DIR`` and prunes to
+    ``…_KEEP`` pairs. LAN-gated; 409 when voice or the capture is switched off.
+    """
+    _require_local(request)
+    settings = get_settings()
+    if not settings.voice_enabled:
+        raise HTTPException(status_code=409, detail="voice support is disabled")
+    if not settings.voice_debug_capture_enabled:
+        raise HTTPException(status_code=409, detail="voice debug capture is disabled")
+    try:
+        path = store_capture(settings, body)
+    except VoiceCaptureError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return VoiceDebugCaptureStored(path=str(path))
+
+
+# -- local / hybrid voice pipeline (experimental) ---------------------------
+# On-device STT + intent/entity interpretation; cloud only for genuine
+# reasoning. See app/voice/local/ and docs/local-voice-plan.md. Nothing here
+# touches the Gemini or Azure paths.
+
+
+def _local_snapshot(provider: CalendarProvider):
+    """A fresh [today, +14d] snapshot for the interpreter — called per turn."""
+    today = date.today()
+    return provider.snapshot(CalendarRange(starts_on=today, ends_on=today + timedelta(days=14)))
+
+
+@router.websocket("/voice/local")
+async def voice_local_pipeline(websocket: WebSocket) -> None:
+    """The Local / Hybrid contestant's transport.
+
+    The kiosk connects with the single-use ticket from its grant and drives the
+    turn with the same uplink frames the Azure relay uses (plus a ``text`` frame
+    for the microphone-free bypass). The backend runs local speech recognition
+    and interpretation and emits shared ``VoiceEvent`` JSON — including
+    ``diagnostic`` and ``escalation`` events. LAN-only, like every voice route.
+    """
+    from app.voice.local.engines import create_recognizer
+    from app.voice.local.session import (
+        get_recognizer,
+        redeem_local_ticket,
+        run_local_pipeline,
+    )
+
+    host = websocket.client.host if websocket.client else ""
+    if not _is_local_client(host):
+        await websocket.close(code=4403)
+        return
+    config = redeem_local_ticket(websocket.query_params.get("ticket"))
+    if config is None:
+        await websocket.close(code=4401)
+        return
+
+    settings = get_settings()
+    client_time = websocket.query_params.get("client_time")
+
+    def now_fn() -> datetime:
+        if client_time:
+            try:
+                return datetime.fromisoformat(client_time).replace(tzinfo=None)
+            except ValueError:
+                pass
+        return datetime.now()
+
+    provider = get_provider()
+    await websocket.accept()
+    try:
+        recognizer = await get_recognizer(lambda: create_recognizer(settings))
+    except Exception as exc:  # noqa: BLE001 - report and fall back to text bypass
+        await websocket.send_json(
+            {"type": "error", "message": f"local speech engine unavailable: {exc}"}
+        )
+        from app.voice.local.engines.scripted import ScriptedRecognizer
+
+        recognizer = ScriptedRecognizer()
+    try:
+        await run_local_pipeline(
+            websocket,
+            config,
+            recognizer=recognizer,
+            snapshot_fn=lambda: _local_snapshot(provider),
+            now_fn=now_fn,
+        )
+    except WebSocketDisconnect:
+        return
+
+
+@router.post("/voice/local/interpret")
+def voice_local_interpret(request: Request, body: LocalInterpretRequest):
+    """Run the semantic layer over a text utterance — no microphone, no model.
+
+    The direct way to exercise / test intent + entity resolution and the
+    local-vs-escalate decision (``docs/local-voice-plan.md`` -> "Bypassing
+    voice"). LAN-gated; always available (independent of ``voice_enabled``).
+    """
+    from datetime import datetime as _dt
+
+    from app.voice.local.adapter import LocalHybridAdapter
+    from app.voice.local.session import run_interpretation
+
+    _require_local(request)
+    settings = get_settings()
+    now = _dt.now()
+    if body.client_time:
+        try:
+            now = _dt.fromisoformat(body.client_time).replace(tzinfo=None)
+        except ValueError:
+            pass
+    snapshot = _local_snapshot(get_provider())
+    cfg = LocalHybridAdapter()._interpreter_config(settings)
+    interp = run_interpretation(
+        body.text,
+        now=now,
+        snapshot=snapshot,
+        config=cfg,
+        timer_active=body.timer_active,
+        stt_confidence=body.stt_confidence,
+    )
+    return interp.model_dump(mode="json")
+
+
 # -- timers ------------------------------------------------------------------
 # Backend-owned, in-memory, one active timer for now (see docs/timer-plan.md).
 # Gated to loopback / LAN like the other control surfaces. Every mutation returns
@@ -286,6 +418,40 @@ async def delete_timer(request: Request, timer_id: str) -> None:
     _require_local(request)
     try:
         await get_timer_store().cancel(timer_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such timer") from exc
+
+
+@router.post("/timers/{timer_id}/pause", response_model=Timer)
+async def pause_timer(request: Request, timer_id: str) -> Timer:
+    """Hold the countdown, freezing the time that is left until a resume."""
+    _require_local(request)
+    try:
+        return await get_timer_store().pause(timer_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such timer") from exc
+    except TimerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/timers/{timer_id}/resume", response_model=Timer)
+async def resume_timer(request: Request, timer_id: str) -> Timer:
+    """Continue a paused timer from where it stopped."""
+    _require_local(request)
+    try:
+        return await get_timer_store().resume(timer_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such timer") from exc
+    except TimerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/timers/{timer_id}/restart", response_model=Timer)
+async def restart_timer(request: Request, timer_id: str) -> Timer:
+    """Reset the timer to its full duration and start counting again."""
+    _require_local(request)
+    try:
+        return await get_timer_store().restart(timer_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="no such timer") from exc
 

@@ -132,6 +132,48 @@ describe('useTimers', () => {
     expect(onStarted).toHaveBeenCalledWith(created, replaced)
   })
 
+  it('holds a paused timer at its frozen remaining time without ticking', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useTimers(options))
+    const paused: Timer = {
+      ...runningTimer(60_000),
+      state: 'paused',
+      remaining_seconds: 42,
+    }
+    act(() => {
+      FakeWebSocket.last!.message({ type: 'timer-paused', message: 'x', timers: [paused] })
+    })
+    expect(result.current.hasActiveTimer).toBe(true)
+    expect(result.current.alarm).toBe(false)
+    expect(result.current.remainingMs).toBe(42_000)
+
+    act(() => vi.advanceTimersByTime(10_000))
+    expect(result.current.remainingMs).toBe(42_000)
+  })
+
+  it('pause() posts to the pause sub-resource and adopts the result', async () => {
+    const running = runningTimer(120_000)
+    const fetchMock = vi.fn((...args: Parameters<typeof fetch>) =>
+      Promise.resolve(
+        String(args[0]).endsWith('/pause')
+          ? { ok: true, json: async () => ({ ...running, state: 'paused', remaining_seconds: 90 }) }
+          : { ok: true, json: async () => [running] },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useTimers(options))
+    await waitFor(() => expect(result.current.hasActiveTimer).toBe(true))
+
+    await act(async () => {
+      await result.current.pause()
+    })
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).endsWith('/pause'))!
+    expect(call).toBeTruthy()
+    expect(call[1]).toMatchObject({ method: 'POST' })
+    expect(result.current.timer?.state).toBe('paused')
+  })
+
   it('throws the backend message when a start is rejected', async () => {
     vi.stubGlobal(
       'fetch',

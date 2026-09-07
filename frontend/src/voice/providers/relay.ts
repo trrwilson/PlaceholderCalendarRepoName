@@ -7,6 +7,7 @@
 import { VoiceTimeline } from '../instrument'
 import {
   type ConversationalVoiceProvider,
+  type EndpointingMode,
   type VoiceEvent,
   type VoiceGrant,
   VoiceSessionError,
@@ -15,6 +16,9 @@ import {
 export class RelayVoiceProvider implements ConversationalVoiceProvider {
   // Azure realtime speaks 24 kHz PCM16 in and out.
   readonly inputSampleRate = 24_000
+  // The relay pins both Azure sessions to 24 kHz PCM in and out (voice/relay.py).
+  readonly outputSampleRate = 24_000
+  readonly endpointing: EndpointingMode
   private ws: WebSocket | null = null
   private firstAudioSent = true
   private firstUserTranscript = true
@@ -33,6 +37,7 @@ export class RelayVoiceProvider implements ConversationalVoiceProvider {
     this.url = `${base}/api/voice/live?ticket=${encodeURIComponent(grant.token)}`
     this.onEvent = onEvent
     this.timeline = timeline
+    this.endpointing = grant.endpointing ?? 'client'
   }
 
   connect(): Promise<void> {
@@ -120,11 +125,15 @@ export class RelayVoiceProvider implements ConversationalVoiceProvider {
   }
 
   startActivity(): void {
+    if (this.endpointing === 'provider') return
     this.timeline.mark('activity-start')
     this.send({ type: 'activity-start' })
   }
 
   endActivity(): void {
+    // `provider` mode: the upstream VAD commits and answers on its own endpoint,
+    // so the kiosk sends no finalise marker.
+    if (this.endpointing === 'provider') return
     this.timeline.mark('audio-stream-end')
     this.send({ type: 'activity-end' })
   }

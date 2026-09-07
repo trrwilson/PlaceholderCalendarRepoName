@@ -70,9 +70,82 @@ made where the plan left room, plus things a human should sanity-check.
   for 3pm" / "30 minutes before <event>") — only promptable headless, not
   verifiable without a live session.
 
+## Amendment 2026-09-06 — running timer no longer locks the display
+
+Follow-up change after review: the running timer must not trap navigation, and its
+countdown should follow the user across views.
+
+- **`defaultView()` removed.** `goHome()` unconditionally sets `mode = 'home'`. The
+  only automatic switch to the Timer view is now `onStarted`, `onFired`, and the
+  existing one-shot `hasActiveTimer` `false→true` edge effect (which also covers a
+  timer already running at cold boot). "Timer is the default" is now strictly an
+  *ambient* rule for automatic actors, never an override of an explicit tap.
+- **Cross-view countdown on the dock Timer button.** `formatDockRemaining()` in
+  `App.tsx` (`M:SS` under an hour, `H:MM` past it); rendered as
+  `.dock-timer-remaining` only when `hasActiveTimer && mode !== 'timer'`, `Done`
+  while `alarm`. No new render cost — `useTimers()` already re-renders `App` at
+  1 Hz while a timer is active. Header and floating-chip placements were rejected
+  (header budget; occlusion).
+- **Visual separation.** `.dock-timer` gets a gap + hairline `::before` divider
+  from the Home/Week/Month group, a coral active fill (`.bottom-dock nav
+  button.dock-timer.active`) vs. the calendar modes' ink fill, and a coral outline
+  while running in the background. `.timer-view` is now a warm panel (`--warm`
+  ground + hairline border + radius) instead of sitting on bare `--canvas`. The
+  old `.dock-timer .timer-dot` indicator is gone — the countdown / coral fill
+  replaces it.
+- Docs updated: `docs/timer-plan.md` (amendment note + rewritten "Default view",
+  new "Cross-view timer tracking" and "Visual separation" sections), `AGENTS.md`
+  (Persistent chrome + Timers), `docs/camera-support-plan.md` (idle-revert clause).
+- Tests: `App.test.tsx` timer test rewritten to assert navigation stays unlocked
+  and the dock countdown tracks; full `pytest` / `vitest` / `eslint` / `tsc` /
+  `vite build` / Playwright green.
+
+## Amendment 2026-09-07 — pause / resume / restart
+
+Cross-referenced against Google Assistant / Alexa timer treatment; the gaps worth
+filling were **pause**, **resume**, and **restart** (add-time already shipped as
+`extend_timer`). Build decisions:
+
+1. **`paused` is a real `TimerState`; `Timer.remaining_seconds` carries the frozen
+   countdown** (only ever set when paused). `pause` leaves `created_at` /
+   `fires_at` / `duration_seconds` untouched — so a paused timer still validates
+   and `restart` still has the *original* full duration to reset to — and just
+   snapshots the seconds left. `fires_at` is deliberately stale while paused;
+   every surface (kiosk countdown, `get_timer`) reads `remaining_seconds` instead.
+2. **`resume` rebases, `restart` rebases.** Resume recomputes `fires_at = now +
+   remaining` and pulls `created_at` back by the elapsed portion so
+   `fires_at - created_at` still equals the original duration (progress ring stays
+   honest). Restart is `created_at = now`, `fires_at = now + duration_seconds`.
+   Both re-arm the scheduler.
+3. **Extending a paused timer keeps it paused** — the added seconds grow
+   `remaining_seconds`; it does not silently resume. (A paused-then-extended timer
+   rebases `duration_seconds` to the new remaining, same as the running-extend
+   path already does.)
+4. **New endpoints are `POST /api/timers/{id}/pause|resume|restart`** — sub-
+   resources rather than overloading `PATCH`. Wrong-state pause/resume is `409`;
+   unknown id is `404`.
+5. **Voice: `pause_timer` / `resume_timer` / `restart_timer`** added to
+   `backend/app/voice/tools.py` + `frontend/src/voice/tools.ts`, the Gemini/Azure
+   locked-tool-set tests, `prompt.py`, and the local pipeline (`intents.py`
+   `timer.pause` / `timer.resume` / `timer.restart` + interpreter planning).
+   `timer.start` gained vetoes so "restart / pause / start it over" is never
+   mis-read as "start a timer". Bare "pause" with no timer running asks rather
+   than guessing (mirrors the bare-"stop" guard).
+6. **UI: the running and paused states share one component** (`TimerRunning` with
+   a `paused` flag). Controls: Pause↔Resume toggle, `+1`/`+5 min`, Restart,
+   Cancel. The dock button reads `Paused` (and dims) instead of a ticking clock.
+
 ## Test / DoD status at hand-off
 
 - `backend/`: `pytest` 69 passed (was 47), `ruff check` + `ruff format --check` clean.
 - `frontend/`: `vitest` 56 passed (was 39), `tsc -b` clean, `eslint` clean,
   `vite build` clean.
 - `frontend/`: Playwright 5 passed (was 4, one previously failing on the date flake).
+
+### After the 2026-09-07 amendment
+
+- `backend/`: `pytest` 197 passed, `ruff check` clean (`ruff format --check` clean
+  for touched files; a pre-existing `tests/test_outlook_personal.py` reformat is
+  untouched and unrelated).
+- `frontend/`: `vitest` 151 passed, `tsc -b` clean, `eslint` clean, `vite build`
+  clean, Playwright 8 passed (added a pause/resume e2e case).

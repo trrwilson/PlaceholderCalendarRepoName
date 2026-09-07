@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import app.voice.providers.gemini as gemini_provider
 from app.api import _build_provider
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.main import app
 
 
@@ -109,7 +109,10 @@ def test_token_minted_with_locked_constraints(
     assert body["model"] == "gemini-3.1-flash-live-preview"
     # The kiosk opens its Live socket on the version the token was minted with.
     assert body["api_version"] == "v1beta"
-    assert body["manual_activity"] is False
+    # Default end-of-speech: the service VAD streams ASR and emits speech events,
+    # the kiosk endpoints on them with a mic-RMS backstop.
+    assert body["endpointing"] == "hybrid"
+    assert "manual_activity" not in body
     assert body["surface"] == "kitchen"
 
     config = recorder["create"].await_args.kwargs["config"]
@@ -124,12 +127,16 @@ def test_token_minted_with_locked_constraints(
         "show_view",
         "focus_date",
         "highlight_event",
+        "set_people_filter",
         "get_events",
         "get_agenda",
         "check_conflicts",
         "start_timer",
         "cancel_timer",
         "extend_timer",
+        "pause_timer",
+        "resume_timer",
+        "restart_timer",
         "get_timer",
     }
     # The six-hour cap is carried in the timer tool descriptions so the agent can
@@ -150,7 +157,8 @@ def test_token_minted_with_locked_constraints(
 def test_manual_activity_disables_the_service_vad(
     client: TestClient, voice_env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The old deterministic push-to-talk path is still reachable by config."""
+    """The old deterministic push-to-talk path is still reachable by config —
+    `voice_manual_activity` selects `endpointing = "client"`."""
     monkeypatch.setenv("MISSION_CONTROL_VOICE_MANUAL_ACTIVITY", "true")
     get_settings.cache_clear()
     recorder: dict = {}
@@ -159,7 +167,7 @@ def test_manual_activity_disables_the_service_vad(
     response = client.post("/api/voice/token")
 
     assert response.status_code == 200
-    assert response.json()["manual_activity"] is True
+    assert response.json()["endpointing"] == "client"
     constraint = recorder["create"].await_args.kwargs["config"].live_connect_constraints
     assert constraint.config.realtime_input_config.automatic_activity_detection.disabled is True
 
@@ -335,6 +343,7 @@ def test_voice_config_lists_providers_and_the_effective_one(
         "azure_voice_live",
         "azure_openai_realtime",
         "azure_openai_realtime_mini",
+        "local",
     }
     assert by_id["gemini"] == {
         "id": "gemini",
@@ -342,12 +351,18 @@ def test_voice_config_lists_providers_and_the_effective_one(
         "implemented": True,
         "configured": True,
     }
+    # The local pipeline is always "configured" — it degrades to the text-bypass
+    # path when no STT engine is installed.
+    assert by_id["local"]["implemented"] is True
+    assert by_id["local"]["configured"] is True
     # The Azure contestants are wired up but have no credentials in the test env.
     assert by_id["azure_openai_realtime"]["implemented"] is True
     assert by_id["azure_openai_realtime"]["configured"] is False
     assert by_id["azure_voice_live"]["configured"] is False
-    # The shared capture-pipeline gain rides along on this endpoint.
-    assert body["mic_input_gain_db"] == 12.0
+    # The shared capture-pipeline gain rides along on this endpoint. Asserted
+    # against the setting's own default, not a literal: the default is tuned on
+    # real hardware and must not need a test edit every time it moves.
+    assert body["mic_input_gain_db"] == Settings(_env_file=None).mic_input_gain_db
 
 
 def test_voice_config_reports_the_mic_input_gain(
@@ -355,7 +370,8 @@ def test_voice_config_reports_the_mic_input_gain(
 ) -> None:
     monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
     get_settings.cache_clear()
-    assert client.get("/api/voice/config").json()["mic_input_gain_db"] == 12.0
+    default_db = Settings(_env_file=None).mic_input_gain_db
+    assert client.get("/api/voice/config").json()["mic_input_gain_db"] == default_db
 
     # 0 disables the stage; a negative trim is allowed.
     monkeypatch.setenv("MISSION_CONTROL_MIC_INPUT_GAIN_DB", "0")
@@ -371,8 +387,6 @@ def test_mic_input_gain_rejects_out_of_range_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from pydantic import ValidationError
-
-    from app.config import Settings
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None, mic_input_gain_db=99.0)
@@ -413,7 +427,9 @@ def test_wake_config_defaults_to_disabled(
     body = response.json()
     assert body["enabled"] is False
     assert body["phrase"] == "Mission Control"
-    assert body["threshold"] == 0.5
+    # Same reasoning as the mic gain: the threshold is tuned against real
+    # detections, so track the setting rather than pinning a number here.
+    assert body["threshold"] == Settings(_env_file=None).wake_word_threshold
     assert body["model_path"].endswith("mission_control.onnx")
 
 
@@ -440,4 +456,122 @@ def test_wake_config_gated_to_local_network(
     monkeypatch.delenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", raising=False)
     get_settings.cache_clear()
     response = client.get("/api/voice/wake-config")
+    assert response.status_code == 403
+
+
+# -- voice debug audio capture ---------------------------------------------------
+
+
+def _wav_bytes(sample_rate: int = 16_000, samples: int = 1_600) -> bytes:
+    """A minimal valid mono PCM16 WAV (silence)."""
+    import struct
+
+    data = b"\x00\x00" * samples
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16)
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
+    )
+
+
+def _capture_payload(**overrides) -> dict:
+    import base64
+
+    payload = {
+        "wav_base64": base64.b64encode(_wav_bytes()).decode(),
+        "sample_rate": 16_000,
+        "provider": "gemini",
+        "model": "gemini-live",
+        "via_wake": True,
+        "preroll_chunks": 2,
+        "mic_chunks": 5,
+        "seconds": 1.75,
+        "outcome": "ok",
+        "transcript": {"user": "what's on today", "assistant": "Two things."},
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.fixture
+def capture_env(voice_env, monkeypatch: pytest.MonkeyPatch, tmp_path):
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_DEBUG_CAPTURE_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    return tmp_path
+
+
+def test_debug_capture_writes_a_wav_and_json_sidecar(client: TestClient, capture_env) -> None:
+    import json
+
+    response = client.post("/api/voice/debug/capture", json=_capture_payload())
+    assert response.status_code == 200
+    written = response.json()["path"]
+    assert written.endswith(".wav")
+
+    wavs = list(capture_env.glob("*.wav"))
+    jsons = list(capture_env.glob("*.json"))
+    assert len(wavs) == 1 and len(jsons) == 1
+    assert wavs[0].read_bytes() == _wav_bytes()
+    # Filename is <stamp>-<kind>-<provider>.wav
+    assert "-wake-gemini.wav" in wavs[0].name
+
+    meta = json.loads(jsons[0].read_text())
+    assert meta["provider"] == "gemini"
+    assert meta["via_wake"] is True
+    assert meta["transcript"]["user"] == "what's on today"
+    assert meta["wav_file"] == wavs[0].name
+    assert "wav_base64" not in meta
+
+
+def test_debug_capture_prunes_to_the_keep_limit(
+    client: TestClient, capture_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_DEBUG_CAPTURE_KEEP", "2")
+    get_settings.cache_clear()
+
+    for _ in range(4):
+        assert client.post("/api/voice/debug/capture", json=_capture_payload()).status_code == 200
+
+    assert len(list(capture_env.glob("*.wav"))) == 2
+    assert len(list(capture_env.glob("*.json"))) == 2
+
+
+def test_debug_capture_requires_voice_enabled(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    get_settings.cache_clear()
+    response = client.post("/api/voice/debug/capture", json=_capture_payload())
+    assert response.status_code == 409
+
+
+def test_debug_capture_can_be_switched_off(
+    client: TestClient, capture_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_DEBUG_CAPTURE_ENABLED", "false")
+    get_settings.cache_clear()
+    response = client.post("/api/voice/debug/capture", json=_capture_payload())
+    assert response.status_code == 409
+    assert list(capture_env.glob("*")) == []
+
+
+def test_debug_capture_rejects_a_non_wav_payload(client: TestClient, capture_env) -> None:
+    import base64
+
+    bad = base64.b64encode(b"not a riff file at all").decode()
+    response = client.post("/api/voice/debug/capture", json=_capture_payload(wav_base64=bad))
+    assert response.status_code == 422
+
+
+def test_debug_capture_gated_to_local_network(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_ENABLED", "true")
+    monkeypatch.delenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", raising=False)
+    get_settings.cache_clear()
+    response = client.post("/api/voice/debug/capture", json=_capture_payload())
     assert response.status_code == 403

@@ -37,7 +37,13 @@ const parseLocalDateTime = (value: unknown): Date | null => {
 
 const TIMER_MAX_SECONDS = 21_600
 
-type ApiTimer = { id: string; label: string | null; fires_at: string; state: string }
+type ApiTimer = {
+  id: string
+  label: string | null
+  fires_at: string
+  state: string
+  remaining_seconds?: number | null
+}
 
 async function currentTimer(ctx: ToolContext): Promise<ApiTimer | null> {
   const response = await fetch(`${ctx.apiBaseUrl}/api/timers`)
@@ -103,6 +109,17 @@ export async function dispatchToolCall(
       return result.matched
         ? { ok: true, highlighted: result.title, when: result.when }
         : { ok: false, error: 'no matching event is currently in view' }
+    }
+    case 'set_people_filter': {
+      const mode = args.mode as 'only' | 'add' | 'remove' | 'all'
+      if (!['only', 'add', 'remove', 'all'].includes(mode)) return { ok: false, error: 'unknown mode' }
+      const people = Array.isArray(args.people) ? args.people.map((p) => String(p)) : []
+      if (mode !== 'all' && people.length === 0) return { ok: false, error: 'no people named' }
+      const result = ctx.actions.setPeopleFilter(mode, people)
+      if (mode !== 'all' && result.matched.length === 0) {
+        return { ok: false, error: `no household calendar matched ${people.join(', ')}` }
+      }
+      return { ok: true, showing: result.matched, unmatched: result.unmatched }
     }
     case 'get_events': {
       const start = isoDate(args.start)
@@ -177,13 +194,39 @@ export async function dispatchToolCall(
       const next = (await response.json()) as ApiTimer
       return { ok: true, fires_at: next.fires_at }
     }
+    case 'pause_timer': {
+      const timer = await currentTimer(ctx)
+      if (!timer) return { ok: false, error: 'no timer is running' }
+      if (timer.state === 'paused') return { ok: true, already_paused: true }
+      const response = await fetch(`${ctx.apiBaseUrl}/api/timers/${timer.id}/pause`, { method: 'POST' })
+      return response.ok ? { ok: true } : { ok: false, error: 'could not pause the timer' }
+    }
+    case 'resume_timer': {
+      const timer = await currentTimer(ctx)
+      if (!timer) return { ok: false, error: 'no timer is set' }
+      if (timer.state !== 'paused') return { ok: true, already_running: true }
+      const response = await fetch(`${ctx.apiBaseUrl}/api/timers/${timer.id}/resume`, { method: 'POST' })
+      return response.ok ? { ok: true } : { ok: false, error: 'could not resume the timer' }
+    }
+    case 'restart_timer': {
+      const timer = await currentTimer(ctx)
+      if (!timer) return { ok: false, error: 'no timer is set' }
+      const response = await fetch(`${ctx.apiBaseUrl}/api/timers/${timer.id}/restart`, { method: 'POST' })
+      if (!response.ok) return { ok: false, error: 'could not restart the timer' }
+      const next = (await response.json()) as ApiTimer
+      return { ok: true, fires_at: next.fires_at }
+    }
     case 'get_timer': {
       const timer = await currentTimer(ctx)
       if (!timer) return { running: false }
-      const remainingMs = new Date(timer.fires_at).getTime() - Date.now()
+      const paused = timer.state === 'paused'
+      const remainingMs = paused
+        ? (timer.remaining_seconds ?? 0) * 1000
+        : new Date(timer.fires_at).getTime() - Date.now()
       return {
         running: timer.state === 'running',
         firing: timer.state === 'fired',
+        paused,
         remaining_minutes: Math.max(0, Math.round(remainingMs / 60_000)),
         label: timer.label ?? undefined,
       }

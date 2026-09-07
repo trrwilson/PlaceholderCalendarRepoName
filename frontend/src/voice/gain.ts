@@ -1,7 +1,7 @@
-// Configurable input gain for the shared microphone capture pipeline.
+// The kiosk's one and only software gain stage.
 //
 // Kiosk microphones are usually far-field and cheap, and a long USB run drops a
-// few more dB on top; speech often arrives 10–15 dB quieter than a headset would
+// few more dB on top; speech often arrives well below what a headset would
 // deliver. Rather than push a device-specific fix into `getUserMedia` constraints
 // (which vary by browser and mic and cannot be tuned without a rebuild) or into a
 // particular microphone driver, we apply a plain amplitude multiplier to the
@@ -9,17 +9,77 @@
 // `./audio`, where both wake-word detection and the conversational provider read
 // the same frames.
 //
+// ── One gain, and nothing else may compete with it ────────────────────────────
+//
+// Level is easy to change in four different places, and every extra place makes
+// the other three lie. The rules, enforced by the code below and by `audio.ts`:
+//
+//  1. `getUserMedia` gets `autoGainControl: false`. Browser AGC is an *automatic*
+//     gain that would fight this fixed one and, worse, would flatten the dynamic
+//     range the end-of-speech detector reads.
+//  2. This stage is the only place capture samples are scaled. Nothing
+//     downstream — not the wake detector, not the downsampler, not the provider
+//     adapters — touches amplitude.
+//  3. Any client-side *decision* about level (is this speech? has the speaker
+//     stopped?) is taken at {@link LEVEL_REFERENCE_GAIN_DB}, not at whatever gain
+//     happens to be configured. `atReferenceGain()` normalises a measured RMS
+//     back to that reference, so turning the knob changes what the recogniser
+//     hears and nothing else. Without it, raising the gain to rescue a quiet mic
+//     silently re-tunes the speech gate in `useVoiceSession` as a side effect.
+//  4. Playback level is a separate concern with a separate owner (`AudioSink`'s
+//     output bus). This module never touches output.
+//
 // The gain is expressed in decibels because that is how microphone level is
 // reasoned about; it converts to a linear multiplier as 10^(dB/20). 0 dB is
 // unity and disables the stage. Peak / RMS / clip diagnostics are accumulated so
 // the value can be set from measurements on real hardware instead of guessed.
+//
+// Full picture, including where every audio setting lives: docs/audio-pipeline.md.
 
-/** Default boost, in dB, for the kiosk's far-field USB microphone. */
-export const DEFAULT_INPUT_GAIN_DB = 12
+/**
+ * Default boost, in dB, for the kiosk's far-field USB microphone. Mirrors
+ * `Settings.mic_input_gain_db` in `backend/app/config.py`, which is the
+ * authority at runtime; this is the fallback for a backend that cannot be
+ * reached. Keep the two in step.
+ */
+export const DEFAULT_INPUT_GAIN_DB = 20
+
+/**
+ * The capture gain that every client-side level threshold is expressed at.
+ *
+ * `useVoiceSession`'s speech / silence gates are absolute RMS numbers, and they
+ * were measured on real kiosk audio at this gain. Feeding them a level captured
+ * at some other gain would make `MISSION_CONTROL_MIC_INPUT_GAIN_DB` a second,
+ * undocumented endpointer tuning knob. Instead, levels are normalised back here
+ * with {@link atReferenceGain} before any comparison, and the thresholds stay
+ * what they were measured to be.
+ *
+ * Changing this number invalidates those thresholds — re-measure, don't nudge.
+ */
+export const LEVEL_REFERENCE_GAIN_DB = 20
 
 /** Decibels to a linear amplitude multiplier: 10^(dB/20). */
 export function dbToLinear(db: number): number {
   return 10 ** (db / 20)
+}
+
+const REFERENCE_LINEAR = dbToLinear(LEVEL_REFERENCE_GAIN_DB)
+
+/**
+ * Restate an RMS measured on gained audio as the RMS it would have had at
+ * {@link LEVEL_REFERENCE_GAIN_DB}, so level thresholds are independent of the
+ * configured gain.
+ *
+ * @param rms     an RMS taken *after* the gain stage.
+ * @param linear  the multiplier that stage was applying (`InputGain.linear`).
+ *
+ * Exact wherever it matters: the only lossy part is saturation at +-1, and a
+ * signal loud enough to clip is far above every gate this feeds. A non-positive
+ * or non-finite multiplier (no mic yet) passes the value through unchanged.
+ */
+export function atReferenceGain(rms: number, linear: number): number {
+  if (!Number.isFinite(linear) || linear <= 0) return rms
+  return rms * (REFERENCE_LINEAR / linear)
 }
 
 export interface InputGainStats {

@@ -22,7 +22,13 @@ from app.config import Settings
 from app.models import VoiceProviderId, VoiceToken
 from app.voice.base import VoiceUnavailable
 from app.voice.prompt import build_system_instruction
-from app.voice.relay import UpstreamConfig, build_voice_live_session, issue_ticket, to_wss
+from app.voice.relay import (
+    UpstreamConfig,
+    build_voice_live_session,
+    issue_ticket,
+    to_wss,
+    voice_live_turn_detection,
+)
 from app.voice.tools import as_openai_tools
 
 
@@ -31,6 +37,9 @@ class AzureVoiceLiveAdapter:
 
     id: VoiceProviderId = "azure_voice_live"
     reusable_grant = False  # the relay ticket is single-use
+    # `azure_semantic_vad` must stay on (its echo canceller needs it), so `client`
+    # end-of-speech is not available for this product — `hybrid` or `provider`.
+    default_endpointing = "hybrid"
 
     def missing_config(self, settings: Settings) -> str | None:
         if not settings.azure_voice_live_endpoint:
@@ -52,6 +61,7 @@ class AzureVoiceLiveAdapter:
             raise VoiceUnavailable(reason)
 
         model = settings.azure_voice_live_model
+        endpointing = settings.azure_voice_live_endpointing
         url = (
             f"{to_wss(settings.azure_voice_live_endpoint)}/voice-live/realtime"
             f"?api-version={settings.azure_voice_live_api_version}&model={model}"
@@ -62,6 +72,7 @@ class AzureVoiceLiveAdapter:
             voice=settings.azure_voice_live_voice,
             voice_type=settings.azure_voice_live_voice_type,
             transcription_model=settings.azure_voice_live_transcribe_model,
+            turn_detection=voice_live_turn_detection(endpointing),
             extras={
                 # Voice Live's speech-first additions; the whole reason to run it.
                 "input_audio_noise_reduction": {"type": "azure_deep_noise_suppression"},
@@ -73,6 +84,7 @@ class AzureVoiceLiveAdapter:
             url=url,
             headers={"api-key": settings.azure_voice_live_api_key},
             session_update=session,
+            endpointing=endpointing,
         )
         ttl = settings.voice_relay_ticket_ttl_seconds
         ticket = issue_ticket(config, ttl)
@@ -81,6 +93,6 @@ class AzureVoiceLiveAdapter:
             token=ticket,
             model=model,
             expires_at=datetime.now(UTC) + timedelta(seconds=ttl),
-            manual_activity=True,
+            endpointing=endpointing,
             surface=surface,
         )

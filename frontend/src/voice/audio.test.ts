@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { AudioSink, MicSource, resetLearnedPrebuffer } from './audio'
+import { AudioSink, MicSource } from './audio'
 import { DEFAULT_INPUT_GAIN_DB, dbToLinear } from './gain'
 
 const OUTPUT_RATE = 24_000
@@ -26,7 +26,13 @@ class FakeContext {
   readonly started: { at: number; duration: number; node: FakeSource }[] = []
 
   createGain() {
-    return { gain: { value: 1 }, connect: vi.fn() }
+    return { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }
+  }
+
+  // Present so `createEchoCancelledOutput` can probe it; jsdom has no
+  // `RTCPeerConnection`, so the sink falls back to `destination` regardless.
+  createMediaStreamDestination() {
+    return { stream: { getAudioTracks: () => [] }, connect: vi.fn(), disconnect: vi.fn() }
   }
 
   createBuffer(_channels: number, length: number, rate: number) {
@@ -71,13 +77,12 @@ class FakeSource {
   stop() {}
 }
 
-describe('AudioSink jitter buffer', () => {
+describe('AudioSink playback', () => {
   let context: FakeContext
   let drained: ReturnType<typeof vi.fn>
   let sink: AudioSink
 
   beforeEach(() => {
-    resetLearnedPrebuffer()
     context = new FakeContext()
     vi.stubGlobal(
       'AudioContext',
@@ -88,60 +93,50 @@ describe('AudioSink jitter buffer', () => {
     sink.activate()
   })
 
-  it('holds the first chunks back until it has a cushion', () => {
-    // 200 ms is under the 450 ms prebuffer: nothing should reach the graph yet,
-    // but the turn is not idle either — the sink is holding audio.
+  it('schedules each chunk as it arrives, contiguously', () => {
+    // No cushion: the first chunk reaches the graph immediately, and every
+    // following chunk is scheduled back-to-back off the running cursor.
     sink.enqueue(chunk(200))
-    expect(context.started).toHaveLength(0)
+    expect(context.started).toHaveLength(1)
     expect(sink.pending()).toBe(true)
 
     sink.enqueue(chunk(200))
     sink.enqueue(chunk(200))
-    // Cushion full — everything queued is scheduled contiguously, no seams.
     expect(context.started).toHaveLength(3)
     const [first, second, third] = context.started
     expect(second.at).toBeCloseTo(first.at + first.duration, 5)
     expect(third.at).toBeCloseTo(second.at + second.duration, 5)
   })
 
-  it('plays a reply shorter than the cushion once the turn is finalised', () => {
+  it('plays a short reply immediately; finalizeStream is a no-op', () => {
     sink.enqueue(chunk(150))
-    expect(context.started).toHaveLength(0)
-
-    sink.finalizeStream()
-
     expect(context.started).toHaveLength(1)
     expect(sink.pending()).toBe(true)
+
+    sink.finalizeStream()
+    expect(context.started).toHaveLength(1)
   })
 
-  it('re-buffers after an underrun instead of scheduling into the gap', () => {
+  it('schedules a late chunk into a fresh slot and counts the underrun', () => {
     sink.enqueue(chunk(500))
     expect(context.started).toHaveLength(1)
 
     // The scheduled audio plays out entirely before the next chunk arrives —
-    // the sub-real-time delivery the Live API warns about.
+    // the sub-real-time delivery the Live API warns about. There is an audible
+    // gap, but the chunk is played, not held.
     context.advance(2)
     expect(drained).toHaveBeenCalledTimes(1)
 
-    // A lone late chunk must not be dropped straight into the silence; it waits
-    // for a fresh cushion — and that cushion is now *deeper* than the 450 ms
-    // that just failed, because resuming on a depth the stream has already
-    // outrun only stalls again (one reply stuttered eight times that way).
-    sink.enqueue(chunk(200))
     sink.enqueue(chunk(300))
-    expect(context.started).toHaveLength(0)
-
-    // 900 ms — doubled — is the new bar.
-    sink.enqueue(chunk(400))
-    expect(context.started).toHaveLength(3)
-    expect(sink.arrivalStats().prebufferMs).toBe(900)
+    expect(context.started).toHaveLength(1)
+    expect(sink.arrivalStats().underruns).toBe(1)
   })
 
-  it('does not report drained while chunks are still buffered', () => {
-    // The truncation bug: a mid-reply drain used to look like end-of-turn, so a
-    // `turnComplete` landing in that window cut the rest of the reply off.
+  it('does not report drained while a later chunk is still playing', () => {
+    // The truncation guard: a mid-reply drain must not look like end-of-turn, or
+    // a `turnComplete` landing in that window cuts the rest of the reply off.
     sink.enqueue(chunk(500))
-    sink.enqueue(chunk(100))
+    sink.enqueue(chunk(500))
     context.advance(0.7)
 
     expect(sink.pending()).toBe(true)
@@ -153,11 +148,38 @@ describe('AudioSink jitter buffer', () => {
     sink.flush()
     expect(sink.pending()).toBe(false)
   })
+
+  it('schedules reply audio at the rate the provider declared', () => {
+    // 12 000 samples of PCM16: 0.5 s at 24 kHz, 0.75 s at 16 kHz. The sink must
+    // take the rate from the connected provider, not from a baked-in constant.
+    const half = chunk(500)
+    sink.setOutputSampleRate(16_000)
+    sink.enqueue(half)
+    expect(context.started[0].duration).toBeCloseTo(0.75, 3)
+  })
+
+  it('plays out even when the echo-cancelled loopback is unavailable', () => {
+    // jsdom has no `RTCPeerConnection`, so the sink wires straight to
+    // `destination`. Playback must be unaffected.
+    expect(() => sink.playTestTone()).not.toThrow()
+    sink.enqueue(chunk(120))
+    expect(context.started).toHaveLength(1)
+  })
 })
 
 describe('MicSource input gain', () => {
-  it('starts at the +12 dB default', () => {
-    expect(new MicSource().inputGainDb).toBe(DEFAULT_INPUT_GAIN_DB)
+  it('starts at the shared default gain', () => {
+    const mic = new MicSource()
+    expect(mic.inputGainDb).toBe(DEFAULT_INPUT_GAIN_DB)
+    expect(mic.inputGainLinear).toBeCloseTo(dbToLinear(DEFAULT_INPUT_GAIN_DB), 6)
+  })
+
+  it('exposes the multiplier so level thresholds can be normalised to the reference', () => {
+    const mic = new MicSource()
+    mic.setInputGainDb(0)
+    expect(mic.inputGainLinear).toBe(1)
+    mic.setInputGainDb(26)
+    expect(mic.inputGainLinear).toBeCloseTo(dbToLinear(26), 6)
   })
 
   it('accepts a new gain in dB and ignores non-finite values', () => {

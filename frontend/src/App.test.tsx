@@ -189,7 +189,7 @@ describe('Mission Control dashboard', () => {
     expect(document.querySelector('.day-events .event-chip')).not.toBeInTheDocument()
   })
 
-  it('opens the Timer tab, starts a timer, and routes the Home control back to it', async () => {
+  it('starts a timer, keeps navigation unlocked, and tracks the countdown in the dock', async () => {
     const today = new Date()
     const startsAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 16).toISOString()
     const running = {
@@ -226,15 +226,22 @@ describe('Mission Control dashboard', () => {
     fireEvent.click(screen.getByRole('button', { name: '10 min' }))
     fireEvent.click(screen.getByRole('button', { name: 'Start timer' }))
 
-    // The running countdown appears and the tab shows an active indicator.
+    // The running countdown appears; the Timer tab is marked active-with-a-timer.
     await waitFor(() => expect(document.querySelector('.timer-running')).toBeInTheDocument())
-    expect(document.querySelector('.dock-timer .timer-dot')).toBeInTheDocument()
+    expect(document.querySelector('.dock-timer')).toHaveClass('running')
+    // On the Timer view itself the dock readout stays hidden — the big countdown repeats it.
+    expect(document.querySelector('.dock-timer-remaining')).not.toBeInTheDocument()
 
-    // Navigating away then using the brand/Home control returns to the timer, not Home.
+    // Navigating away leaves the timer running and surfaces its countdown in the dock.
     fireEvent.click(screen.getAllByRole('button', { name: 'Week' })[0])
     await waitFor(() => expect(document.querySelector('.week-view')).toBeInTheDocument())
+    expect(document.querySelector('.dock-timer-remaining')?.textContent).toMatch(/^\d+:\d{2}$/)
+
+    // The brand / Home control now goes Home — a running timer no longer traps navigation —
+    // and the countdown follows onto the Home view.
     fireEvent.click(screen.getByRole('button', { name: 'Go to Home' }))
-    await waitFor(() => expect(document.querySelector('.timer-running')).toBeInTheDocument())
+    await waitFor(() => expect(document.querySelector('.home-view')).toBeInTheDocument())
+    expect(document.querySelector('.dock-timer-remaining')?.textContent).toMatch(/^\d+:\d{2}$/)
   })
 
   it('keeps the Home/Week/Month/Timer group stable and shows Today only as a contextual action', async () => {

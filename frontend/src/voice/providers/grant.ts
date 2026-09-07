@@ -51,7 +51,7 @@ export async function fetchVoiceGrant(
     provider: grant.provider,
     model: grant.model,
     apiVersion: grant.api_version,
-    manualActivity: grant.manual_activity ?? false,
+    endpointing: grant.endpointing ?? 'client',
   })
   return grant
 }

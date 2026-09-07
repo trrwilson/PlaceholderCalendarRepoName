@@ -57,18 +57,20 @@ export class VoiceTimeline {
    * label (a turn may e.g. call two tools); `provider` / `model` are lifted from
    * the `token-received` mark so the bake-off can group by contestant.
    */
-  toReport(): Pick<VoiceTurnReport, 'provider' | 'model' | 'milestones'> {
+  toReport(): Pick<VoiceTurnReport, 'provider' | 'model' | 'endpointing' | 'milestones'> {
     const milestones: Record<string, number> = {}
     let provider: string | undefined
     let model: string | undefined
+    let endpointing: string | undefined
     for (const entry of this.entries) {
       milestones[entry.label] = entry.atMs
       if (entry.label === 'token-received' && entry.detail) {
         provider = (entry.detail.provider as string) ?? provider
         model = (entry.detail.model as string) ?? model
+        endpointing = (entry.detail.endpointing as string) ?? endpointing
       }
     }
-    return { provider, model, milestones }
+    return { provider, model, endpointing, milestones }
   }
 }
 
@@ -82,6 +84,8 @@ export interface VoiceTurnReport {
   ok: boolean
   provider?: string
   model?: string
+  /** end-of-speech ownership for the turn: `client` | `hybrid` | `provider`. */
+  endpointing?: string
   failureKind?: string
   /** milestone label → ms from the start of the turn */
   milestones: Record<string, number>

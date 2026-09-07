@@ -186,6 +186,76 @@ async def test_snoozing_a_fired_timer_rebases_from_now() -> None:
     assert snoozed.fires_at == clock.now + timedelta(seconds=300)
 
 
+async def test_pause_freezes_the_remaining_time_and_resume_continues_it() -> None:
+    clock = FakeClock(BASE)
+    store, sent = make_store(clock)
+    created = await store.create(TimerCreateRequest(duration_seconds=600, label="pasta"))
+
+    clock.advance(120)
+    paused = await store.pause(created.timer.id)
+    assert paused.state is TimerState.paused
+    assert paused.remaining_seconds == 480
+    assert sent[-1].type == "timer-paused"
+
+    # Time passing while paused does not eat into the timer.
+    clock.advance(3_600)
+    resumed = await store.resume(created.timer.id)
+    assert resumed.state is TimerState.running
+    assert resumed.remaining_seconds is None
+    assert resumed.fires_at == clock.now + timedelta(seconds=480)
+    assert resumed.duration_seconds == 600  # original duration preserved
+    assert sent[-1].type == "timer-resumed"
+
+
+async def test_pause_rejects_a_timer_that_is_not_running() -> None:
+    clock = FakeClock(BASE)
+    store, _ = make_store(clock)
+    created = await store.create(TimerCreateRequest(duration_seconds=600))
+    await store.fire(created.timer.id)
+    with pytest.raises(TimerError):
+        await store.pause(created.timer.id)
+
+
+async def test_resume_rejects_a_timer_that_is_not_paused() -> None:
+    clock = FakeClock(BASE)
+    store, _ = make_store(clock)
+    created = await store.create(TimerCreateRequest(duration_seconds=600))
+    with pytest.raises(TimerError):
+        await store.resume(created.timer.id)
+
+
+async def test_extending_a_paused_timer_keeps_it_paused() -> None:
+    clock = FakeClock(BASE)
+    store, _ = make_store(clock)
+    created = await store.create(TimerCreateRequest(duration_seconds=600))
+    clock.advance(120)
+    await store.pause(created.timer.id)
+
+    extended = await store.extend(created.timer.id, TimerExtendRequest(add_seconds=300))
+    assert extended.state is TimerState.paused
+    assert extended.remaining_seconds == 780
+
+
+async def test_restart_resets_to_the_full_duration_from_any_state() -> None:
+    clock = FakeClock(BASE)
+    store, sent = make_store(clock)
+    created = await store.create(TimerCreateRequest(duration_seconds=600, label="pasta"))
+    await store.fire(created.timer.id)
+
+    clock.advance(45)
+    restarted = await store.restart(created.timer.id)
+    assert restarted.state is TimerState.running
+    assert restarted.fires_at == clock.now + timedelta(seconds=600)
+    assert sent[-1].type == "timer-restarted"
+
+
+async def test_pause_resume_restart_unknown_timer_raises_keyerror() -> None:
+    store, _ = make_store(FakeClock(BASE))
+    for op in (store.pause, store.resume, store.restart):
+        with pytest.raises(KeyError):
+            await op("nope")
+
+
 # -- endpoints ---------------------------------------------------------------------
 
 
@@ -222,6 +292,44 @@ def test_delete_cancels_and_unknown_is_404(client: TestClient) -> None:
     assert client.delete(f"/api/timers/{created['id']}").status_code == 204
     assert client.get("/api/timers").json() == []
     assert client.delete("/api/timers/nope").status_code == 404
+
+
+def test_pause_resume_and_restart_endpoints(client: TestClient) -> None:
+    created = client.post("/api/timers", json={"duration_seconds": 600}).json()["timer"]
+
+    paused = client.post(f"/api/timers/{created['id']}/pause")
+    assert paused.status_code == 200
+    assert paused.json()["state"] == "paused"
+    assert paused.json()["remaining_seconds"] is not None
+
+    # Pausing an already-paused timer is a state conflict, not a crash.
+    assert client.post(f"/api/timers/{created['id']}/pause").status_code == 409
+
+    resumed = client.post(f"/api/timers/{created['id']}/resume")
+    assert resumed.status_code == 200
+    assert resumed.json()["state"] == "running"
+
+    assert client.post(f"/api/timers/{created['id']}/resume").status_code == 409
+
+    restarted = client.post(f"/api/timers/{created['id']}/restart")
+    assert restarted.status_code == 200
+    assert restarted.json()["duration_seconds"] == 600
+
+
+def test_pause_resume_restart_unknown_timer_is_404(client: TestClient) -> None:
+    for op in ("pause", "resume", "restart"):
+        assert client.post(f"/api/timers/nope/{op}").status_code == 404
+
+
+def test_timer_model_rejects_a_paused_state_without_remaining_seconds() -> None:
+    with pytest.raises(ValidationError):
+        Timer(
+            id="x",
+            created_at=BASE,
+            fires_at=BASE + timedelta(seconds=600),
+            duration_seconds=600,
+            state=TimerState.paused,
+        )
 
 
 def test_timer_endpoints_are_gated_to_the_local_network() -> None:

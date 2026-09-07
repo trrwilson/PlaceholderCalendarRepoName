@@ -10,8 +10,9 @@ are locked into every session grant, and the kiosk mirrors these names in
   state in the browser (no backend, no side effects).
 * ``get_events`` / ``get_agenda`` / ``check_conflicts`` are answered by the kiosk
   from ``GET /api/calendar`` — the agent never reaches a calendar provider directly.
-* ``start_timer`` / ``cancel_timer`` / ``extend_timer`` / ``get_timer`` drive the
-  kitchen timer through ``/api/timers`` — the **only** state-mutating voice tools
+* ``start_timer`` / ``cancel_timer`` / ``extend_timer`` / ``pause_timer`` /
+  ``resume_timer`` / ``restart_timer`` / ``get_timer`` drive the kitchen timer
+  through ``/api/timers`` — the **only** state-mutating voice tools
   (a narrow, documented exception to the read-only rule: ephemeral, local,
   single-appliance state with no external side effect; calendar writes stay out).
 
@@ -68,6 +69,28 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
                 }
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "set_people_filter",
+        "description": (
+            "Change which household members' calendars are shown. mode 'only' "
+            "shows just the named people (e.g. 'show Sarah's calendar'), 'add' / "
+            "'remove' adjust the current selection, 'all' clears the filter and "
+            "shows everyone. Names are matched to the household loosely. This is "
+            "view state only — it does not change any calendar."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "mode": {"type": "STRING", "enum": ["only", "add", "remove", "all"]},
+                "people": {
+                    "type": "ARRAY",
+                    "items": {"type": "STRING"},
+                    "description": "Person names or household-calendar ids; empty for mode 'all'.",
+                },
+            },
+            "required": ["mode"],
         },
     },
     {
@@ -155,6 +178,31 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
             },
             "required": ["add_minutes"],
         },
+    },
+    {
+        "name": "pause_timer",
+        "description": (
+            "Pause the running timer, holding the time that is left until it is "
+            "resumed ('pause the timer', 'hold the timer')."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "resume_timer",
+        "description": (
+            "Resume a paused timer so it keeps counting down from where it "
+            "stopped ('resume', 'unpause', 'keep the timer going')."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "restart_timer",
+        "description": (
+            "Restart the current timer from its original full duration ('restart "
+            "the timer', 'start it over', 'reset the timer'). Works while it is "
+            "running, paused, or going off."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
     },
     {
         "name": "get_timer",

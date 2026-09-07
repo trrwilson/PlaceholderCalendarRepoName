@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from app.models import CalendarColor, VoiceProviderId
+from app.models import CalendarColor, Endpointing, VoiceProviderId
 
 
 def _split_csv(value: object) -> object:
@@ -57,22 +57,32 @@ class Settings(BaseSettings):
     # Which conversational voice provider handles a turn after activation. This
     # is a bake-off (see docs/voice-provider-bakeoff-plan.md); the kiosk chooses
     # one for good later. Wake-word selection is deliberately orthogonal to this
-    # (see AGENTS.md -> "Voice assistant -> Provider architecture"). A future
-    # "Local / Hybrid" pipeline would be another value here — it does not exist
-    # yet and is not selectable. Each provider has its own credential block below
-    # and its own `missing_config` check; `voice_enabled` is the master switch.
+    # (see AGENTS.md -> "Voice assistant -> Provider architecture"). The
+    # experimental "local" value selects the on-device STT + intent pipeline in
+    # app/voice/local/ (its own knobs are further below). Each provider has its
+    # own credential block below and its own `missing_config` check;
+    # `voice_enabled` is the master switch.
     voice_provider: VoiceProviderId = "gemini"
 
     # -- Voice assistant: microphone capture ---------------------------------
-    # A plain amplitude gain the kiosk browser applies to captured microphone
-    # PCM, before wake-word detection and before the audio is streamed to the
-    # conversational provider. Expressed in decibels and converted to a linear
-    # multiplier as ``10 ** (db / 20)``; 0 dB is unity and disables the stage.
-    # Kiosk microphones are typically far-field and quiet, so the default lifts
-    # the level. Tune it empirically against the throttled ``[voice] mic input
-    # level`` console line (peak / RMS / clip%). Independent of the microphone
-    # hardware and of the ``getUserMedia`` constraints — it only touches samples.
-    mic_input_gain_db: float = 12.0
+    # Capture settings are pipeline-wide, not per provider: one microphone, one
+    # gain stage, one set of rates. See docs/audio-pipeline.md.
+    #
+    # THE microphone level knob. A plain amplitude gain the kiosk browser applies
+    # to captured PCM once, before wake-word detection and before the audio is
+    # streamed to the conversational provider. Expressed in decibels and
+    # converted to a linear multiplier as ``10 ** (db / 20)``; 0 dB is unity and
+    # disables the stage. Kiosk microphones are typically far-field and quiet, so
+    # the default lifts the level. Tune it empirically against the throttled
+    # ``[voice] mic input level`` console line (peak / RMS / clip%).
+    #
+    # Deliberately the *only* level control: browser auto-gain-control is off so
+    # it cannot fight this, and the kiosk's end-of-speech thresholds are
+    # normalised to a fixed reference gain so changing this does not move them.
+    # Independent of the microphone hardware and of the ``getUserMedia``
+    # constraints — it only touches samples. Mirrored as the fallback default in
+    # ``frontend/src/voice/gain.ts`` (``DEFAULT_INPUT_GAIN_DB``); keep in step.
+    mic_input_gain_db: float = 20.0
 
     @field_validator("mic_input_gain_db")
     @classmethod
@@ -137,17 +147,20 @@ class Settings(BaseSettings):
     # stays LAN-gated, so a leaked token can only open more of the same
     # constrained session. Set to a small positive number to tighten that.
     voice_token_uses: int = 0
-    # Turn boundaries. `False` (default) is *hybrid VAD*: the service runs its own
+    # End-of-speech ownership for Gemini (see `app.models.Endpointing` and
+    # docs/voice-provider-bakeoff-plan.md -> "End-of-speech ownership").
+    # `False` (default) selects `endpointing = "hybrid"`: the service runs its own
     # streaming voice-activity detection — which is what keeps incremental ASR
     # running *while* the person is still talking — and the kiosk's RMS silence
     # detector additionally sends `audioStreamEnd` to finalise the turn the
     # instant it hears the pause, instead of waiting out the server's timeout.
-    # `True` restores fully manual activityStart/activityEnd with the service VAD
-    # switched off. Manual was adopted in 2026-09 because the old native-audio
-    # model produced silent turns under automatic VAD; the cost was that the
-    # server buffers the whole utterance and only transcribes it after
-    # `activityEnd`, which is where the multi-second post-utterance stall and the
-    # total absence of `interimInputTranscription` came from.
+    # `True` selects `endpointing = "client"`: fully manual activityStart/
+    # activityEnd with the service VAD switched off. Manual was the escape hatch
+    # adopted in 2026-09 when the old native-audio model produced silent turns
+    # under automatic VAD; the cost is that the server then buffers the whole
+    # utterance and only transcribes it after `activityEnd`, which is where the
+    # multi-second post-utterance stall and the total absence of
+    # `interimInputTranscription` came from.
     voice_manual_activity: bool = False
     # Service-VAD endpointing, used only when `voice_manual_activity` is False.
     # Google's own low-latency example uses 20 ms / 100 ms; these are a little
@@ -183,6 +196,16 @@ class Settings(BaseSettings):
     azure_openai_realtime_deployment: str = "gpt-realtime-2.1"
     azure_openai_realtime_mini_deployment: str = "gpt-realtime-2.1-mini"
     azure_openai_realtime_voice: str = "marin"
+    # End-of-speech ownership for the realtime path (see `app.models.Endpointing`).
+    # `hybrid` (default): `semantic_vad` runs with `create_response: false` — it
+    # keeps a streaming recogniser under the audio and emits `speech_stopped`,
+    # which the kiosk endpoints on, but the kiosk still owns the reply. `client`:
+    # `turn_detection: null`, the kiosk's mic-RMS detector is the whole endpointer.
+    # `provider`: `semantic_vad` with `create_response: true` — the model answers
+    # on its own VAD endpoint and the kiosk sends no finalise. `semantic_vad`
+    # deliberately waits through an incomplete phrase ("set a timer for…"), which
+    # a raw-energy detector cannot, so `hybrid` is the better default.
+    azure_openai_realtime_endpointing: Endpointing = "hybrid"
     # Deployment name of a transcribe model for the user's speech. Default
     # `gpt-4o-transcribe` (verified deployed on mc-foundry-eastus2). Blank turns
     # the user transcript off; a name with no matching deployment degrades to a
@@ -207,10 +230,19 @@ class Settings(BaseSettings):
     )
     azure_voice_live_api_version: str = "2026-07-15"
     azure_voice_live_model: str = "gpt-realtime"
-    # Start with an Azure *standard* neural voice (not an HD/Dragon voice).
-    azure_voice_live_voice: str = "en-US-AvaNeural"
+    # An Azure *standard* neural voice (not an HD/Dragon voice). `en-GB-SoniaNeural`
+    # is Azure's flagship British English female voice (the default en-GB voice,
+    # style-capable). Swap for an en-AU / en-US name to change the accent.
+    azure_voice_live_voice: str = "en-GB-SoniaNeural"
     azure_voice_live_voice_type: str = "azure-standard"
     azure_voice_live_transcribe_model: str = "whisper-1"
+    # End-of-speech ownership for Voice Live. `azure_semantic_vad` is *always* in
+    # the session — the live resource rejects server-side echo cancellation when
+    # turn detection is off and then kills the session — so `client` is not
+    # available here. `hybrid` (default) keeps `create_response: false` (kiosk
+    # owns the reply, endpoints on the forwarded `speech_stopped`); `provider`
+    # flips `create_response: true` so Voice Live answers on its own endpoint.
+    azure_voice_live_endpointing: Literal["hybrid", "provider"] = "hybrid"
 
     # How long a relay ticket (handed to the kiosk in the grant, spent to open the
     # `WS /api/voice/live` socket) stays valid. Short — it is used once, seconds
@@ -230,7 +262,7 @@ class Settings(BaseSettings):
     wake_word_phrase: str = "Mission Control"
     # openWakeWord score (0..1) above which a frame counts as the wake phrase.
     # Higher = fewer false activations but more missed ones.
-    wake_word_threshold: float = 0.5
+    wake_word_threshold: float = 0.3
     # Ignore further detections for this long after one fires, so a single
     # utterance cannot open two turns.
     wake_word_cooldown_ms: int = 2_000
@@ -239,6 +271,76 @@ class Settings(BaseSettings):
     # and ``.../embedding_model.onnx``.
     wake_word_model_path: str = "/models/wake/mission_control.onnx"
     wake_word_models_base_url: str = "/models/wake"
+
+    # -- Voice debug audio capture ----------------------------------------
+    # The kiosk keeps the last N activations' provider-input audio in the
+    # browser; when this is on it also POSTs each finished capture to
+    # ``POST /api/voice/debug/capture``, which writes a headered WAV plus a
+    # ``.json`` sidecar here so a wake-word / endpointing / misheard-command
+    # problem can be played back. Local-only, like every voice route. Relative
+    # paths are under the backend working directory (alongside the MSAL cache);
+    # an absolute path works too.
+    voice_debug_capture_enabled: bool = True
+    voice_debug_capture_dir: str = "voice-captures"
+    # Headered WAV + sidecar pairs kept on disk; the oldest are pruned as new
+    # ones arrive. 0 keeps everything.
+    voice_debug_capture_keep: int = 10
+
+    # -- Voice assistant: Local / Hybrid pipeline (experimental) -----------
+    # A fifth "provider" (`MISSION_CONTROL_VOICE_PROVIDER=local`) that runs
+    # speech recognition and intent/entity interpretation on this host instead
+    # of a cloud speech-to-speech service, and only escalates to a cloud model
+    # for requests that genuinely need general language reasoning. See
+    # docs/local-voice-plan.md and AGENTS.md -> "Voice assistant -> Local /
+    # Hybrid pipeline". Nothing here affects the cloud contestants.
+    #
+    # STT engine: "auto" picks the first installed of faster_whisper /
+    # sherpa_onnx, else a dependency-free scripted recogniser (text-bypass only).
+    local_stt_engine: Literal["auto", "faster_whisper", "sherpa_onnx", "null"] = "auto"
+    # faster-whisper: a model id ("tiny.en", "base.en", "small.en", "distil-small.en").
+    # sherpa-onnx: a streaming-zipformer model directory (abs path or under
+    # local_stt_models_dir). Command recognition wants a *small* model. On this
+    # dev box's CPU (int8), measured end-of-speech -> final transcript:
+    # tiny.en ~160 ms, base.en ~280 ms, small.en ~870 ms, at near-identical WER
+    # on short commands (docs/local-stt-evaluation.md) — so base.en is the
+    # default; drop to tiny.en for the snappiest response, raise to small.en only
+    # if a slower kiosk CPU shows accuracy problems.
+    local_stt_model: str = "base.en"
+    local_stt_device: Literal["auto", "cpu", "cuda"] = "auto"
+    # faster-whisper compute type; "auto" -> int8 on CPU, float16 on CUDA.
+    local_stt_compute_type: str = "auto"
+    local_stt_beam_size: int = 1
+    # Where engines cache downloaded model files. Blank -> the engine default
+    # (the Hugging Face cache for faster-whisper). Model binaries are never
+    # committed (AGENTS.md -> "ML / audio / vision model artifacts").
+    local_stt_models_dir: str = ""
+    # Interpretation thresholds. Below `intent` -> escalate/clarify; a *mutating*
+    # request below `mutation` is never executed on a guess (it asks instead).
+    local_intent_confidence_threshold: float = 0.55
+    local_mutation_confidence_threshold: float = 0.8
+    local_entity_confidence_threshold: float = 0.55
+    # When false, requests the local layer can't handle are a plain "can't do
+    # that" instead of being handed to a cloud model.
+    local_cloud_escalation_enabled: bool = True
+    # Casual -> real name hints for entity resolution ("mom=Sarah,dad=Travis").
+    # Only a hint; an alias still has to fuzzy-match a real household calendar.
+    local_person_aliases: Annotated[dict[str, str], NoDecode] = {}
+    # Emit the full interpretation trace (transcript, intent scores, entity
+    # candidates, timings) on the diagnostic channel / `POST .../local/interpret`.
+    local_voice_diagnostics: bool = True
+
+    @field_validator("local_person_aliases", mode="before")
+    @classmethod
+    def _parse_aliases(cls, value: object) -> object:
+        if isinstance(value, str):
+            out: dict[str, str] = {}
+            for pair in value.split(","):
+                if "=" in pair:
+                    key, val = pair.split("=", 1)
+                    if key.strip() and val.strip():
+                        out[key.strip()] = val.strip()
+            return out
+        return value
 
     # -- Timers -------------------------------------------------------------
     # The product ceiling for a timer / alarm lookahead. Overridable, but this is

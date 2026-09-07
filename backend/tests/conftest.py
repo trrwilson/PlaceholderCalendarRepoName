@@ -4,6 +4,7 @@ from app.api import _build_provider
 from app.config import Settings, get_settings
 from app.timers import reset_timer_store
 from app.voice import reset_voice_token_cache
+from app.voice.local.session import reset_local_tickets, reset_recognizer
 from app.voice.providers import reset_provider_override
 from app.voice.relay import reset_relay_tickets
 
@@ -24,6 +25,8 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     reset_voice_token_cache()
     reset_provider_override()
     reset_relay_tickets()
+    reset_local_tickets()
+    reset_recognizer()
     yield
     get_settings.cache_clear()
     _build_provider.cache_clear()
@@ -31,3 +34,5 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     reset_voice_token_cache()
     reset_provider_override()
     reset_relay_tickets()
+    reset_local_tickets()
+    reset_recognizer()

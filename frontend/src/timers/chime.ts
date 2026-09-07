@@ -10,6 +10,16 @@
 // first pointer interaction anywhere in the app (see useTimers) so the context
 // is warm by the time a timer fires; if it still cannot play, the caller falls
 // back to a visual-only alarm.
+//
+// Like the assistant's own playout, the chime renders through the echo-cancelled
+// output bus (`voice/aecPlayback.ts`) rather than straight at
+// `context.destination`. A timer routinely rings *while* someone is talking to
+// the kiosk ("Mission Control, stop the timer"), and anything not in Chromium's
+// AEC render reference reaches the open microphone at full level and is heard as
+// speech. Echo cancellation is a whole-appliance requirement, not a voice-module
+// one — see docs/audio-pipeline.md.
+
+import { createEchoCancelledOutput, type EchoCancelledOutput } from '../voice/aecPlayback'
 
 const FIRST_INTERVAL_MS = 2_000
 const INSISTENT_INTERVAL_MS = 1_400
@@ -28,6 +38,7 @@ function audioContextCtor(): Ctor | null {
 
 export class AlarmChime {
   private context: AudioContext | null = null
+  private output: EchoCancelledOutput | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private startedAt = 0
   private running = false
@@ -44,6 +55,11 @@ export class AlarmChime {
         return
       }
     }
+    // Built here, on the unlock gesture, so the loopback peer connection is long
+    // established before a timer actually fires. It degrades to the plain
+    // destination where `RTCPeerConnection` is unavailable, so the chime always
+    // sounds — at worst without being cancelled from the capture side.
+    if (!this.output) this.output = createEchoCancelledOutput(this.context)
     if (this.context.state === 'suspended') void this.context.resume().catch(() => undefined)
   }
 
@@ -87,7 +103,7 @@ export class AlarmChime {
     const now = context.currentTime
     const out = context.createGain()
     out.gain.value = 0.9
-    out.connect(context.destination)
+    out.connect(this.output?.node ?? context.destination)
     // Soft two-note bell: a fundamental plus a fifth above, quick attack, ~1.1 s decay.
     for (const [freq, level, delay] of [
       [660, 0.18, 0],

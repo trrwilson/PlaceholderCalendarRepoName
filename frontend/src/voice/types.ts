@@ -38,4 +38,14 @@ export interface DashboardActions {
   showView(view: ViewMode, date: Date | null): void
   focusDate(date: Date): void
   highlightEvent(query: string): { matched: boolean; title?: string; when?: string }
+  /**
+   * Change which household members' calendars are shown (the People filter).
+   * `mode: 'only'` shows just `people`, `'all'` clears the filter, `'add'` /
+   * `'remove'` adjust it. Entries are calendar ids or loose name matches.
+   * View state only — never touches a provider.
+   */
+  setPeopleFilter(mode: 'only' | 'add' | 'remove' | 'all', people: string[]): {
+    matched: string[]
+    unmatched: string[]
+  }
 }

@@ -9,6 +9,26 @@ taken headlessly are in `docs/timer-implementation-notes.md`. This section is ke
 as the design record; the rest of the document still describes the intended
 behaviour.
 
+**Amendment (2026-09-07) — pause / resume / restart.** The timer now supports
+pausing (freeze the countdown into `Timer.remaining_seconds`, `state = "paused"`),
+resuming (rebase `created_at`/`fires_at` from now, keeping the original
+`duration_seconds`), and restarting (reset to the full `duration_seconds` from any
+state). New endpoints `POST /api/timers/{id}/pause|resume|restart`; new voice tools
+`pause_timer` / `resume_timer` / `restart_timer` (cloud + local pipelines);
+`TimerView` running state gains a Pause/Resume toggle and a Restart button; the dock
+button shows `Paused`. Extending a paused timer keeps it paused. Cross-referenced
+against the pause/resume/reset treatment common to Google Assistant and Alexa
+timers. See `docs/timer-implementation-notes.md` for the build decisions.
+
+**Amendment (2026-09-06) — the running timer no longer locks the display.**
+The first cut let a running timer capture the "return to default" affordance, so
+the brand / Home control could not reach Home while a timer ran. That is fixed:
+the Timer view is the *ambient* default while a timer is active, but explicit
+navigation always wins, and the soonest-to-fire timer's remaining time now rides
+on the Timer dock button on every other view. See **Default view while a timer is
+active** and **Cross-view timer tracking** below; both sections have been
+rewritten to match.
+
 Scope owner note: the requester asked for a plan that (a) gives timers a dedicated
 tab that becomes the default view while a timer is active, (b) supports
 voice-first, mixed-modality, and touch-only configuration, (c) caps timer
@@ -23,10 +43,10 @@ until a person dismisses it.
 | --- | --- |
 | Timer state ownership | **Backend-owned, in-memory.** The backend is the single source of truth, holds timers in process memory, and pushes changes to the kiosk over the existing `/api/ws` WebSocket using the `ApplicationMessage` envelope. **A backend restart clears active timers** — accepted limitation. No SQLite, no JSON sidecar, no new datastore. |
 | Concurrency | **One active timer at a time** for this task. Model, API, and UI must be shaped so a later change to *N* concurrent timers does not require a redesign — but do **not** build multi-timer UI, disambiguation, or storage now. Starting a timer while one exists **replaces it silently** (no confirmation prompt), but every output path — spoken reply, the tab, any toast — states that a previous timer was replaced and what it was. |
-| Default view | Philosophically, once a timer exists **timers become the "default" view.** Starting a timer switches to the Timer tab. Manual navigation afterwards always wins and is left alone (persistent cross-page timer affordances are a future consideration). But **any behaviour that would revert the experience to a default/idle state goes to the running timer instead of Home** whenever a timer is `running` or `fired`. |
+| Default view | Once a timer exists the Timer view becomes the **ambient default** — the view the app settles on when *it* chooses (starting a timer, a timer firing, cold boot, a future idle-revert). It is **not** a lock: any explicit navigation (a mode tab, the brand / Home control, a voice `show_view`) goes exactly where asked while the timer keeps running. When the Timer view is not on screen, the soonest-to-fire timer's remaining time is shown on the Timer dock button so it stays visible and adjustable from one tap. See **Default view while a timer is active** and **Cross-view timer tracking**. |
 | Alarm | Chime loops while `fired`; audio stops after a 5-minute backstop but the visual finished-state persists until dismissed. Dismiss from the Timer tab, by tapping the alarm surface, or by voice ("stop"). **No spoken announcement when a timer fires** in this task. |
 | Display wake | While a timer is `running` or `fired` the kiosk acquires `navigator.wakeLock('screen')` as a best-effort stopgap. The formal keep-awake / revert-to-timer contract for the future OS-level display-power controller is specified but not built here. |
-| Voice capability | Voice gets **`start_timer`, `cancel_timer`, `extend_timer`** (plus a read-only `get_timer`). These are the **first state-mutating voice tools** in the project; the read-only boundary in `AGENTS.md` / `docs/voice-support-plan.md` gets a documented, narrow exception (see [Voice work](#voice-work)). |
+| Voice capability | Voice gets **`start_timer`, `cancel_timer`, `extend_timer`, `pause_timer`, `resume_timer`, `restart_timer`** (plus a read-only `get_timer`). These are the **first state-mutating voice tools** in the project; the read-only boundary in `AGENTS.md` / `docs/voice-support-plan.md` gets a documented, narrow exception (see [Voice work](#voice-work)). |
 | Expiry audio | Bundle one short, gentle chime asset (CC0 / permissively licensed / self-made), looped while a timer is in the `fired` state. Record where it came from in `docs/credits.md`. A WebAudio-synthesised tone is the fallback if no suitable asset is found. Licensing rigour here is deliberately light — note provenance, don't over-engineer. |
 | Time model | A timer is a **duration** counting down to an absolute `fires_at` (naive local time, per `AGENTS.md`). The tool/API take `duration_seconds`; the kiosk dial is a duration. Absolute-time targets ("timer until 3:45") are resolved to a duration by the caller (the voice agent already resolves relative dates this way). |
 | Six-hour cap | Enforced in **three** places: the Pydantic model validator (source of truth), the voice tool-argument check (agent speaks the rejection), and the touch dial (cannot travel past 6h). `0 < duration_seconds <= 21600`. |
@@ -52,8 +72,9 @@ Timer
 - Validator: `fires_at > created_at`, `1 <= duration_seconds <= 21600`,
   `fires_at == created_at + timedelta(seconds=duration_seconds)` (tolerance for
   serialisation rounding).
-- `state` transitions: `running → fired` (scheduler, at `fires_at`), `running →
-  dismissed` / `fired → dismissed` (cancel or dismiss). `dismissed` timers are
+- `state` transitions: `running → fired` (scheduler, at `fires_at`), `running ↔
+  paused` (pause / resume), `* → running` (restart), `running / paused / fired →
+  dismissed` (cancel or dismiss). `dismissed` timers are
   removed from the in-memory store immediately after the push; the state exists so
   a single push can say "this timer is gone and why".
 - Single-timer rule lives in the store, not the model: creating a timer while one
@@ -210,27 +231,77 @@ Why this shape:
     1920×1080 (`AGENTS.md` DoD; Playwright covers it).
 - Styling goes in the single `App.css` with the existing custom-property tokens.
 
-### "Default view while a timer is active"
+### Default view while a timer is active
 
-Once a timer exists, **timers are the default view**. Concretely:
+Once a timer exists the Timer view is the **ambient default** — but it never
+locks the display. The distinction:
 
-- **Starting a timer** (any modality) switches the active view to the Timer tab.
-- **Manual navigation afterwards always wins** and is left alone — no yanking a
-  person off Week while their timer counts down. Persistent cross-page timer
-  affordances (a countdown chip in the header, say) are a deliberate future
-  consideration, not part of this task.
-- **Every "return to default" path resolves to the running timer, not Home,
-  whenever a timer is `running` or `fired`:** the brand lockup / Home control,
-  cold page load, and any future idle-revert or display-wake all land on the Timer
-  tab while a timer is present, and on Home/Today otherwise. Implement this as a
-  single `defaultView()` helper (`hasActiveTimer ? 'timer' : 'home'`) that every
-  such path calls, rather than scattering the check.
-- **On fire**, force-switch to the Timer tab regardless of the current view and
-  enter the alarm state.
-- There is **no existing idle-return-to-default behaviour** in the app; building a
-  generic "revert after N seconds of no touch" belongs with the display-state work
-  (next section). This task only needs `defaultView()` wired into cold boot, the
-  Home control, and the fire event.
+- **The app chooses the Timer view** when a return-to-default happens on its own:
+  - **Starting a timer** (any modality) switches to the Timer tab.
+  - **On fire**, force-switch to the Timer tab regardless of the current view and
+    enter the alarm state.
+  - **Cold boot** with a timer already running lands on the Timer view. (This
+    falls out of the "a timer appeared" edge effect below, which also covers a
+    timer arriving from another screen — no separate cold-boot branch needed.)
+  - Any **future idle-revert / display-wake** (owned by the display-power work in
+    `docs/camera-support-plan.md`) must land on the Timer view while a timer is
+    `running`/`fired`, and on Home/Today otherwise.
+- **Explicit navigation always wins and is never overridden.** A mode tab, the
+  brand lockup / Home control, and a voice `show_view` all go exactly where asked
+  while the timer keeps counting. `goHome()` goes Home — full stop. There is no
+  `defaultView()` indirection on the navigation path; the only automatic switch is
+  the edge effect:
+
+  ```
+  useEffect(() => {
+    if (timers.hasActiveTimer && !hadActiveTimerRef.current) setMode('timer')
+    hadActiveTimerRef.current = timers.hasActiveTimer
+  }, [timers.hasActiveTimer])
+  ```
+
+  It fires **once**, on the `false → true` edge, so replacing a timer (which stays
+  `hasActiveTimer` throughout) does not re-yank the view — `onStarted` handles
+  that case by design.
+- There is still **no generic idle-return-to-default** in the app; "revert after N
+  seconds of no touch" belongs with the display-state work.
+
+### Cross-view timer tracking
+
+When the Timer view is not on screen, the soonest-to-fire timer's remaining time
+lives on the **Timer dock button** — not the header (whose budget is reserved for
+temporal context + the two global actions, per `AGENTS.md`), not a floating chip
+(which would occlude content).
+
+- The dock button is already the timer's spot in the persistent chrome and its
+  position is spatially stable, so augmenting it displaces nothing and stays
+  durable across Home / Week / Month.
+- Format is calm: `M:SS` under an hour, `H:MM` past it — a multi-hour timer must
+  not tick seconds in the chrome. `Done` while `fired` (button blinks).
+- It is **hidden on the Timer view itself** — the full-bleed countdown there
+  already carries it (the "one authoritative location per fact" rule).
+- "Soonest-to-fire" is worded for the eventual N-timer world; with one timer it is
+  just that timer. `useTimers()` already exposes `remainingMs` / `alarm`.
+- No new render cost: `useTimers()` already publishes `remainingMs` at 1 Hz while
+  a timer is active, so `App` re-renders every second regardless of view.
+
+### Visual separation: the Timer view is a role mode, not a calendar view
+
+Home / Week / Month are calendar-viewing modes; Timer is an appliance/role mode.
+The chrome now says so, using patterns already established for "this control is a
+different kind of thing" (the contextual Today action: distinct shape + colour,
+placed visually outside the mode group):
+
+- **In the dock**, the Timer button sits after a gap + a hairline divider from the
+  Home/Week/Month group, and wears the timer's **coral identity** — a coral fill
+  when it is the active view (the calendar modes use the neutral ink fill), and a
+  quiet coral outline + countdown when a timer runs in the background. Coral is
+  the system's existing "now / live / alarm" accent (today highlight, brand icon,
+  `voice-listening`, the alarm surface), so this reads as continuous with it.
+- **In the view frame**, the Timer view is a warm, self-contained panel
+  (`--warm` ground, hairline border, soft radius) instead of sitting straight on
+  the cool `--canvas` like the borderless calendar grids — stepping into it reads
+  as a change of room. Warm tones are already the "active / attention" register
+  in this palette (today cell, Today pill, alarm).
 
 ### Physical display stays awake (future integration seam)
 
@@ -300,7 +371,10 @@ implementation task must:
 | `start_timer` | `duration_minutes: number` (or `duration_seconds`), `label?: string` | `POST /api/timers` | `{ ok, fires_at, label, replaced_label? }` — the agent mentions `replaced_label` when set ("replacing your pasta timer") — or `{ error }` if > 6h / invalid |
 | `cancel_timer` | — (the single timer) | `DELETE /api/timers/{id}` | `{ ok }` / `{ error: "no timer running" }` |
 | `extend_timer` | `add_minutes: number` | `PATCH /api/timers/{id}` | `{ ok, fires_at }` or `{ error }` if the new total > 6h |
-| `get_timer` | — | `GET /api/timers` | `{ running: bool, remaining_minutes, label }` |
+| `pause_timer` | — | `POST /api/timers/{id}/pause` | `{ ok }` / `{ error }` |
+| `resume_timer` | — | `POST /api/timers/{id}/resume` | `{ ok }` / `{ error }` |
+| `restart_timer` | — | `POST /api/timers/{id}/restart` | `{ ok, fires_at }` / `{ error }` |
+| `get_timer` | — | `GET /api/timers` | `{ running: bool, paused: bool, remaining_minutes, label }` |
 
 - **6h rejection in the agent's voice:** the tool schema description states the
   cap; the dispatcher returns `{ error: "Timers can be at most six hours." }` when
@@ -392,9 +466,15 @@ Playwright (`npm run test:e2e`):
 
 ## Resolved since first draft
 
-- **Default view** — timers become the default view; start switches to the tab,
-  manual nav then wins, every "return to default" path routes to the timer while
-  one is active (`defaultView()` helper). Fire force-switches.
+- **Default view** — the Timer view is the *ambient* default: start switches to
+  the tab, fire force-switches, cold boot / a future idle-revert land there while a
+  timer runs. It is **not** a lock — explicit navigation (mode tab, brand / Home,
+  voice `show_view`) always wins (amended 2026-09-06; the earlier `defaultView()`
+  indirection on the Home control is gone). When another view is on screen the
+  Timer dock button carries the soonest timer's remaining time, and the Timer view
+  is now visually separated from the calendar modes (coral dock identity + a warm
+  panel). See **Default view while a timer is active**, **Cross-view timer
+  tracking**, **Visual separation**.
 - **Second timer** — silently replaces; all output (spoken + visual) names the
   replaced timer via `replaced` / `replaced_label`.
 - **`navigator.wakeLock`** — yes, best-effort while a timer is active.

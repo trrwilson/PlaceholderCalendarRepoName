@@ -212,8 +212,12 @@ Expected behavior:
   policy must treat it as equal in weight to touch and active voice. When the
   policy would otherwise sleep the display and a timer is active, it must instead
   switch the view to the Timer tab and keep the panel powered rather than issue
-  the sleep command; on `fired` it must wake the display if asleep. See
-  `docs/timer-plan.md` → "Physical display stays awake".
+  the sleep command; on `fired` it must wake the display if asleep. This is the
+  same "Timer is the *ambient* default while active" rule the app already applies
+  on its own (start / fire / cold boot) — an automatic actor lands on the Timer
+  view; it does **not** lock out explicit touch navigation. See
+  `docs/timer-plan.md` → "Physical display stays awake" / "Default view while a
+  timer is active".
 - Do not repeatedly issue identical display-power commands.
 
 Configuration should include reasonable controls for:

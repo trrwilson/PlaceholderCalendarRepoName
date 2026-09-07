@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { dbToLinear, DEFAULT_INPUT_GAIN_DB, InputGain } from './gain'
+import {
+  atReferenceGain,
+  dbToLinear,
+  DEFAULT_INPUT_GAIN_DB,
+  InputGain,
+  LEVEL_REFERENCE_GAIN_DB,
+} from './gain'
 
 describe('dbToLinear', () => {
   it('maps 0 dB to unity', () => {
@@ -18,10 +24,10 @@ describe('dbToLinear', () => {
 })
 
 describe('InputGain', () => {
-  it('defaults to +12 dB', () => {
+  it('defaults to the shared default gain', () => {
     const gain = new InputGain()
     expect(gain.db).toBe(DEFAULT_INPUT_GAIN_DB)
-    expect(gain.linear).toBeCloseTo(dbToLinear(12), 6)
+    expect(gain.linear).toBeCloseTo(dbToLinear(DEFAULT_INPUT_GAIN_DB), 6)
     expect(gain.active).toBe(true)
   })
 
@@ -98,5 +104,33 @@ describe('InputGain', () => {
     const stats = gain.readStats()
     expect(stats.frames).toBe(2)
     expect(stats.samples).toBe(10)
+  })
+})
+
+describe('atReferenceGain', () => {
+  it('is a no-op at the reference gain', () => {
+    const linear = dbToLinear(LEVEL_REFERENCE_GAIN_DB)
+    expect(atReferenceGain(0.05, linear)).toBeCloseTo(0.05, 6)
+  })
+
+  it('restates a level captured at a different gain, so thresholds do not move', () => {
+    // The same acoustic input, captured 6 dB hotter, must compare identically.
+    const quiet = dbToLinear(LEVEL_REFERENCE_GAIN_DB)
+    const loud = dbToLinear(LEVEL_REFERENCE_GAIN_DB + 6)
+    const acoustic = 0.004
+    expect(atReferenceGain(acoustic * quiet, quiet)).toBeCloseTo(
+      atReferenceGain(acoustic * loud, loud),
+      6,
+    )
+  })
+
+  it('halves a level captured at +6 dB over the reference', () => {
+    const linear = dbToLinear(LEVEL_REFERENCE_GAIN_DB + 6)
+    expect(atReferenceGain(0.1, linear)).toBeCloseTo(0.1 / dbToLinear(6), 5)
+  })
+
+  it('passes the level through when there is no gain stage yet', () => {
+    expect(atReferenceGain(0.02, 0)).toBe(0.02)
+    expect(atReferenceGain(0.02, Number.NaN)).toBe(0.02)
   })
 })

@@ -8,6 +8,9 @@ interface Props {
   alarm: boolean
   onStart: (durationSeconds: number, label: string | null) => void
   onExtend: (addSeconds: number) => void
+  onPause: () => void
+  onResume: () => void
+  onRestart: () => void
   onCancel: () => void
   onDismiss: () => void
 }
@@ -108,27 +111,46 @@ function TimerSetup({ onStart }: { onStart: Props['onStart'] }) {
 function TimerRunning({
   timer,
   remainingMs,
+  paused,
   onExtend,
+  onPause,
+  onResume,
+  onRestart,
   onCancel,
 }: {
   timer: Timer
   remainingMs: number
+  paused: boolean
   onExtend: Props['onExtend']
+  onPause: Props['onPause']
+  onResume: Props['onResume']
+  onRestart: Props['onRestart']
   onCancel: Props['onCancel']
 }) {
   const elapsed = timer.duration_seconds * 1000 - remainingMs
   return (
-    <div className="timer-running">
+    <div className={`timer-running${paused ? ' timer-paused' : ''}`}>
       <div className="timer-countdown">
         <ProgressRing fraction={elapsed / (timer.duration_seconds * 1000)} />
         <div className="timer-countdown-text">
           <strong>{formatClock(remainingMs)}</strong>
+          {paused && <span className="timer-paused-tag">Paused</span>}
           {timer.label && <span>{timer.label}</span>}
         </div>
       </div>
       <div className="timer-controls">
+        {paused ? (
+          <button className="timer-resume" onClick={onResume}>
+            Resume
+          </button>
+        ) : (
+          <button className="timer-pause" onClick={onPause}>
+            Pause
+          </button>
+        )}
         <button onClick={() => onExtend(60)}>+1 min</button>
         <button onClick={() => onExtend(5 * 60)}>+5 min</button>
+        <button onClick={onRestart}>Restart</button>
         <button className="timer-cancel" onClick={onCancel}>
           Cancel
         </button>
@@ -177,13 +199,33 @@ function TimerAlarm({
   )
 }
 
-export function TimerView({ timer, remainingMs, alarm, onStart, onExtend, onCancel, onDismiss }: Props) {
+export function TimerView({
+  timer,
+  remainingMs,
+  alarm,
+  onStart,
+  onExtend,
+  onPause,
+  onResume,
+  onRestart,
+  onCancel,
+  onDismiss,
+}: Props) {
   return (
     <div className="timer-view">
       {alarm && timer ? (
         <TimerAlarm timer={timer} onExtend={onExtend} onDismiss={onDismiss} />
-      ) : timer && timer.state === 'running' ? (
-        <TimerRunning timer={timer} remainingMs={remainingMs} onExtend={onExtend} onCancel={onCancel} />
+      ) : timer && (timer.state === 'running' || timer.state === 'paused') ? (
+        <TimerRunning
+          timer={timer}
+          remainingMs={remainingMs}
+          paused={timer.state === 'paused'}
+          onExtend={onExtend}
+          onPause={onPause}
+          onResume={onResume}
+          onRestart={onRestart}
+          onCancel={onCancel}
+        />
       ) : (
         <TimerSetup onStart={onStart} />
       )}

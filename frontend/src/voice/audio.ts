@@ -1,9 +1,18 @@
-// Microphone capture and assistant-audio playback for the Gemini Live session.
-// Gemini expects 16 kHz mono PCM16 input and streams 24 kHz mono PCM16 output.
+// Microphone capture and assistant-audio playback: the device end of the kiosk's
+// audio pipeline. `MicSource` owns the one input device and the one gain stage;
+// `AudioSink` owns the one output bus. Sample rates are provider properties
+// (`ConversationalVoiceProvider.inputSampleRate` / `outputSampleRate`) and are
+// passed in — the constants below are only the defaults for a caller that has no
+// provider yet. Format/rate conversion lives in `./pcm`, gain in `./gain`,
+// echo-cancelled playout in `./aecPlayback`. See docs/audio-pipeline.md.
 
-import { DEFAULT_INPUT_GAIN_DB, InputGain, type InputGainStats } from './gain'
+import { createEchoCancelledOutput, type EchoCancelledOutput } from './aecPlayback'
+import { DEFAULT_INPUT_GAIN_DB, InputGain, atReferenceGain, type InputGainStats } from './gain'
+import { downsampleTo, floatToPcm16Base64, pcm16Base64ToFloat } from './pcm'
 
+/** Default capture rate: Gemini Live's input rate, and the local pipeline's. */
 const INPUT_RATE = 16_000
+/** Default playback rate: what every provider that sends audio streams today. */
 const OUTPUT_RATE = 24_000
 
 /** How often `MicSource` prints its throttled input-level diagnostics. */
@@ -21,49 +30,6 @@ function traceEnabled(): boolean {
 function round(value: number, places = 3): number {
   const factor = 10 ** places
   return Math.round(value * factor) / factor
-}
-
-function floatToPcm16Base64(samples: Float32Array): string {
-  const pcm = new Int16Array(samples.length)
-  for (let i = 0; i < samples.length; i += 1) {
-    const clamped = Math.max(-1, Math.min(1, samples[i]))
-    pcm[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff
-  }
-  const bytes = new Uint8Array(pcm.buffer)
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i])
-  return btoa(binary)
-}
-
-function downsample(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
-  if (fromRate <= toRate) return samples
-  const ratio = fromRate / toRate
-  const out = new Float32Array(Math.floor(samples.length / ratio))
-  // Average every source sample that maps to an output sample rather than
-  // picking one. This is a cheap low-pass: plain decimation aliases high
-  // frequencies down into the speech band, which degrades both the transcript
-  // and the server-side voice-activity detector.
-  for (let i = 0; i < out.length; i += 1) {
-    const start = Math.floor(i * ratio)
-    const end = Math.min(samples.length, Math.floor((i + 1) * ratio))
-    let sum = 0
-    for (let j = start; j < end; j += 1) sum += samples[j]
-    out[i] = end > start ? sum / (end - start) : samples[start] ?? 0
-  }
-  return out
-}
-
-function pcm16Base64ToFloat(data: string): Float32Array {
-  const binary = atob(data)
-  // Drop a trailing odd byte rather than letting `new Int16Array` throw a
-  // RangeError on a chunk boundary — one lost sample is inaudible.
-  const usableBytes = binary.length - (binary.length % 2)
-  const bytes = new Uint8Array(usableBytes)
-  for (let i = 0; i < usableBytes; i += 1) bytes[i] = binary.charCodeAt(i)
-  const pcm = new Int16Array(bytes.buffer)
-  const out = new Float32Array(pcm.length)
-  for (let i = 0; i < pcm.length; i += 1) out[i] = pcm[i] / 0x8000
-  return out
 }
 
 /** A raw native-rate mono frame from the shared microphone. */
@@ -147,6 +113,16 @@ export class MicSource {
   }
 
   /**
+   * The linear multiplier that gain is currently applying (1 when disabled).
+   * Callers that measure a level off gained audio and then compare it to a
+   * threshold must first normalise with `atReferenceGain(rms, this value)` — see
+   * `gain.ts`, rule 3.
+   */
+  get inputGainLinear(): number {
+    return this.inputGain.linear
+  }
+
+  /**
    * Most recent input-level diagnostics (peak / RMS / clip counts since the
    * previous throttled sample), for tuning {@link setInputGainDb}. Zero-valued
    * until the mic has produced a frame.
@@ -193,7 +169,19 @@ export class MicSource {
     if (!this.starting) {
       this.starting = (async () => {
         this.stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+          audio: {
+            channelCount: 1,
+            // The kiosk playout is routed through a loopback peer connection
+            // (see aecPlayback.ts) specifically so this flag has a reference
+            // signal to work against.
+            echoCancellation: true,
+            // Off: echo is handled by the loopback AEC above, and noise
+            // suppression was only gating the quiet tail of a sentence below the
+            // endpoint threshold (docs/voice-support-plan.md, tenth run). AGC
+            // fights our own dB gain stage (gain.ts) for the level.
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
         })
         this.activateContext()
         const context = this.context
@@ -247,9 +235,14 @@ export class MicSource {
 export const micSource = new MicSource()
 
 /**
- * Streams microphone audio as base64 PCM16 16 kHz chunks for one voice turn.
- * A thin adapter over the shared {@link micSource}: subscribe on `start`,
- * downsample each native frame, unsubscribe on `stop`.
+ * Streams microphone audio to one voice provider as base64 PCM16 chunks at that
+ * provider's input rate, for one turn. A thin adapter over the shared
+ * {@link micSource}: subscribe on `start`, downsample each native frame,
+ * unsubscribe on `stop`.
+ *
+ * The `onLevel` RMS it reports is normalised to `LEVEL_REFERENCE_GAIN_DB`, so
+ * the end-of-speech thresholds in `useVoiceSession` mean the same thing at every
+ * setting of `MISSION_CONTROL_MIC_INPUT_GAIN_DB`.
  */
 export class MicCapture {
   private sub: MicSubscription | null = null
@@ -271,12 +264,13 @@ export class MicCapture {
       if (chunks === 1) {
         console.info('[voice] mic capture first chunk', { sampleRate: rate, targetRate })
       }
-      const down = downsample(frame, rate, targetRate)
+      const down = downsampleTo(frame, rate, targetRate)
       onChunk(floatToPcm16Base64(down))
       if (onLevel) {
         let sum = 0
         for (let i = 0; i < down.length; i += 1) sum += down[i] * down[i]
-        onLevel(Math.sqrt(sum / down.length))
+        const rms = Math.sqrt(sum / down.length)
+        onLevel(atReferenceGain(rms, micSource.inputGainLinear))
       }
     })
     this.active = true
@@ -290,50 +284,35 @@ export class MicCapture {
 }
 
 /**
- * Jitter-buffer depth carried between turns. Underruns push it up, clean turns
- * ease it back down, so the second reply of a session already starts with a
- * cushion sized for this kiosk's actual link instead of relearning from scratch.
+ * Plays base64 PCM16 chunks back-to-back as they arrive; can be flushed on
+ * interruption.
+ *
+ * There used to be an adaptive jitter buffer here — it held a learned cushion
+ * before starting and, on underrun, reset the playback cursor and re-buffered
+ * mid-reply. It was added for the Gemini Live path, whose audio the API
+ * documents as "generated as quickly as possible, and not in real time", but the
+ * mid-stream stop/restart it caused was a likely source of audible clicks, so it
+ * was removed. Each chunk is now scheduled the moment it decodes, contiguously
+ * off {@link cursor}. If the stream arrives slower than real time the audio has
+ * a gap where playback caught up (see {@link underruns}); it is never chopped.
  */
-let learnedPrebufferSeconds = 0.45
-
-/** Test seam: drop what previous turns learned so a suite is order-independent. */
-export function resetLearnedPrebuffer(): void {
-  learnedPrebufferSeconds = 0.45
-}
-
-/** Plays a queue of base64 PCM16 chunks gaplessly; can be flushed on interruption. */
 export class AudioSink {
   private context: AudioContext | null = null
+  // The rate the current provider streams reply audio at. Defaulted rather than
+  // fixed: it is a property of the provider, like `inputSampleRate` is for
+  // capture, and `useVoiceSession` sets it from the connected session.
+  private outputRate = OUTPUT_RATE
   private gain: GainNode | null = null
+  private output: EchoCancelledOutput | null = null
   private cursor = 0
   private sources = new Set<AudioBufferSourceNode>()
   private played = 0
   private decodedSeconds = 0
   private readonly onDrained: () => void
-  private queue: Float32Array[] = []
-  private buffering = true
-  private starving = false
+  // Count of times a chunk arrived after everything scheduled had already played
+  // out — i.e. the stream fell behind real time. Diagnostic only now; nothing
+  // acts on it.
   private underruns = 0
-  /**
-   * Jitter buffer depth, in seconds — adaptive, because a fixed one cannot work.
-   *
-   * The Live API does not stream at real time ("Content is generated as quickly
-   * as possible, and not in real time. Clients may choose to buffer and play it
-   * out in real time"), and measured turns have run at 0.46x and then 0.26x:
-   * 5.4 s of speech delivered over 20.5 s. Against a source that slow, *no*
-   * fixed cushion helps — 450 ms of audio buys 450 ms of playback and the next
-   * burst is two seconds away. The only way to play a sub-real-time stream
-   * without seams is to hold more of it before starting.
-   *
-   * So the depth is learned: every underrun doubles it (up to
-   * {@link PREBUFFER_MAX_SECONDS}), a clean turn relaxes it, and the value
-   * carries across turns in {@link learnedPrebufferSeconds}. A kiosk on a slow
-   * link settles at "wait for most of the reply, then play it perfectly", which
-   * is the right trade for a short spoken answer; a fast link stays responsive.
-   */
-  private static readonly PREBUFFER_MIN_SECONDS = 0.45
-  private static readonly PREBUFFER_MAX_SECONDS = 3
-  private prebufferSeconds = learnedPrebufferSeconds
   // Arrival accounting, to tell "the server is slow" from "we are slow".
   private firstArrivalAt = 0
   private lastArrivalAt = 0
@@ -362,10 +341,16 @@ export class AudioSink {
       this.context = new Ctor()
       this.gain = this.context.createGain()
       this.gain.gain.value = 1
-      this.gain.connect(this.context.destination)
+      // Play out through a loopback peer connection so Chromium folds it into the
+      // microphone's echo-cancellation reference (aecPlayback.ts). Both the reply
+      // audio and the listening cue route through `this.gain`, so both are
+      // cancelled from the capture side.
+      this.output = createEchoCancelledOutput(this.context)
+      this.gain.connect(this.output.node)
       console.info('[voice] speaker context created', {
         state: this.context.state,
         sampleRate: this.context.sampleRate,
+        echoCancelledOutput: this.output.active,
         destinationChannels: this.context.destination.channelCount,
         maxChannels: this.context.destination.maxChannelCount,
       })
@@ -381,19 +366,30 @@ export class AudioSink {
     }
   }
 
+  /**
+   * Tell the sink what rate the connected provider streams reply audio at. Call
+   * it once per turn, after `connect()` and before any `enqueue`. Buffers are
+   * resampled to the device rate by the browser on playback, so this only has to
+   * be honest, not to match the hardware.
+   */
+  setOutputSampleRate(rate: number): void {
+    if (!Number.isFinite(rate) || rate <= 0 || rate === this.outputRate) return
+    this.outputRate = rate
+    console.info('[voice] response-audio rate', { sampleRate: rate })
+  }
+
   /** Current AudioContext state, for instrumentation. `'closed'` when there is none. */
   state(): string {
     return this.context?.state ?? 'closed'
   }
 
   /**
-   * True while any audio for this turn is still unplayed — scheduled, playing,
-   * or waiting in the jitter buffer. The queue has to count: without it, the
-   * repeated mid-reply drains an underrun causes look like "the turn is over",
-   * and a `turnComplete` / `closing` landing in that window truncates the reply.
+   * True while any audio for this turn is still scheduled or playing. A
+   * `turnComplete` / `closing` arriving while this is true must let the sink
+   * drain rather than tearing the session down mid-reply.
    */
   pending(): boolean {
-    return this.sources.size > 0 || this.queue.length > 0
+    return this.sources.size > 0
   }
 
   private static readonly TONE_LEAD_SECONDS = 0.05
@@ -402,20 +398,17 @@ export class AudioSink {
   /**
    * Play a 0.4 s tone through the same graph as response audio — the "I'm
    * listening" cue, and a way to confirm the output path independently of
-   * whether Gemini's audio is arriving.
+   * whether the provider's audio is arriving.
    *
-   * Returns how many milliseconds from now the tone stops. The caller needs
-   * this: the tone plays out of the kiosk speakers while the microphone is
-   * already open, and browser echo cancellation does not reliably cover
-   * WebAudio output (the speaker and mic run on separate `AudioContext`s), so
-   * the level detector hears it at ~0.06 RMS — six times the speech threshold.
-   * Left uncorrected that counts as the user speaking, and the silence timer
-   * then ends the turn before they have said anything.
+   * The cue routes through `this.gain` and therefore through the echo-cancelled
+   * output, so the open microphone no longer hears it as the user speaking (it
+   * used to land at ~0.06 RMS, six times the speech threshold — see
+   * docs/voice-support-plan.md, eighth run).
    */
-  playTestTone(): number {
+  playTestTone(): void {
     this.activate()
     const context = this.context
-    if (!context || !this.gain) return 0
+    if (!context || !this.gain) return
     const osc = context.createOscillator()
     osc.frequency.value = 440
     const g = context.createGain()
@@ -425,10 +418,9 @@ export class AudioSink {
     osc.start(t)
     osc.stop(t + AudioSink.TONE_SECONDS)
     console.info('[voice] test tone scheduled', { state: context.state, at: t })
-    return (AudioSink.TONE_LEAD_SECONDS + AudioSink.TONE_SECONDS) * 1000
   }
 
-  /** Returns true when the chunk was accepted (queued, and scheduled if ready). */
+  /** Returns true when the chunk decoded and was scheduled for playback. */
   enqueue(base64: string): boolean {
     this.activate()
     const context = this.context
@@ -445,8 +437,7 @@ export class AudioSink {
     if (!this.firstArrivalAt) this.firstArrivalAt = arrivedAt
     else this.maxGapMs = Math.max(this.maxGapMs, arrivedAt - this.lastArrivalAt)
     this.lastArrivalAt = arrivedAt
-    this.queue.push(samples)
-    this.drainQueue()
+    this.schedule(samples, context.currentTime)
     return true
   }
 
@@ -458,80 +449,36 @@ export class AudioSink {
   arrivalStats(): Record<string, number> {
     const wallMs = this.lastArrivalAt - this.firstArrivalAt
     return {
-      chunks: this.played + this.queue.length,
+      chunks: this.played,
       audioSec: Math.round(this.decodedSeconds * 100) / 100,
       wallSec: Math.round(wallMs) / 1000,
       realtimeRatio: wallMs > 0 ? Math.round((this.decodedSeconds * 1000 * 100) / wallMs) / 100 : 0,
       maxGapMs: Math.round(this.maxGapMs),
       underruns: this.underruns,
-      prebufferMs: Math.round(this.prebufferSeconds * 1000),
     }
   }
 
   /**
-   * No more audio is coming for this turn — play out the cushion instead of
-   * waiting for it to fill. Without this, a reply whose whole audio is shorter
-   * than {@link PREBUFFER_SECONDS} would sit in the buffer and never play.
+   * No-op retained for API compatibility. Audio now plays as it arrives, so
+   * there is nothing held back to release when the turn ends.
    */
-  finalizeStream(): void {
-    if (!this.queue.length) return
-    this.buffering = false
-    this.drainQueue()
-  }
+  finalizeStream(): void {}
 
-  /** Seconds of audio sitting in the jitter buffer, not yet scheduled. */
-  private queuedSeconds(): number {
-    let total = 0
-    for (const chunk of this.queue) total += chunk.length / OUTPUT_RATE
-    return total
-  }
-
-  /**
-   * Move whatever the jitter buffer holds onto the graph, contiguously.
-   *
-   * While `buffering`, nothing is scheduled — we are filling the cushion. Once
-   * it is full (or {@link finalizeStream} says no more is coming) every queued
-   * chunk is scheduled back-to-back off `cursor`, so a burst that arrives all at
-   * once still plays out at real time with no seams.
-   */
-  private drainQueue(): void {
+  private schedule(samples: Float32Array, now: number): void {
     const context = this.context
     if (!context || !this.gain) return
-    if (this.buffering) {
-      if (this.queuedSeconds() < this.prebufferSeconds) return
-      this.buffering = false
-    }
-    const now = context.currentTime
-    // A stall: everything scheduled has already played out. Dropping the next
-    // chunk in at `now` just repeats the stutter, so take the cushion again.
-    if (this.played && this.cursor && this.cursor < now) {
+    // Everything scheduled has already played out — the stream fell behind real
+    // time and there is an audible gap before this chunk. Recorded for the
+    // timeline; nothing tries to paper over it any more.
+    const underran = this.played > 0 && this.cursor > 0 && this.cursor < now
+    if (underran) {
       this.underruns += 1
       console.warn('[voice] playback underrun — audio arrived slower than real time', {
         behindMs: Math.round((now - this.cursor) * 1000),
         underruns: this.underruns,
       })
-      this.cursor = 0
-      this.starving = true
-      this.buffering = true
-      // Ask for more cushion next time. The stream is demonstrably arriving
-      // slower than it plays, so resuming on the same depth just stalls again —
-      // which is exactly what the eight underruns in one reply looked like.
-      this.prebufferSeconds = Math.min(
-        this.prebufferSeconds * 2,
-        AudioSink.PREBUFFER_MAX_SECONDS,
-      )
-      learnedPrebufferSeconds = this.prebufferSeconds
-      if (this.queuedSeconds() < this.prebufferSeconds) return
-      this.buffering = false
     }
-    for (const samples of this.queue) this.schedule(samples, now)
-    this.queue = []
-  }
-
-  private schedule(samples: Float32Array, now: number): void {
-    const context = this.context
-    if (!context || !this.gain) return
-    const buffer = context.createBuffer(1, samples.length, OUTPUT_RATE)
+    const buffer = context.createBuffer(1, samples.length, this.outputRate)
     buffer.copyToChannel(samples, 0)
     const source = context.createBufferSource()
     source.buffer = buffer
@@ -542,8 +489,7 @@ export class AudioSink {
     this.decodedSeconds += buffer.duration
     this.sources.add(source)
     this.played += 1
-    if (this.played === 1 || this.starving) {
-      this.starving = false
+    if (this.played === 1 || underran) {
       console.info('[voice] response-audio buffer scheduled', {
         chunk: this.played,
         state: context.state,
@@ -563,25 +509,14 @@ export class AudioSink {
     source.onended = () => {
       this.sources.delete(source)
       if (this.pending()) return
-      if (!this.underruns) {
-        // Played through without a stall — ease the cushion back toward the
-        // floor so a one-off slow turn does not permanently add latency.
-        learnedPrebufferSeconds = Math.max(
-          AudioSink.PREBUFFER_MIN_SECONDS,
-          learnedPrebufferSeconds * 0.75,
-        )
-      }
       console.info('[voice] audio sink drained', this.arrivalStats())
       this.onDrained()
     }
   }
 
   flush(): void {
-    if (this.sources.size || this.queue.length) {
-      console.info('[voice] audio sink flushed', {
-        stillScheduled: this.sources.size,
-        stillQueued: this.queue.length,
-      })
+    if (this.sources.size) {
+      console.info('[voice] audio sink flushed', { stillScheduled: this.sources.size })
     }
     this.sources.forEach((source) => {
       try {
@@ -591,11 +526,7 @@ export class AudioSink {
       }
     })
     this.sources.clear()
-    this.queue = []
-    this.buffering = true
-    this.starving = false
     this.underruns = 0
-    this.prebufferSeconds = learnedPrebufferSeconds
     this.firstArrivalAt = 0
     this.lastArrivalAt = 0
     this.maxGapMs = 0
@@ -606,6 +537,8 @@ export class AudioSink {
 
   close(): void {
     this.flush()
+    this.output?.dispose()
+    this.output = null
     void this.context?.close()
     this.context = null
     this.gain = null

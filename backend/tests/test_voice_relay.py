@@ -56,6 +56,14 @@ def test_translate_upstream_maps_the_realtime_events_we_care_about() -> None:
     assert translate_upstream(
         {"type": "conversation.item.input_audio_transcription.completed", "transcript": "what's up"}
     ) == [{"type": "user-transcript", "text": "what's up", "final": True}]
+    # The provider VAD's endpoint signals are forwarded so the kiosk can end the
+    # turn on the semantic endpoint rather than a raw-energy guess.
+    assert translate_upstream({"type": "input_audio_buffer.speech_started"}) == [
+        {"type": "speech-started"}
+    ]
+    assert translate_upstream({"type": "input_audio_buffer.speech_stopped"}) == [
+        {"type": "speech-stopped"}
+    ]
     # Both the GA event names (Azure OpenAI Realtime `/openai/v1`) and the
     # flat/beta ones (Voice Live) map to the same VoiceEvent.
     assert translate_upstream({"type": "response.output_audio.delta", "delta": "AAA="}) == [
@@ -183,10 +191,20 @@ def test_translate_client_brackets_a_manual_turn() -> None:
     ]
     # Fresh session per turn — `activity-start` has nothing to do.
     assert translate_client({"type": "activity-start"}) == []
-    # The kiosk owns the turn boundary for both Azure products.
+    # `client` / `hybrid`: the kiosk owns the turn boundary — `activity-end`
+    # commits and asks for the reply.
     assert translate_client({"type": "activity-end"}) == [
         {"type": "input_audio_buffer.commit"},
         {"type": "response.create"},
+    ]
+    assert translate_client({"type": "activity-end"}, turn=_RelayTurn(endpointing="hybrid")) == [
+        {"type": "input_audio_buffer.commit"},
+        {"type": "response.create"},
+    ]
+    # `provider`: the provider VAD triggers the reply on its own endpoint, so
+    # `activity-end` only commits.
+    assert translate_client({"type": "activity-end"}, turn=_RelayTurn(endpointing="provider")) == [
+        {"type": "input_audio_buffer.commit"}
     ]
     # A tool response only adds the output item; the single `response.create` for
     # the round is sent separately once every output is in (see the batching test).
@@ -239,7 +257,7 @@ async def test_azure_openai_realtime_grant_and_ticket(azure_openai_env) -> None:
     _, grant = await _grant()
     assert grant.provider == "azure_openai_realtime"
     assert grant.model == "gpt-realtime-2.1"
-    assert grant.manual_activity is True
+    assert grant.endpointing == "hybrid"
     assert grant.surface == "kitchen"
 
     cfg = redeem_ticket(grant.token)
@@ -251,7 +269,13 @@ async def test_azure_openai_realtime_grant_and_ticket(azure_openai_env) -> None:
     session = cfg.session_update
     assert session["type"] == "realtime"
     assert session["output_modalities"] == ["audio"]
-    assert session["audio"]["input"]["turn_detection"] is None
+    # Default `hybrid`: semantic VAD runs for streaming ASR + `speech_stopped`
+    # but does not create the response — the kiosk owns that (and ends the turn
+    # on the forwarded `speech_stopped`, with a mic-RMS backstop).
+    assert session["audio"]["input"]["turn_detection"] == {
+        "type": "semantic_vad",
+        "create_response": False,
+    }
     assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
     assert session["audio"]["output"]["voice"] == "marin"
     # The default transcribe deployment is wired in for the user transcript.
@@ -260,12 +284,16 @@ async def test_azure_openai_realtime_grant_and_ticket(azure_openai_env) -> None:
         "show_view",
         "focus_date",
         "highlight_event",
+        "set_people_filter",
         "get_events",
         "get_agenda",
         "check_conflicts",
         "start_timer",
         "cancel_timer",
         "extend_timer",
+        "pause_timer",
+        "resume_timer",
+        "restart_timer",
         "get_timer",
     }
     assert "Travis, Sam" in session["instructions"]
@@ -307,6 +335,26 @@ async def test_azure_openai_realtime_includes_a_transcribe_deployment_when_set(
     assert session["audio"]["input"]["transcription"] == {"model": "my-transcribe"}
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("client", None),
+        ("hybrid", {"type": "semantic_vad", "create_response": False}),
+        ("provider", {"type": "semantic_vad", "create_response": True}),
+    ],
+)
+async def test_azure_openai_realtime_endpointing_selects_turn_detection(
+    azure_openai_env, monkeypatch: pytest.MonkeyPatch, mode: str, expected
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_AZURE_OPENAI_REALTIME_ENDPOINTING", mode)
+    get_settings.cache_clear()
+    _, grant = await _grant()
+    assert grant.endpointing == mode
+    cfg = redeem_ticket(grant.token)
+    assert cfg.endpointing == mode
+    assert cfg.session_update["audio"]["input"]["turn_detection"] == expected
+
+
 async def test_azure_voice_live_grant_carries_the_speech_extras(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -320,8 +368,9 @@ async def test_azure_voice_live_grant_carries_the_speech_extras(
 
     _, grant = await _grant()
     assert grant.provider == "azure_voice_live"
-    assert grant.manual_activity is True
+    assert grant.endpointing == "hybrid"
     cfg = redeem_ticket(grant.token)
+    assert cfg.endpointing == "hybrid"
     # Voice Live is a separate product: it keeps api-version + model in the URL.
     assert "/voice-live/realtime?" in cfg.url
     assert "api-version=2026-07-15" in cfg.url
@@ -329,7 +378,7 @@ async def test_azure_voice_live_grant_carries_the_speech_extras(
     session = cfg.session_update
     # ...and the flat/beta session shape: `modalities`, a `voice` object.
     assert session["modalities"] == ["text", "audio"]
-    assert session["voice"] == {"name": "en-US-AvaNeural", "type": "azure-standard"}
+    assert session["voice"] == {"name": "en-GB-SoniaNeural", "type": "azure-standard"}
     # VAD stays in the session (its EC needs it) but does not create the response
     # — the kiosk drives that.
     assert session["turn_detection"]["type"] == "azure_semantic_vad"

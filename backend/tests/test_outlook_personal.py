@@ -231,10 +231,9 @@ def test_display_name_survives_a_warm_token_cache_without_id_token_claims(
 
     class WarmCache:
         def search(self, credential_type, target=None, query=None, **kwargs):
-            if (
-                credential_type == msal.TokenCache.CredentialType.ID_TOKEN
-                and query == {"home_account_id": "home-1"}
-            ):
+            if credential_type == msal.TokenCache.CredentialType.ID_TOKEN and query == {
+                "home_account_id": "home-1"
+            }:
                 return [{"secret": jwt}]
             return []
 

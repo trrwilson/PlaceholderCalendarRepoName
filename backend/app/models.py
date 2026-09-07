@@ -106,6 +106,7 @@ class CalendarSnapshot(BaseModel):
 
 class TimerState(StrEnum):
     running = "running"
+    paused = "paused"
     fired = "fired"
     dismissed = "dismissed"
 
@@ -127,6 +128,11 @@ class Timer(BaseModel):
     fires_at: datetime
     duration_seconds: int = Field(ge=TIMER_MIN_SECONDS, le=TIMER_MAX_SECONDS)
     state: TimerState = TimerState.running
+    # Frozen countdown carried only while ``state`` is ``paused``: the seconds
+    # that were left when the timer was paused. ``fires_at`` is stale in that
+    # state (it is not counting down) — surfaces read this instead. ``None`` for
+    # every other state.
+    remaining_seconds: int | None = Field(default=None, ge=0, le=TIMER_MAX_SECONDS)
 
     @model_validator(mode="after")
     def _consistent(self) -> "Timer":
@@ -136,6 +142,8 @@ class Timer(BaseModel):
         # Tolerate sub-second drift from serialisation rounding.
         if abs((self.fires_at - expected).total_seconds()) > 1:
             raise ValueError("fires_at must equal created_at + duration_seconds")
+        if self.state is TimerState.paused and self.remaining_seconds is None:
+            raise ValueError("a paused timer must carry remaining_seconds")
         return self
 
 
@@ -186,11 +194,37 @@ class VoiceTokenRequest(BaseModel):
     client_time: str | None = None
 
 
+# Who detects end-of-speech for a turn, and therefore how the shared kiosk turn
+# state machine behaves. Negotiated per provider on the grant; see
+# ``docs/voice-provider-bakeoff-plan.md`` -> "End-of-speech ownership".
+#
+# * ``client``   — the provider has no usable end-of-speech detection (or the
+#   operator switched it off). The kiosk's own mic-RMS silence detector, the
+#   ``MAX_LISTEN_MS`` cap, and the explicit Stop tap are the whole endpointer,
+#   and the kiosk brackets the turn with explicit activity markers. The default,
+#   applied whenever a provider declares nothing suitable.
+# * ``hybrid``   — the provider runs a VAD (for streaming ASR, or because its
+#   echo canceller requires one) and emits ``speech-started`` / ``speech-stopped``
+#   but does not create the response. The kiosk takes ``speech-stopped`` as the
+#   primary end-of-speech signal, keeps the mic-RMS detector as a longer-hold
+#   backstop, and still sends a finalise marker so the reply is requested
+#   deterministically.
+# * ``provider`` — the provider fully owns end-of-speech *and* response
+#   triggering (its VAD with ``create_response`` on). The kiosk runs no mic-RMS
+#   endpointing (only the safety cap + Stop tap) and sends no finalise marker.
+#   A declared seam; no current contestant uses it.
+Endpointing = Literal["client", "hybrid", "provider"]
+
+
 VoiceProviderId = Literal[
     "gemini",
     "azure_voice_live",
     "azure_openai_realtime",
     "azure_openai_realtime_mini",
+    # The local-first / hybrid pipeline: on-device STT + intent/entity
+    # interpretation, cloud only for genuine reasoning. See
+    # app/voice/local/ and docs/local-voice-plan.md.
+    "local",
 ]
 
 
@@ -214,10 +248,12 @@ class VoiceToken(BaseModel):
     # a silent mismatch here is what produced `code 1008 "... not found for API
     # version ..."` during the 2026-09 debugging.
     api_version: str = "v1beta"
-    # True when the token disables the service VAD and the kiosk must bracket the
-    # turn with activityStart/activityEnd; False for hybrid VAD, where the kiosk
-    # instead sends `audioStreamEnd` on locally-detected silence.
-    manual_activity: bool = False
+    # Who detects end-of-speech for a turn (see ``Endpointing``). ``client`` (the
+    # default) means the kiosk disables the provider VAD and brackets the turn
+    # itself; ``hybrid`` means the provider VAD runs and the kiosk endpoints on
+    # its ``speech-stopped`` with a mic-RMS backstop; ``provider`` means the
+    # provider owns the whole boundary. Replaces the old ``manual_activity`` bool.
+    endpointing: Endpointing = "client"
     surface: str | None = None
 
 
@@ -269,6 +305,37 @@ class WakeWordConfig(BaseModel):
     cooldown_ms: int
     model_path: str
     models_base_url: str
+
+
+class VoiceDebugCapture(BaseModel):
+    """One retained voice activation, uploaded by the kiosk for on-disk debugging
+    (``POST /api/voice/debug/capture``, LAN-gated).
+
+    ``wav_base64`` is a complete headered RIFF/PCM16 mono WAV — the exact audio
+    the kiosk streamed to the speech provider for the turn (the pre-roll for a
+    wake activation, then the live mic; from the first mic chunk for
+    push-to-talk). The backend writes it verbatim with a ``.json`` sidecar of the
+    remaining fields; it never reaches a provider.
+    """
+
+    wav_base64: str
+    sample_rate: int
+    started_at: datetime | None = None
+    provider: str | None = None
+    model: str | None = None
+    via_wake: bool = False
+    preroll_chunks: int = 0
+    mic_chunks: int = 0
+    seconds: float = 0.0
+    outcome: str | None = None
+    failure_kind: str | None = None
+    transcript: dict[str, str] | None = None
+
+
+class VoiceDebugCaptureStored(BaseModel):
+    """Where ``POST /api/voice/debug/capture`` wrote the WAV."""
+
+    path: str
 
 
 class CalendarAuthStatus(BaseModel):

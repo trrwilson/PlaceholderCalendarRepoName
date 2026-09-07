@@ -179,8 +179,12 @@ export class OpenWakeWordDetector implements WakeDetector {
   }
 
   suspend(): void {
+    // Stop running detection inference, but KEEP retaining the pre-roll. A turn
+    // opens on `connecting` (which suspends us) several seconds before the live
+    // mic starts streaming to the provider; the command spoken in that gap —
+    // "Mission Control, what's on today" said as one phrase — is only in this
+    // ring buffer, and `takeRetainedAudio` is what flushes it into the session.
     this.suspended = true
-    this.retaining = false
   }
 
   resume(): void {
@@ -208,6 +212,9 @@ export class OpenWakeWordDetector implements WakeDetector {
     const seconds = Math.min(PREROLL_SECONDS, sinceFire + 1.2)
     let samples = this.preroll.readLast(seconds)
     this.preroll.clear()
+    // The turn owns the mic from here; stop filling the ring until `resume()`
+    // re-arms us (it clears the ring and sets `retaining` again).
+    this.retaining = false
     if (!samples.length) return []
     samples = resampleFrom16k(samples, targetRate)
     // One chunk per ~250 ms keeps each payload small.

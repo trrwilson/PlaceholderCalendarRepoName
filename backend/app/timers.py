@@ -98,6 +98,27 @@ class TimerStore:
         if current is None:
             raise KeyError(timer_id)
         now = self._clock()
+        if current.state == TimerState.paused:
+            # A paused timer stays paused; the added time grows what is left.
+            remaining = (current.remaining_seconds or 0) + request.add_seconds
+            if not TIMER_MIN_SECONDS <= remaining <= self._max_seconds:
+                raise TimerError(self._cap_message())
+            extended = Timer(
+                id=current.id,
+                label=current.label,
+                created_at=now,
+                fires_at=now + timedelta(seconds=remaining),
+                duration_seconds=remaining,
+                state=TimerState.paused,
+                remaining_seconds=remaining,
+            )
+            self._timers[extended.id] = extended
+            await self._emit(
+                "timer-extended",
+                self._describe("Extended", extended, None),
+                timer=extended,
+            )
+            return extended
         # Snoozing a fired alarm extends from *now*; extending a running timer
         # from its current fires_at. Either way we rebase created_at to now so
         # ``duration_seconds == fires_at - created_at`` stays exact and within the
@@ -123,6 +144,73 @@ class TimerStore:
             "timer-extended", self._describe("Extended", extended, None), timer=extended
         )
         return extended
+
+    async def pause(self, timer_id: str) -> Timer:
+        current = self._timers.get(timer_id)
+        if current is None:
+            raise KeyError(timer_id)
+        if current.state != TimerState.running:
+            raise TimerError("Only a running timer can be paused.")
+        now = self._clock()
+        remaining = max(
+            TIMER_MIN_SECONDS,
+            min(current.duration_seconds, round((current.fires_at - now).total_seconds())),
+        )
+        self._disarm(timer_id)
+        paused = current.model_copy(
+            update={"state": TimerState.paused, "remaining_seconds": remaining}
+        )
+        self._timers[timer_id] = paused
+        await self._emit("timer-paused", f"Paused the {self._label(paused)}", timer=paused)
+        return paused
+
+    async def resume(self, timer_id: str) -> Timer:
+        current = self._timers.get(timer_id)
+        if current is None:
+            raise KeyError(timer_id)
+        if current.state != TimerState.paused:
+            raise TimerError("The timer isn't paused.")
+        now = self._clock()
+        remaining = current.remaining_seconds or current.duration_seconds
+        resumed = Timer(
+            id=current.id,
+            label=current.label,
+            # created_at is pulled back so ``fires_at - created_at`` still equals
+            # the original duration and the progress ring stays honest.
+            created_at=now - timedelta(seconds=current.duration_seconds - remaining),
+            fires_at=now + timedelta(seconds=remaining),
+            duration_seconds=current.duration_seconds,
+            state=TimerState.running,
+            remaining_seconds=None,
+        )
+        self._timers[resumed.id] = resumed
+        self._arm(resumed)
+        await self._emit("timer-resumed", f"Resumed the {self._label(resumed)}", timer=resumed)
+        return resumed
+
+    async def restart(self, timer_id: str) -> Timer:
+        """Reset the timer to its full duration and start counting again. Works
+        from any state (running, paused, or a fired alarm)."""
+        current = self._timers.get(timer_id)
+        if current is None:
+            raise KeyError(timer_id)
+        now = self._clock()
+        full = current.duration_seconds
+        restarted = Timer(
+            id=current.id,
+            label=current.label,
+            created_at=now,
+            fires_at=now + timedelta(seconds=full),
+            duration_seconds=full,
+            state=TimerState.running,
+            remaining_seconds=None,
+        )
+        self._timers[restarted.id] = restarted
+        self._arm(restarted)
+        await self._emit(
+            "timer-restarted", self._describe("Restarted", restarted, None), timer=restarted
+        )
+        return restarted
 
     async def cancel(self, timer_id: str) -> Timer:
         current = self._timers.get(timer_id)

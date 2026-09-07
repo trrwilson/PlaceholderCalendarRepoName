@@ -1,7 +1,7 @@
 // Mirrors the Timer models in backend/app/models.py — keep the field names
 // (snake_case) in sync with that file.
 
-export type TimerState = 'running' | 'fired' | 'dismissed'
+export type TimerState = 'running' | 'paused' | 'fired' | 'dismissed'
 
 export interface Timer {
   id: string
@@ -10,6 +10,8 @@ export interface Timer {
   fires_at: string
   duration_seconds: number
   state: TimerState
+  /** Frozen seconds left; present only while `state` is `paused`. */
+  remaining_seconds?: number | null
 }
 
 export interface TimerMutationResult {

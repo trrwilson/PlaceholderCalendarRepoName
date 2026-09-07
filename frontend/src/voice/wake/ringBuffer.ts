@@ -9,7 +9,13 @@
 // whole activation; `useVoiceSession` drains it into the session right after it
 // connects, then hands over to the live microphone.
 
-/** 16 kHz mono, the rate Gemini Live expects for input audio. */
+import { downsampleTo, resampleLinear } from '../pcm'
+
+/**
+ * 16 kHz mono — fixed by the openWakeWord feature models, and coincidentally
+ * also Gemini Live's input rate. The ring buffer always holds audio at this
+ * rate; `resampleFrom16k` moves it onto whatever rate the turn's provider wants.
+ */
 export const WAKE_SAMPLE_RATE = 16_000
 
 export class AudioRingBuffer {
@@ -56,55 +62,30 @@ export class AudioRingBuffer {
   }
 }
 
+/**
+ * Rate/format conversion for the pre-roll. Both are thin, named wrappers over
+ * the shared primitives in `../pcm` — the ring buffer's rate is fixed by the
+ * wake model, so it is worth naming, but the maths must not be a second copy.
+ */
+
 /** Float32 [-1, 1] samples to a base64-encoded little-endian PCM16 string. */
-export function floatToPcm16Base64(samples: Float32Array): string {
-  const pcm = new Int16Array(samples.length)
-  for (let i = 0; i < samples.length; i += 1) {
-    const clamped = Math.max(-1, Math.min(1, samples[i]))
-    pcm[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff
-  }
-  const bytes = new Uint8Array(pcm.buffer)
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i])
-  return btoa(binary)
-}
+export { floatToPcm16Base64 } from '../pcm'
 
 /**
- * Average-decimate `samples` from `fromRate` to 16 kHz. This mirrors the
- * anti-aliasing downsample in `audio.ts` — plain decimation folds high
- * frequencies into the speech band and hurts keyword spotting just as it hurts
- * transcription.
+ * Anti-aliasing downsample of native-rate mic audio to the wake model's 16 kHz.
+ * Plain decimation folds high frequencies into the speech band and hurts keyword
+ * spotting just as it hurts transcription.
  */
 export function downsampleTo16k(samples: Float32Array, fromRate: number): Float32Array {
-  if (fromRate <= WAKE_SAMPLE_RATE) return samples
-  const ratio = fromRate / WAKE_SAMPLE_RATE
-  const out = new Float32Array(Math.floor(samples.length / ratio))
-  for (let i = 0; i < out.length; i += 1) {
-    const start = Math.floor(i * ratio)
-    const end = Math.min(samples.length, Math.floor((i + 1) * ratio))
-    let sum = 0
-    for (let j = start; j < end; j += 1) sum += samples[j]
-    out[i] = end > start ? sum / (end - start) : samples[start] ?? 0
-  }
-  return out
+  return downsampleTo(samples, fromRate, WAKE_SAMPLE_RATE)
 }
 
 /**
- * Linearly resample 16 kHz pre-roll to `toRate` (24 kHz for the Azure relay
- * providers). The ring buffer holds 16 kHz — feeding those samples to a 24 kHz
- * input stream plays them ~1.5x fast and pitched up, which the model can't parse,
- * so the *start* of a wake-word command is effectively lost.
+ * Resample 16 kHz pre-roll to `toRate` (24 kHz for the Azure relay providers).
+ * The ring buffer holds 16 kHz — feeding those samples to a 24 kHz input stream
+ * plays them ~1.5x fast and pitched up, which the model can't parse, so the
+ * *start* of a wake-word command is effectively lost.
  */
 export function resampleFrom16k(samples: Float32Array, toRate: number): Float32Array {
-  if (toRate === WAKE_SAMPLE_RATE || samples.length === 0) return samples
-  const ratio = WAKE_SAMPLE_RATE / toRate
-  const out = new Float32Array(Math.round(samples.length / ratio))
-  for (let i = 0; i < out.length; i += 1) {
-    const src = i * ratio
-    const lo = Math.floor(src)
-    const hi = Math.min(samples.length - 1, lo + 1)
-    const frac = src - lo
-    out[i] = samples[lo] * (1 - frac) + samples[hi] * frac
-  }
-  return out
+  return resampleLinear(samples, WAKE_SAMPLE_RATE, toRate)
 }

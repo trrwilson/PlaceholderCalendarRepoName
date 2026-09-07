@@ -16,23 +16,28 @@ clone.
   calendar snapshots and owns only view state (current mode, focused date, filters)
   and app-only presentation preferences (colour mode, week start, per-calendar colour).
 - The server owns everything durable: provider access, OAuth tokens, credentials,
-  household state, and AI/audio/video processing — with one deliberate exception, the
-  voice assistant's Gemini Live session, which the browser holds directly using a
-  short-lived backend-minted token (see **Voice assistant** below).
-- The default calendar provider is an in-memory mock. A configuration-driven Microsoft
-  Graph (Outlook) provider also exists (`MISSION_CONTROL_CALENDAR_PROVIDER=graph`),
-  app-only / read-focused, with no in-app account management. No persistence, no auth
-  for the frontend yet.
+  household state, timers, and AI/audio/video processing — with one deliberate
+  exception, the voice assistant's Gemini Live session, which the browser holds
+  directly using a short-lived backend-minted token. The Azure and local voice
+  providers run through the backend (`WS /api/voice/live` / `/api/voice/local`);
+  see **Voice assistant** below.
+- The default calendar provider is an in-memory mock. Configuration-driven Microsoft
+  Graph *read* providers also exist for both an Azure AD tenant
+  (`MISSION_CONTROL_CALENDAR_PROVIDER=graph`, app-only) and a personal
+  outlook.com / hotmail.com account (`outlook_personal`, delegated / device-code),
+  with no in-app account management. No persistence, no auth for the frontend yet.
 
-An initial voice assistant now exists: tap-to-talk, Gemini Live (native audio),
-read-only — it answers schedule questions and drives the dashboard. Local
-wake-word activation ("Mission Control") is **integrated but dormant** — the
-browser-resident architecture is in place and tested; it needs a trained model
-asset and hardware validation before it does anything (see **Wake word** below).
-Long-term direction (do **not** build until explicitly asked): a Google Calendar
-provider, Home Assistant, voice-driven calendar writes, and optional local media
-processing. `.prompts/` holds the dated prompt history that produced the repo and
-is useful background.
+The voice assistant exists and is a running bake-off: tap-to-talk, five selectable
+providers (Gemini Live, three Azure paths, and an experimental on-device Local /
+Hybrid pipeline). It answers schedule questions, drives the dashboard, and controls
+one kitchen timer — the single documented exception to read-only; it cannot write
+the calendar. Local wake-word activation ("Mission Control") is **integrated but off
+by default** — the browser-resident architecture is in place and tested and a
+locally-trained model ships, but its ONNX feature maths and recall still need
+hardware validation (see **Wake word** below). Long-term direction (do **not** build
+until explicitly asked): a Google Calendar provider, Home Assistant, voice-driven
+calendar writes, and optional local media processing. `.prompts/` holds the dated
+prompt history that produced the repo and is useful background.
 
 ## Repository layout
 
@@ -48,6 +53,7 @@ backend/                FastAPI service (Python 3.12+)
   app/calendar/personal_auth.py  device-code sign-in for the kiosk + CLI
   app/auth.py            `python -m app.auth {login,status,logout}` headless sign-in
   app/voice/            shared voice plumbing (prompt/tools/cache/base) + providers/ adapters
+  app/voice/local/      Local / Hybrid pipeline: STT seam + engines/ + intents/entities/dates/interpreter
   tests/                 pytest
   .env.example           documented MISSION_CONTROL_* variables
   pyproject.toml
@@ -55,6 +61,8 @@ frontend/                React 19 + TypeScript (strict) + Vite
   src/App.tsx            App shell + Home/Week/Month views + helpers
   src/App.css            Design tokens, layout, semantic markers (single stylesheet)
   src/App.test.tsx       Vitest + Testing Library
+  src/voice/             tap-to-talk session, audio pipeline, wake word, tools, providers
+  src/timers/            Timer tab: useTimers store, TimerView, chime
   e2e/                   Playwright kiosk-layout checks
 .prompts/                Historical build prompts (context, not instructions)
 ```
@@ -108,9 +116,16 @@ space goes to schedule content.
   tap (transient popover, Escape + outside-click dismiss) — never spelled out inline
   in the header.
 - **Persistent mode navigation must stay spatially stable.** Home / Week / Month
-  (/ Timer) are peer controls with equal, generous touch targets — inactive ones
-  quieter than the selected one, but never styled as mouse-oriented text links. Their
-  positions never move.
+  are peer controls with equal, generous touch targets — inactive ones quieter than
+  the selected one, but never styled as mouse-oriented text links. Their positions
+  never move. **Timer is not a calendar-viewing peer** — it is a role/appliance
+  mode and is set apart from that group: a gap + hairline divider in the dock, the
+  timer's coral identity instead of the neutral ink fill (coral when it is the
+  active view; a quiet coral outline + the running countdown otherwise), and a warm
+  self-contained view panel rather than the borderless calendar grids. This uses
+  the same "different kind of thing → distinct shape/colour, placed outside the
+  group" grammar as the contextual Today action. See `docs/timer-plan.md` →
+  "Visual separation".
 - **Contextual actions are not primary modes.** "Today" is a return-to-current-date
   action, shown only when Week/Month is displaced from today, styled distinctly from
   the mode selector and placed visually outside it. Its appearance/disappearance must
@@ -217,18 +232,26 @@ arm's length. Events are the primary information.
   generalized event bus. `ApplicationMessage` in `app/models.py` is the server→client
   envelope. **Timers are its first real use:** `app/realtime.py` holds a tiny
   connection registry + `broadcast()`, the socket sends the current timer list on
-  connect, and the timer store pushes `timer-started` / `-extended` / `-dismissed` /
-  `-fired` messages (each carrying `timers`, and `timer` / `replaced` as relevant).
+  connect, and the timer store pushes `timer-started` / `-extended` / `-paused` /
+  `-resumed` / `-restarted` / `-dismissed` / `-fired` messages (each carrying
+  `timers`, and `timer` / `replaced` as relevant).
   Keep any further push a small typed addition to this envelope, not a bus.
 
 ## Voice assistant
 
 Initial voice support (see `docs/voice-support-plan.md`). Tap-to-talk. It answers
 schedule questions and moves the display; it **cannot change the calendar**. The one
-documented, narrow exception to read-only: it may **set / cancel / extend a single
-kitchen timer** (`start_timer` / `cancel_timer` / `extend_timer` / `get_timer`) —
+documented, narrow exception to read-only: it may **set / cancel / extend / pause /
+resume / restart a single kitchen timer** (`start_timer` / `cancel_timer` /
+`extend_timer` / `pause_timer` / `resume_timer` / `restart_timer` / `get_timer`) —
 ephemeral, local, single-appliance state with no external side effect. Calendar
 writes stay out of scope.
+
+**Audio itself — microphone capture, the one software gain stage, sample rates,
+echo cancellation, playout and every audio setting — is documented once in
+`docs/audio-pipeline.md`.** It is deliberately *not* per-provider: one mic, one
+gain, one output bus, shared by voice, wake word and the timer chime. Read it
+before changing anything that touches samples or level.
 
 - **Provider seam (four-way bake-off).** `MISSION_CONTROL_VOICE_PROVIDER` (default
   `gemini`; also `azure_voice_live`, `azure_openai_realtime`, `azure_openai_realtime_mini`)
@@ -316,14 +339,47 @@ writes stay out of scope.
   reason. `disabled` also disables the button until reload; every other kind stays
   tappable (and the toast offers "Try again"). `VoiceOverlay` shows the retryable
   `error` state before the third strike.
+- **Debug audio capture.** `frontend/src/voice/debugRecorder.ts` (`voiceDebugRecorder`)
+  retains the exact PCM streamed to the speech provider for the last N activations
+  (default 10) — every `sendAudio` chunk, in order, at the provider input rate. A
+  push-to-talk capture starts at the first mic chunk; a wake capture leads with the
+  flushed pre-roll (starts shortly before the keyword) then the live mic. **On by
+  default.** In-browser: `window.__voiceDebug` (`list` / `wav` / `wavBytes` /
+  `samples` / `save` / `clear`) — no kiosk UI, per **Wake word**. On disk: each
+  finished capture is POSTed to `POST /api/voice/debug/capture` (LAN-gated), which
+  writes a headered WAV + `.json` sidecar under
+  `MISSION_CONTROL_VOICE_DEBUG_CAPTURE_DIR` (default `backend/voice-captures/`,
+  git-ignored) and prunes to `…_KEEP` pairs (`app/voice/debug_capture.py`). Upload
+  is best-effort — the in-memory ring stands if the backend is down.
+  `MISSION_CONTROL_VOICE_DEBUG_CAPTURE_ENABLED=false` (or
+  `localStorage['voice.debug.capture']='off'`) turns it off; ring size is
+  `localStorage['voice.debug.count']`.
+- **Echo cancellation is a hard requirement** for every voice scenario (barge-in,
+  wake-during-reply, the listening cue) — and for the timer chime, which rings
+  while someone is talking to the kiosk. Chromium's `getUserMedia({ echoCancellation:
+  true })` only references *remote* (peer-connection) streams, never WebAudio
+  playout, so **everything the appliance plays** — assistant reply, cue, chime —
+  routes through a local loopback `RTCPeerConnection` (`frontend/src/voice/aecPlayback.ts`)
+  to get into the AEC3 reference. That let the old cue-silencing workaround go
+  (`deafUntil` / `CUE_GUARD_MS` deleted from `useVoiceSession`; a 250 ms
+  `AEC_SETTLE_MS` covers canceller convergence only). This covers audio *this page*
+  plays; audio from other processes on the kiosk box (a debug capture opened in a
+  media player, Windows sounds) needs the phase-2 backend path — a Windows audio
+  worker capturing the mic + WASAPI render loopback as the reference and streaming
+  clean PCM over `WS /api/voice/capture`, to be gated by a
+  `MISSION_CONTROL_VOICE_AEC_ENABLED` off switch for a hardware-AEC microphone.
+  **Neither the worker nor that setting exists yet**; see the AEC plan.
 - **Tools = explicit application tools, never providers.** `backend/app/voice/tools.py`
   is the contract, mirrored in `frontend/src/voice/tools.ts`. `show_view` / `focus_date`
-  / `highlight_event` mutate local view state only; `get_events` / `get_agenda` /
-  `check_conflicts` are answered from `GET /api/calendar`; `start_timer` /
-  `cancel_timer` / `extend_timer` / `get_timer` call `/api/timers`. Agent code must
-  never reach a calendar provider directly. Adding a tool = update both files (the
-  backend copy is what gets locked into the token) and the `test_voice.py` locked-set
-  assertion.
+  / `highlight_event` / `set_people_filter` mutate local view state only; `get_events` /
+  `get_agenda` / `check_conflicts` are answered from `GET /api/calendar`; `start_timer` /
+  `cancel_timer` / `extend_timer` / `pause_timer` / `resume_timer` / `restart_timer` /
+  `get_timer` call `/api/timers`. Agent code must
+  never reach a calendar provider directly. The local intent router
+  (`app/voice/local/`) plans the same tool calls without a speech-to-speech provider.
+  Adding a tool = update both files (the backend copy is what gets locked into the token),
+  the `DashboardActions` type + `App.tsx` `voiceActions`, and the `test_voice.py` /
+  `test_voice_relay.py` locked-set assertions.
 - **Keep `docs/voice-commands.md` current.** That doc is the human-facing list of
   everything voice understands — the phrasings, what each does, and its limits. Any
   change to the tool set (`tools.py` / `tools.ts`), to the spoken behaviour in
@@ -344,22 +400,24 @@ that a single provider owns the complete conversational audio pipeline. Add abst
 only when a concrete implementation needs them — do not prematurely construct a
 generalized voice framework.
 
-Context: the current work is a four-way **cloud bake-off** — Gemini Live, Azure Voice
+Context: there is a four-way **cloud bake-off** — Gemini Live, Azure Voice
 Live, Azure OpenAI Realtime (`gpt-realtime-2.1`), and Azure OpenAI Realtime
-(`gpt-realtime-2.1-mini`). A fifth contestant, **Local / Hybrid**, is a plausible future
-entrant that would independently compose stages: wake-word → STT → local intent
-recognition/routing → (local tool execution | cloud LLM/agent escalation) → response
-generation → TTS → audio output. It does **not** exist yet and is **not** exposed in
-Settings until it does.
+(`gpt-realtime-2.1-mini`) — plus a fifth **experimental** contestant, **Local /
+Hybrid** (`MISSION_CONTROL_VOICE_PROVIDER=local`), that composes stages
+independently: wake-word → local STT → local intent recognition/entity resolution →
+(local tool execution | cloud escalation) → response → (cloud TTS, later). It is
+selectable in Settings and has its own **### Local / Hybrid pipeline** section
+below. The cloud contestants are unchanged by it.
 
 What this requires of anyone touching voice now:
 
-- The initial three cloud contestants may implement the experience as integrated realtime
+- The cloud contestants implement the experience as integrated realtime
   speech-to-speech providers. Do **not** artificially decompose them internally to satisfy
-  a hypothetical abstraction.
-- Do **not** build the generalized STT / intent-router / escalation / TTS interfaces now.
-  The requirement is *architectural compatibility*, not implementation of the hybrid
-  pipeline. Build an interface when a second concrete implementation forces it.
+  a hypothetical abstraction — the Local / Hybrid path is where decomposition lives.
+- The generalized STT / intent / escalation seams now exist **only inside
+  `app/voice/local/`**. Do not hoist them into the shared voice layer or build a
+  generalized voice framework around them; the shared layer still just sees a
+  `ConversationalVoiceProvider` emitting `VoiceEvent`s.
 - Keep the application-level voice-provider contract from assuming every provider is an
   indivisible speech-to-speech service. Shared conversational semantics and Mission
   Control operations stay **above** provider-specific protocols; a future local/hybrid
@@ -383,6 +441,63 @@ What this requires of anyone touching voice now:
   first response audio, interruption/cancellation, errors and recovery. (`instrument.ts`
   `VoiceTimeline` is the current home of these marks.)
 
+### Local / Hybrid pipeline
+
+`MISSION_CONTROL_VOICE_PROVIDER=local` (`backend/app/voice/local/`,
+`frontend/src/voice/providers/local.ts`, `docs/local-voice-plan.md`,
+`docs/local-stt-evaluation.md`). On-device STT + intent/entity interpretation;
+the cloud is an **escalation capability, not a mandatory hop**. Experimental, but
+wired end to end and selectable in Settings. **Durable decisions:**
+
+- **The pipeline runs on the backend, driven over `WS /api/voice/local`** (a
+  relay-style single-use ticket in the grant, `reusable_grant = False`, LAN-gated
+  — same shape as the Azure relay). The kiosk streams 16 kHz mic audio and drives
+  the same `ConversationalVoiceProvider` interface as every other contestant; it
+  never sees the STT engine or the interpreter. Two extra `VoiceEvent`s —
+  `diagnostic` and `escalation` — are additive and ignored by the cloud paths.
+- **Four layers, each separately replaceable and text-testable** (no mic, no
+  model): `recognizer` (STT seam) → `intents` (weighted-regex catalogue, never
+  exact-string, never a giant static grammar) → `dates` + `entities` (fuzzy
+  resolution against the **live `CalendarSnapshot` passed in per turn**, no
+  baked-in name list) → `interpreter` (confidence, tier, plan). Keep raw
+  transcription, semantic parsing, entity resolution and execution logically
+  separable so each evolves independently.
+- **Mission Control never imports faster-whisper / sherpa-onnx directly** — only
+  `SpeechRecognizer` (`app/voice/local/recognizer.py`). Engines
+  (`engines/`, lazily imported) are a config choice; the dependency-free
+  `scripted` engine backs tests and the text bypass. A discrete GPU is an
+  **opt-in accelerator, never required** — `device=auto` is CPU, and CPU int8
+  already meets the interactive target (see the evaluation doc).
+- **Tool execution stays in the browser through the existing dispatcher.** The
+  interpreter only *decides which tools to call*, exactly as a cloud model would
+  — extends "tools are explicit application tools, never providers".
+  `set_people_filter` was added to the shared tool contract as part of this
+  (a view-state tool, like `show_view`).
+- **`Interpretation.disposition` is the explicit local-vs-escalate representation:**
+  `handled_locally` / `needs_clarification` / `rejected` / `escalate_to_cloud`.
+  Tiers: 0 deterministic-local, 1 local + live entity resolution, 2 local STT +
+  cloud *text* reasoning (escalate with only the bounded structured context), 3
+  fully conversational. **The cloud text call is a stub / extension point
+  (`CloudEscalator`)** — do not treat Tier 2 as done.
+- **Safety: a mutating request below the mutation-confidence threshold is never
+  executed on a guess** — it becomes `needs_clarification`. Calendar writes stay
+  `rejected` unconditionally (voice is read-only). "Recognised but unsupported"
+  (display power, shopping lists) is a clean "can't do that yet", never a
+  fallback to guessing.
+- **Observability:** every turn emits a `diagnostic` event with the full
+  interpretation trace (transcript, intent scores, entity candidates, resolved
+  entities, confidence, reason, timings); `window.__voiceLocal` holds the latest.
+  `POST /api/voice/local/interpret {text}` returns the same object with no audio —
+  the way to test the semantic layer and the documented voice bypass.
+- **Model provenance** (weights vs. runtime licence) is tracked in
+  `docs/credits.md` + `docs/local-stt-evaluation.md`; model binaries are
+  provisioned per install, never committed (`backend/voice-samples/` and the STT
+  caches are git-ignored). The reusable command corpus is text
+  (`backend/tests/data/voice_commands.jsonl`) — no personal recordings in git.
+- **Keep `docs/voice-commands.md` and the corpus current** when the intent
+  catalogue, the supported/unsupported line, or the tool set changes — same rule
+  as the cloud path.
+
 ## Wake word
 
 Local "Mission Control" activation (`docs/wake-word-plan.md`,
@@ -396,21 +511,29 @@ to push-to-talk, which is always independent of any of this.
   calls the *same* `startTurn()` the Ask button does.
 - **Seam.** `frontend/src/voice/wake/` — `WakeDetector` interface +
   `createWakeDetector()`; `OpenWakeWordDetector` (local ONNX via lazily-imported
-  `onnxruntime-web`, not yet a package dependency); `FakeWakeDetector`
+  `onnxruntime-web`, a package dependency, kept out of Vite's dep pre-bundle so it
+  resolves its own `.wasm` same-origin); `FakeWakeDetector`
   (`VITE_WAKE_FAKE=1`, mic-free, for tests/manual UI); `useWakeWord` owns the
   detector lifecycle and diagnostics. Mock it the way `./session` / `./audio` are
   mocked.
-- **One microphone.** `audio.ts` now has a reference-counted `MicSource` (one
+- **One microphone, one gain.** `audio.ts` has a reference-counted `MicSource` (one
   `getUserMedia` + `AudioContext` + capture worklet, many listeners). Never open
   a second mic stack — push-to-talk and the detector are both just listeners.
-  `MicSource` also owns the **input-gain stage** (`voice/gain.ts`): a dB-denominated
-  amplitude multiplier (`10^(dB/20)`, 0 dB = off, default +12 dB) applied to every
+  `MicSource` also owns the **only** gain stage (`voice/gain.ts`): a dB-denominated
+  amplitude multiplier (`10^(dB/20)`, 0 dB = off, default +20 dB) applied to every
   native frame *before* fan-out, so wake word and the provider both get the
   adjusted, ±1-saturated audio and neither knows it happened. Configured by
   `MISSION_CONTROL_MIC_INPUT_GAIN_DB` → `VoiceConfig.mic_input_gain_db` on `GET
   /api/voice/config` → `useVoiceConfig` pushes it to `micSource.setInputGainDb()`.
   Tune it from the throttled `[voice] mic input level` console line
   (peak / RMS / clip%); `micSource.inputGainStats()` exposes the same numbers.
+  Nothing else may change level: `autoGainControl` is off so browser AGC can't
+  fight it, `voice/pcm.ts` (the one home for format/rate conversion) never touches
+  amplitude, and the client's speech/silence thresholds are normalised back to
+  `LEVEL_REFERENCE_GAIN_DB` so turning the knob does not silently re-tune the
+  endpointer. **`docs/audio-pipeline.md` is the authority** on all of this — the
+  capture and playout chains, every audio setting and where it lives, and the
+  rules for adding one. Read it before touching anything audio.
 - **State.** `useVoiceSession` gains an `armed` status (behaves like `idle` for
   every control). Detection → immediate `connecting` overlay (no network wait) →
   normal turn → re-arm. Detector suspended during
@@ -420,13 +543,18 @@ to push-to-talk, which is always independent of any of this.
   the phrase that opened the *previous* turn is still inside the model's window
   and re-fires the instant we re-arm, opening a spurious turn the model then
   answers from nothing.
-- **Pre-roll.** A 16 kHz ring buffer (`wake/ringBuffer.ts`) captures continuously
+- **Pre-roll.** A 16 kHz ring buffer (`wake/ringBuffer.ts`, rate conversion
+  delegated to `voice/pcm.ts`) captures continuously
   while armed; on a wake fire `useVoiceSession` reads back the run-up + command
   start, **resamples it to the provider's input rate** (`resampleFrom16k` — 16 kHz
   for Gemini, 24 kHz for the Azure relay; a mismatch plays the lead-in 1.5x fast
   and unintelligible), and flushes it via `session.sendAudio()` right after
   connect, before the live mic, so single-shot ("Mission Control, what's on
-  today?") keeps its start.
+  today?") keeps its start. **Retention must continue through `connecting`** — the
+  turn suspends the detector seconds before the live mic starts streaming, so
+  `OpenWakeWordDetector.suspend()` stops inference but keeps `retaining` on;
+  `takeRetainedAudio()` is what turns it off (until `resume()` re-arms). Dropping
+  retention at suspend loses the whole command on a single-shot phrase.
 - **Config.** `MISSION_CONTROL_WAKE_WORD_*` in `config.py` (enabled, phrase,
   threshold, cooldown_ms, model_path, models_base_url); `GET
   /api/voice/wake-config` (`_require_local`-gated) reports `enabled` only when
@@ -446,21 +574,43 @@ timers are core.
 - **State.** `Timer` / `TimerCreateRequest` / `TimerExtendRequest` /
   `TimerMutationResult` in `app/models.py`; the store + `asyncio` scheduler is
   `app/timers.py` (a process singleton, keyed by id so *N* concurrent timers is a
-  later config change). `/api/timers` `GET`/`POST`/`PATCH`/`DELETE` in `app/api.py`,
-  all `_require_local`-gated. Creating a timer while one exists **replaces it
+  later config change). `/api/timers` `GET`/`POST`/`PATCH`/`DELETE` plus
+  `POST /api/timers/{id}/pause|resume|restart` in `app/api.py`, all
+  `_require_local`-gated. Creating a timer while one exists **replaces it
   silently**; every result/broadcast carries `replaced` so every surface can say so.
+- **Pause / resume / restart.** `pause` freezes the countdown into
+  `Timer.remaining_seconds` and sets `state = "paused"` (`fires_at` goes stale —
+  read `remaining_seconds`); `resume` rebases `created_at`/`fires_at` from now so the
+  original `duration_seconds` and the progress ring stay honest; `restart` resets to
+  the full `duration_seconds` from any state. Extending a paused timer keeps it
+  paused. Voice tools mirror all three (`pause_timer` / `resume_timer` /
+  `restart_timer`).
 - **Six-hour cap** (`MISSION_CONTROL_TIMER_MAX_SECONDS`, default 21600) enforced in
   three places: the Pydantic model (source of truth), the voice tool check, and the
   touch dial (cannot travel past 6h).
 - **Frontend.** `frontend/src/timers/` — `useTimers()` owns the single timer, the
   `/api/ws` subscription, a 1 Hz countdown *only while a timer is active*, a
   local-clock safety-net fire if the socket is down, `navigator.wakeLock('screen')`
-  while active, and the alarm chime. `TimerView` renders setup / running / fired.
-- **Default view.** Once a timer exists it is the default view: starting one
-  switches to the Timer tab, `fired` force-switches to it, and every "return to
-  default" path (`defaultView()` in `App.tsx`, the brand/Home control, cold boot)
-  resolves to the timer while one is `running`/`fired` and to Home otherwise.
-  Manual navigation afterwards is left alone.
+  while active, and the alarm chime. `TimerView` renders setup / running (with a
+  Pause/Resume + Restart control set) / fired.
+  The chime (`timers/chime.ts`) plays through the shared echo-cancelled output bus
+  (`voice/aecPlayback.ts`), not `context.destination` — it routinely rings while
+  someone is speaking to the kiosk, and uncancelled playout is heard by the open
+  mic as speech. See `docs/audio-pipeline.md`.
+- **Default view — ambient, not a lock.** While a timer is active the Timer view
+  is the view the app settles on *when it chooses*: starting a timer switches to
+  it, `fired` force-switches to it, and a timer already running at cold boot (or
+  arriving from another screen) shows it via a one-shot `hasActiveTimer`
+  `false→true` edge effect. **Explicit navigation is never overridden** — a mode
+  tab, the brand / Home control (`goHome()` goes Home, no `defaultView()`
+  indirection), and voice `show_view` all go exactly where asked while the timer
+  keeps counting. A future idle-revert / display-wake must honour the same "Timer
+  while active, Home otherwise" rule (see `docs/camera-support-plan.md`).
+- **Cross-view tracking.** When the Timer view is off screen, the soonest-to-fire
+  timer's remaining time rides on the **Timer dock button** (`M:SS` under an hour,
+  `H:MM` past it, `Done` while firing) — not the header, not a floating chip. It is
+  hidden on the Timer view itself (the full-bleed countdown repeats it). See
+  `docs/timer-plan.md` → "Cross-view timer tracking" / "Visual separation".
 - **Alarm.** Chime loops while `fired`, stops after
   `MISSION_CONTROL_TIMER_ALARM_MAX_RING_SECONDS` (default 5 min); the visual
   finished-state persists until dismissed (tab, tapping the alarm surface, or voice
@@ -542,8 +692,21 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
   `/api/voice/config` GET/PUT (provider list + switch, LAN gate); the Azure adapters +
   relay translation both directions + one end-to-end relay run against a fake upstream +
   the `WS /api/voice/live` ticket/LAN gate (`test_voice_relay.py`); frontend tool
-  dispatch, the `useVoiceSession` state machine (provider seam mocked), and
-  `RelayVoiceProvider` (`providers/relay.test.ts`, fake `WebSocket`)
+  dispatch, the `useVoiceSession` state machine (provider seam mocked),
+  `RelayVoiceProvider` (`providers/relay.test.ts`, fake `WebSocket`), the debug
+  audio recorder (`debugRecorder.test.ts` — capture ring, WAV encode,
+  enable/count flags, best-effort upload) and `POST /api/voice/debug/capture`
+  (writes WAV + sidecar, prunes to keep, 409 off / 403 non-LAN / 422 non-WAV)
+- local / hybrid voice: the semantic layer with **text input only**
+  (`test_voice_local_intent.py`) — multiple phrasings per intent, date/time
+  expressions, dynamic + fuzzy + ambiguous entity matching, unsupported requests,
+  low-confidence recognition, **no unsafe ambiguous mutation**, and the
+  local-vs-escalate decision (bounded escalation payload); the WS pipeline +
+  grant + `POST /api/voice/local/interpret` + ticket/LAN gates with the scripted
+  recogniser (`test_voice_local_pipeline.py`); `LocalHybridVoiceProvider`
+  (`providers/local.test.ts`, fake `WebSocket` — forwards `VoiceEvent`s +
+  `diagnostic`/`escalation`, JSON-string tool results). The real STT engine is
+  benchmarked on hardware (`scripts/benchmark_local_stt.py`), not in CI.
 - wake word: `/api/voice/wake-config` (default disabled, enabled only with both flags,
   non-LAN → 403); the wake/voice state machine (arm → detect → turn → re-arm, suspend
   during a turn, repeated/late detections don't stack sessions, disable stops it,
@@ -569,11 +732,13 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
 Google Calendar, Home Assistant, frontend authentication / account management,
 persistence/SQLite, Docker, Redis, Postgres, message brokers, cloud infrastructure.
 Voice cannot write the calendar — no voice-driven calendar writes, no conversation
-persistence. (Voice may set/cancel/extend the kitchen timer — the one documented
-exception; see **Timers**.) The **Local / Hybrid** voice pipeline (local STT / intent
-router / cloud escalation / local TTS) is a *future* bake-off contestant — preserve the
-seams for it (see **Voice assistant → Provider architecture**) but do **not** build the
-generalized interfaces or expose the Settings option until it exists. Local wake-word activation **is** now in scope and integrated (see
+persistence. (Voice may set/cancel/extend/pause/resume/restart the kitchen timer — the
+one documented exception; see **Timers**.) The **Local / Hybrid** voice pipeline (local STT + intent /
+entity resolution + cloud escalation) **is** now in scope and integrated, experimentally
+(see **Voice assistant → Local / Hybrid pipeline**); keep its seams inside
+`app/voice/local/`, do not generalize them into the shared voice layer, and the cloud
+*text* escalation and local TTS stay unbuilt (extension points only) until asked. Local
+wake-word activation **is** also in scope and integrated (see
 **Wake word**); it stays local-only, off by default, and never replaces the
 push-to-talk path. (Microsoft Graph *read* providers exist for both tenant and
 personal accounts; do not expand them into write-heavy two-way sync without being

@@ -256,8 +256,6 @@ function App() {
     return () => window.clearTimeout(clear)
   }, [timerNotice])
 
-  const defaultView = (): ViewMode => (timers.hasActiveTimer ? 'timer' : 'home')
-
   const providerCalendars = snapshot?.calendars ?? []
   const calendars = providerCalendars.map((calendar) => {
     const override = calendarColors[calendar.id]
@@ -310,6 +308,33 @@ function App() {
         when: new Date(match.starts_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }),
       }
     },
+    setPeopleFilter: (mode, people) => {
+      const all = snapshot?.calendars ?? []
+      const resolve = (ref: string): string | null => {
+        const needle = ref.trim().toLowerCase()
+        if (!needle) return null
+        const byId = all.find((calendar) => calendar.id.toLowerCase() === needle)
+        if (byId) return byId.id
+        const byName = all.find((calendar) =>
+          personName(calendar).toLowerCase().includes(needle) ||
+          calendar.name.toLowerCase().includes(needle) ||
+          personName(calendar).toLowerCase().split(' ')[0] === needle,
+        )
+        return byName?.id ?? null
+      }
+      const resolved = people.map((ref) => ({ ref, id: resolve(ref) }))
+      const ids = resolved.filter((r) => r.id).map((r) => r.id as string)
+      const unmatched = resolved.filter((r) => !r.id).map((r) => r.ref)
+      if (mode === 'all') setEnabledCalendars(all.map((calendar) => calendar.id))
+      else if (mode === 'only' && ids.length) setEnabledCalendars(ids)
+      else if (mode === 'add' && ids.length)
+        setEnabledCalendars((current) => [...new Set([...current, ...ids])])
+      else if (mode === 'remove' && ids.length)
+        setEnabledCalendars((current) => current.filter((id) => !ids.includes(id)))
+      setFilterOpen(false)
+      setSettingsOpen(false)
+      return { matched: ids, unmatched }
+    },
   }), [snapshot])
 
   const voice = useVoiceSession({ apiBaseUrl: API_URL, actions: voiceActions, surface: 'kiosk' })
@@ -324,9 +349,12 @@ function App() {
 
   function goHome() {
     setViewDate(new Date())
-    // While a timer is running or fired, every "return to default" path resolves
-    // to the timer, not Home (see docs/timer-plan.md).
-    setMode(defaultView())
+    // The Home / brand control always goes Home. A running timer makes the Timer
+    // view the *ambient* default (cold boot and on-fire land there via the
+    // hasActiveTimer edge effect and onFired; a future idle-revert would too) but
+    // it never overrides an explicit tap — navigation stays unlocked while a timer
+    // runs. See docs/timer-plan.md → "Default view while a timer is active".
+    setMode('home')
     setSelectedEvent(null)
     setFilterOpen(false)
     setSettingsOpen(false)
@@ -358,6 +386,12 @@ function App() {
     })
   }
 
+  function timerAction(verb: 'pause' | 'resume' | 'restart') {
+    timers[verb]().catch((error: unknown) => {
+      setTimerNotice(error instanceof Error ? error.message : `Could not ${verb} the timer.`)
+    })
+  }
+
   return (
     <main className="kiosk-shell">
       <header className="global-header">
@@ -370,10 +404,10 @@ function App() {
         {mode === 'home' && <HomeView now={now} todayEvents={todayEvents} todaySpans={todaySpans} upcoming={nextEvents} calendarById={calendarById} onSelect={setSelectedEvent} colorMode={colorMode} calendarAlert={authNeedsSetup ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} />}
         {mode === 'week' && <WeekView viewDate={viewDate} now={now} events={visibleEvents} calendarById={calendarById} onSelect={setSelectedEvent} onNavigate={navigate} colorMode={colorMode} weekStart={weekStart} />}
         {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={visibleEvents} calendarById={calendarById} onSelect={setSelectedEvent} onNavigate={navigate} colorMode={colorMode} weekStart={weekStart} />}
-        {mode === 'timer' && <TimerView timer={timers.timer} remainingMs={timers.remainingMs} alarm={timers.alarm} onStart={startTimerFromTouch} onExtend={extendTimer} onCancel={() => { void timers.cancel() }} onDismiss={() => { void timers.dismiss() }} />}
+        {mode === 'timer' && <TimerView timer={timers.timer} remainingMs={timers.remainingMs} alarm={timers.alarm} onStart={startTimerFromTouch} onExtend={extendTimer} onPause={() => timerAction('pause')} onResume={() => timerAction('resume')} onRestart={() => timerAction('restart')} onCancel={() => { void timers.cancel() }} onDismiss={() => { void timers.dismiss() }} />}
       </section>
 
-      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''}`}>Timer{timers.hasActiveTimer && <span className={`timer-dot ${timers.alarm ? 'firing' : ''}`} aria-hidden />}</button></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span>{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings">⚙<span>Settings</span></button>{settingsOpen && <div className="settings-popover" role="dialog" aria-label="Settings" onKeyDown={(event) => { if (event.key === 'Escape') setSettingsOpen(false) }}>{auth?.provider === 'outlook_personal' && auth.state === 'connected' && <><strong>Calendars</strong><button className="add-calendar-button" onClick={addCalendar}>Add another Outlook calendar</button></>}<strong>Event colors</strong><button className={colorMode === 'category-first' ? 'selected' : ''} onClick={() => setColorMode('category-first')}>Color events by category</button><button className={colorMode === 'people-first' ? 'selected' : ''} onClick={() => setColorMode('people-first')}>Color events by person/calendar</button><strong>Week starts on</strong><button className={weekStart === 'monday' ? 'selected' : ''} onClick={() => setWeekStart('monday')}>Monday</button><button className={weekStart === 'sunday' ? 'selected' : ''} onClick={() => setWeekStart('sunday')}>Sunday</button>{voiceConfig.config.enabled && voiceConfig.config.providers.length > 0 && <><strong>Voice provider</strong>{voiceConfig.config.providers.map((provider) => <button key={provider.id} className={voiceConfig.config.provider === provider.id ? 'selected' : ''} aria-pressed={voiceConfig.config.provider === provider.id} disabled={voiceConfig.busy || !provider.implemented || (!provider.configured && voiceConfig.config.provider !== provider.id)} onClick={() => { void voiceConfig.setProvider(provider.id) }}>{provider.label}{!provider.implemented ? ' — soon' : !provider.configured ? ' — needs config' : ''}</button>)}<span className="settings-note">Bake-off switch — applies to the next turn.</span></>}{voice.wake.available && <><strong>Wake word</strong><button className={voice.wake.userEnabled ? 'selected' : ''} aria-pressed={voice.wake.userEnabled} onClick={() => voice.setWakeEnabled(!voice.wake.userEnabled)}>Say “{voice.wake.phrase}” to start talking</button><span className="settings-note">{WAKE_STATUS_TEXT[voice.wake.state]}{voice.wake.detail ? ` — ${voice.wake.detail}` : ''}{voice.wake.activationLatencyMs != null ? ` · last wake→listening ${voice.wake.activationLatencyMs} ms` : ''}</span></>}{calendars.length > 0 && <><strong>Calendar colors</strong>{calendars.map((calendar) => <div className="calendar-color-row" key={calendar.id}><span className="calendar-color-name"><span className={`calendar-swatch ${colorClass(calendar.color)}`} />{personName(calendar)}<ProviderBadge source={calendar.source} /></span><span className="calendar-color-options" role="group" aria-label={`${personName(calendar)} color`}>{CALENDAR_PALETTE.map((color) => <button type="button" key={color} className={`color-dot ${colorClass(color)} ${calendar.color === color ? 'selected' : ''}`} aria-label={`${personName(calendar)}: ${color}`} aria-pressed={calendar.color === color} onClick={() => chooseCalendarColor(calendar.id, color)} />)}</span></div>)}</>}</div>}</div></footer>
+      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span>{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings">⚙<span>Settings</span></button>{settingsOpen && <div className="settings-popover" role="dialog" aria-label="Settings" onKeyDown={(event) => { if (event.key === 'Escape') setSettingsOpen(false) }}>{auth?.provider === 'outlook_personal' && auth.state === 'connected' && <><strong>Calendars</strong><button className="add-calendar-button" onClick={addCalendar}>Add another Outlook calendar</button></>}<strong>Event colors</strong><button className={colorMode === 'category-first' ? 'selected' : ''} onClick={() => setColorMode('category-first')}>Color events by category</button><button className={colorMode === 'people-first' ? 'selected' : ''} onClick={() => setColorMode('people-first')}>Color events by person/calendar</button><strong>Week starts on</strong><button className={weekStart === 'monday' ? 'selected' : ''} onClick={() => setWeekStart('monday')}>Monday</button><button className={weekStart === 'sunday' ? 'selected' : ''} onClick={() => setWeekStart('sunday')}>Sunday</button>{voiceConfig.config.enabled && voiceConfig.config.providers.length > 0 && <><strong>Voice provider</strong>{voiceConfig.config.providers.map((provider) => <button key={provider.id} className={voiceConfig.config.provider === provider.id ? 'selected' : ''} aria-pressed={voiceConfig.config.provider === provider.id} disabled={voiceConfig.busy || !provider.implemented || (!provider.configured && voiceConfig.config.provider !== provider.id)} onClick={() => { void voiceConfig.setProvider(provider.id) }}>{provider.label}{!provider.implemented ? ' — soon' : !provider.configured ? ' — needs config' : ''}</button>)}<span className="settings-note">Bake-off switch — applies to the next turn.</span></>}{voice.wake.available && <><strong>Wake word</strong><button className={voice.wake.userEnabled ? 'selected' : ''} aria-pressed={voice.wake.userEnabled} onClick={() => voice.setWakeEnabled(!voice.wake.userEnabled)}>Say “{voice.wake.phrase}” to start talking</button><span className="settings-note">{WAKE_STATUS_TEXT[voice.wake.state]}{voice.wake.detail ? ` — ${voice.wake.detail}` : ''}{voice.wake.activationLatencyMs != null ? ` · last wake→listening ${voice.wake.activationLatencyMs} ms` : ''}</span></>}{calendars.length > 0 && <><strong>Calendar colors</strong>{calendars.map((calendar) => <div className="calendar-color-row" key={calendar.id}><span className="calendar-color-name"><span className={`calendar-swatch ${colorClass(calendar.color)}`} />{personName(calendar)}<ProviderBadge source={calendar.source} /></span><span className="calendar-color-options" role="group" aria-label={`${personName(calendar)} color`}>{CALENDAR_PALETTE.map((color) => <button type="button" key={color} className={`color-dot ${colorClass(color)} ${calendar.color === color ? 'selected' : ''}`} aria-label={`${personName(calendar)}: ${color}`} aria-pressed={calendar.color === color} onClick={() => chooseCalendarColor(calendar.id, color)} />)}</span></div>)}</>}</div>}</div></footer>
       {selectedEvent && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
       {connectOpen && auth && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}
       <VoiceOverlay status={voice.status} transcript={voice.transcript} error={voice.error} onStop={voice.stopTurn} onDismissError={voice.dismissError} />
@@ -580,6 +614,10 @@ function formatEventWhen(event: CalendarEvent) {
   return `${formatEventTime(event.starts_at)} – ${formatEventTime(event.ends_at)}`
 }
 function formatTime(date: Date) { return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) }
+// The soonest-to-fire timer's remaining time, shown on the dock Timer button while a
+// timer runs and another view is on screen. Calm by design: seconds under an hour,
+// whole minutes past it (a multi-hour timer shouldn't tick in the chrome).
+function formatDockRemaining(ms: number) { const total = Math.max(0, Math.round(ms / 1000)); const hours = Math.floor(total / 3600); const minutes = Math.floor((total % 3600) / 60); const seconds = total % 60; const pad = (value: number) => String(value).padStart(2, '0'); return hours > 0 ? `${hours}:${pad(minutes)}` : `${minutes}:${pad(seconds)}` }
 function formatEventTime(value: string) { return new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) }
 function formatDate(date: Date) { return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }) }
 function formatShortDate(date: Date) { return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) }

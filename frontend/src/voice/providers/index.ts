@@ -9,10 +9,16 @@
 import type { VoiceTimeline } from '../instrument'
 import { GeminiVoiceProvider } from './gemini'
 import { fetchVoiceGrant } from './grant'
+import { LocalHybridVoiceProvider } from './local'
 import { RelayVoiceProvider } from './relay'
 import type { ConversationalVoiceProvider, VoiceEvent } from './types'
 
-export type { ConversationalVoiceProvider, VoiceEvent, VoiceGrant } from './types'
+export type {
+  ConversationalVoiceProvider,
+  EndpointingMode,
+  VoiceEvent,
+  VoiceGrant,
+} from './types'
 export { VoiceSessionError, VoiceUnavailableError } from './types'
 
 export async function createVoiceProvider(
@@ -24,6 +30,9 @@ export async function createVoiceProvider(
   const grant = await fetchVoiceGrant(apiBaseUrl, surface, timeline)
   if (grant.provider === 'gemini') {
     return new GeminiVoiceProvider(grant, onEvent, timeline)
+  }
+  if (grant.provider === 'local') {
+    return new LocalHybridVoiceProvider(apiBaseUrl, grant, onEvent, timeline)
   }
   // azure_voice_live / azure_openai_realtime[_mini] — all relayed.
   return new RelayVoiceProvider(apiBaseUrl, grant, onEvent, timeline)

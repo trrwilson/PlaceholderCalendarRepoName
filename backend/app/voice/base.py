@@ -18,10 +18,11 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from app.config import Settings
-from app.models import VoiceProviderId, VoiceToken
+from app.models import Endpointing, VoiceProviderId, VoiceToken
 
 __all__ = [
     "PROVIDER_LABELS",
+    "Endpointing",
     "VoiceProviderAdapter",
     "VoiceProviderId",
     "VoiceToken",
@@ -37,6 +38,7 @@ PROVIDER_LABELS: dict[VoiceProviderId, str] = {
     "azure_voice_live": "Azure Voice Live",
     "azure_openai_realtime": "Azure OpenAI Realtime (gpt-realtime-2.1)",
     "azure_openai_realtime_mini": "Azure OpenAI Realtime (mini)",
+    "local": "Local / Hybrid (on-device STT)",
 }
 
 
@@ -78,6 +80,14 @@ class VoiceProviderAdapter(Protocol):
     #: token is multi-use). False for the relay providers — their grant carries a
     #: single-use ticket, so ``app.voice.cache`` must mint a fresh one per turn.
     reusable_grant: bool
+
+    #: How this provider prefers to detect end-of-speech (see
+    #: :data:`app.models.Endpointing`). Documentation of intent — the *effective*
+    #: mode is written onto the grant by :meth:`create_grant`, because an operator
+    #: setting can override it (e.g. ``voice_manual_activity`` forces ``client``).
+    #: Defaults to ``client``: a provider that declares nothing gets the shared
+    #: mic-RMS endpointer.
+    default_endpointing: Endpointing = "client"
 
     def missing_config(self, settings: Settings) -> str | None:
         """A human-readable reason this provider cannot serve a turn, or ``None``

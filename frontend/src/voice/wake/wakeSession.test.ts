@@ -51,6 +51,7 @@ vi.mock('../providers', () => ({
     return {
       timeline: { mark: vi.fn() },
       inputSampleRate: 16_000,
+      outputSampleRate: 24_000,
       connect: h.session.connect,
       startActivity: h.session.startActivity,
       endActivity: h.session.endActivity,
@@ -70,6 +71,7 @@ vi.mock('../audio', () => ({
   },
   AudioSink: class {
     activate = vi.fn()
+    setOutputSampleRate = vi.fn()
     state = vi.fn(() => 'running')
     pending = vi.fn(() => false)
     playTestTone = vi.fn(() => 450)
@@ -140,7 +142,12 @@ const WAKE_CONFIG = {
   models_base_url: '/models/wake',
 }
 
-const actions = { showView: vi.fn(), focusDate: vi.fn(), highlightEvent: vi.fn(() => ({ matched: false })) }
+const actions = {
+  showView: vi.fn(),
+  focusDate: vi.fn(),
+  highlightEvent: vi.fn(() => ({ matched: false })),
+  setPeopleFilter: vi.fn(() => ({ matched: [], unmatched: [] })),
+}
 const options = { apiBaseUrl: 'http://api.test', actions }
 
 function stubWakeConfig(body: unknown = WAKE_CONFIG, ok = true) {

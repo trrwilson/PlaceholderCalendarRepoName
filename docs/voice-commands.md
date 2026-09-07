@@ -24,8 +24,19 @@ in `docs/voice-support-plan.md`.
   cleared at the start of the next one.
 
 Voice is off unless the kiosk build enables it (`MISSION_CONTROL_VOICE_ENABLED`),
-a Gemini API key is configured, and the request comes from the local network. When
+a provider is configured, and the request comes from the local network. When
 it is off the Ask button reads "Voice off".
+
+### Cloud vs. Local / Hybrid
+
+Settings → "Voice provider" picks who handles a turn. The cloud contestants
+(Gemini Live, the Azure ones) run the whole conversation in the cloud. The
+**Local / Hybrid** option (experimental) recognises your speech and works out
+what you meant *on the kiosk itself*, and only reaches the cloud for questions
+that need real reasoning ("when could we all have dinner this week without a
+clash?"). Everything on this page works either way; the local path is faster and
+works offline for the ordinary commands, and it will tell you out loud when it is
+handing something to the cloud. See `docs/local-voice-plan.md`.
 
 ---
 
@@ -104,6 +115,18 @@ Optionally jumps to a date at the same time ("show the week of the 20th").
 **Does:** Moves the currently visible view to that date **without** changing which
 view is showing.
 
+### "Show <person>'s calendar"
+
+**Say:** "Show Alex's calendar." · "Just show Jordan." · "Show everyone." ·
+"Show Mom and Dad."
+
+**Does:** Changes the **People** filter to show only the named household
+member(s), or everyone. Names are matched loosely against the household
+calendars. This changes what is on screen, not any calendar.
+
+**Limits:** It can only match people who have a calendar linked. "Show everyone"
+(or "clear the filter") brings them all back.
+
 ### "Open <event>"
 
 **Say:** "Open Travis's dentist appointment." · "Show me the school concert." ·
@@ -121,9 +144,10 @@ to the right week first, then ask.
 
 ## Kitchen timer
 
-Mission Control has **one** kitchen timer/alarm. Voice can set, extend, and cancel
-it — this is the only thing voice is allowed to change. Starting a new timer
-replaces whatever was running, and the assistant will tell you it did.
+Mission Control has **one** kitchen timer/alarm. Voice can set, extend, pause,
+resume, restart, and cancel it — this is the only thing voice is allowed to
+change. Starting a new timer replaces whatever was running, and the assistant will
+tell you it did.
 
 ### "Set a timer for <duration>"
 
@@ -157,7 +181,22 @@ view" limit as *Open an event* applies.
 **Say:** "Add ten minutes." · "Five more minutes." · "Snooze it." (while it's
 ringing)
 
-**Does:** Adds time to the running or ringing timer.
+**Does:** Adds time to the running, paused, or ringing timer.
+
+### "Pause the timer" / "Resume"
+
+**Say:** "Pause the timer." · "Hold the timer." · "Resume." · "Unpause it." ·
+"Keep the timer going."
+
+**Does:** Freezes the countdown where it is, then continues it from the same point
+when you resume. Time passing while it is paused does not count against it.
+
+### "Restart the timer"
+
+**Say:** "Restart the timer." · "Reset the timer." · "Start it over."
+
+**Does:** Sets the timer back to the full time you originally gave it and starts
+counting again. Works whether it is running, paused, or going off.
 
 ### "Stop" / "Cancel the timer"
 
@@ -169,8 +208,8 @@ ringing)
 
 **Say:** "How much time is on the timer?" · "Is the timer still going?"
 
-**Does:** Says whether a timer is running (or ringing) and roughly how much time
-remains.
+**Does:** Says whether a timer is running, paused, or ringing, and roughly how much
+time remains.
 
 ### Timer limits
 
@@ -190,7 +229,11 @@ remains.
 - **No account or settings changes** — sign-in, calendar colours, week start,
   people filters, wake word, etc. are all touch-only.
 - **No general questions.** It is wired to the household calendars and the timer,
-  not the open web, weather, maths, or "add milk to the shopping list".
+  not the open web, weather, or maths.
+- **No shopping lists.** "Add milk to the Costco list" is understood but Mission
+  Control has no lists yet. On the cloud providers it just says it can't; on
+  Local / Hybrid it is flagged for cloud escalation (which is itself still a stub
+  — see `docs/local-voice-plan.md`).
 - **No follow-up memory.** Each tap is a fresh turn.
 - **Latency.** A cold turn is a few seconds from "stop talking" to spoken answer.
 
@@ -205,5 +248,8 @@ remains.
 | Turn state machine, end-of-speech, error handling | `frontend/src/voice/useVoiceSession.ts` |
 | Locked-tool-set test | `backend/tests/test_voice.py` |
 | Design record & live-tuning history | `docs/voice-support-plan.md` |
+| Cloud provider bake-off | `docs/voice-provider-bakeoff-plan.md` |
+| Local / Hybrid pipeline (STT + intents) | `docs/local-voice-plan.md`, `backend/app/voice/local/` |
+| Local intent / entity tests | `backend/tests/test_voice_local_intent.py` |
 | Wake word (dormant) | `docs/wake-word-plan.md` |
 | Timer behaviour | `docs/timer-plan.md` |

@@ -1,0 +1,35 @@
+{"text": "Show me tomorrow.", "intent": "calendar.show_view", "disposition": "handled_locally", "tier": 0}
+{"text": "Go to next week.", "intent": "calendar.show_view", "disposition": "handled_locally", "tier": 0}
+{"text": "Back to home.", "intent": "calendar.show_view", "disposition": "handled_locally", "tier": 0}
+{"text": "Show the month.", "intent": "calendar.show_view", "disposition": "handled_locally", "tier": 0}
+{"text": "Open the timer.", "intent": "calendar.show_view", "disposition": "handled_locally", "tier": 0}
+{"text": "What's going on this weekend?", "intent": "calendar.query_day", "disposition": "handled_locally", "tier": 1}
+{"text": "What's happening today?", "intent": "calendar.query_day", "disposition": "handled_locally", "tier": 1}
+{"text": "Anything on Friday?", "intent": "calendar.query_day", "disposition": "handled_locally", "tier": 1}
+{"text": "What have we got tomorrow?", "intent": "calendar.query_day", "disposition": "handled_locally", "tier": 1}
+{"text": "What's happening Tuesday evening?", "intent": "calendar.query_day", "disposition": "handled_locally", "tier": 1}
+{"text": "What's the plan for the weekend?", "intent": "calendar.query_day", "disposition": "handled_locally", "tier": 1}
+{"text": "What's Alex doing after lunch tomorrow?", "intent": "calendar.query_person", "disposition": "handled_locally", "tier": 1}
+{"text": "Is Jordan busy on Wednesday?", "intent": "calendar.query_person", "disposition": "handled_locally", "tier": 1}
+{"text": "What has Alex got on today?", "intent": "calendar.query_person", "disposition": "handled_locally", "tier": 1}
+{"text": "Show Jordan's calendar.", "intent": "calendar.person_filter", "disposition": "handled_locally", "tier": 1}
+{"text": "Just show Alex.", "intent": "calendar.person_filter", "disposition": "handled_locally", "tier": 1}
+{"text": "Show everyone.", "intent": "calendar.person_filter", "disposition": "handled_locally", "tier": 1}
+{"text": "Open the dentist appointment.", "intent": "calendar.open_event", "disposition": "handled_locally", "tier": 1}
+{"text": "Pull up swim practice.", "intent": "calendar.open_event", "disposition": "handled_locally", "tier": 1}
+{"text": "What time is the soccer match?", "intent": "calendar.open_event", "disposition": "handled_locally", "tier": 1}
+{"text": "Is anything double booked tomorrow?", "intent": "calendar.conflicts", "disposition": "handled_locally", "tier": 1}
+{"text": "Any clashes on Thursday?", "intent": "calendar.conflicts", "disposition": "handled_locally", "tier": 1}
+{"text": "Set a timer for ten minutes.", "intent": "timer.start", "disposition": "handled_locally", "tier": 0}
+{"text": "Timer for half an hour for the laundry.", "intent": "timer.start", "disposition": "handled_locally", "tier": 0}
+{"text": "Give me a ninety second timer.", "intent": "timer.start", "disposition": "handled_locally", "tier": 0}
+{"text": "Set an alarm for three PM.", "intent": "timer.start", "disposition": "handled_locally", "tier": 0}
+{"text": "Remind me twenty minutes before soccer.", "intent": "timer.start", "disposition": "handled_locally", "tier": 1}
+{"text": "Add five minutes.", "intent": "timer.extend", "disposition": "handled_locally", "tier": 0}
+{"text": "How long is left on the timer?", "intent": "timer.query", "disposition": "handled_locally", "tier": 0}
+{"text": "Add milk to the Costco list.", "intent": "list.add", "disposition": "escalate_to_cloud", "tier": 1}
+{"text": "Add paper towels and dishwasher detergent to Costco.", "intent": "list.add", "disposition": "escalate_to_cloud", "tier": 1}
+{"text": "Move the dentist appointment to Friday.", "intent": "calendar.move_event", "disposition": "rejected", "tier": 1}
+{"text": "Turn the display off.", "intent": "display.off", "disposition": "rejected", "tier": 0}
+{"text": "When can I have dinner with Alex this week without any conflicts?", "intent": "calendar.plan", "disposition": "escalate_to_cloud", "tier": 2}
+{"text": "Which day this weekend looks least busy?", "intent": "calendar.plan", "disposition": "escalate_to_cloud", "tier": 2}

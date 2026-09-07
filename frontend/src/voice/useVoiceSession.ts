@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { AudioSink, MicCapture } from './audio'
+import { voiceDebugRecorder } from './debugRecorder'
 import { MainThreadLagProbe, VoiceTimeline, prewarmVoice, recordVoiceTurn } from './instrument'
 import {
   type ConversationalVoiceProvider,
+  type EndpointingMode,
   type VoiceEvent,
   VoiceSessionError,
   VoiceUnavailableError,
@@ -31,29 +33,64 @@ const RESPONSE_TIMEOUT_MS = 12_000
  * Audible "I'm listening" cue when a turn opens. On by default (placeholder tone
  * for now); silence it with `localStorage['voice.cue'] = 'off'`.
  *
- * Returns how long the cue will still be audible, in ms, so the caller can keep
- * the level detector deaf until it has finished — the mic hears it otherwise.
+ * The cue plays through the echo-cancelled output (see `AudioSink`), so it no
+ * longer needs to be kept out of the capture by deafening the level detector.
  */
-function playListeningCue(sink: AudioSink | null): number {
+function playListeningCue(sink: AudioSink | null): void {
   let on = true
   try {
     on = localStorage.getItem('voice.cue') !== 'off'
   } catch {
     // localStorage unavailable — default to playing the cue.
   }
-  return on ? (sink?.playTestTone() ?? 0) : 0
+  if (on) sink?.playTestTone()
 }
 
-// Client-side end-of-speech detection. The service's own VAD has been slow to
-// endpoint push-to-talk turns (10–20 s), so once we have heard speech and then
-// a clear pause, we end the turn ourselves. Server VAD stays on as a backstop.
-/** Mono 16 kHz RMS above this counts as speech. */
+// End-of-speech detection is negotiated per provider (`session.endpointing`; see
+// EndpointingMode and docs/voice-provider-bakeoff-plan.md -> "End-of-speech
+// ownership"):
+//
+//   client   — no provider VAD; the mic-level check below is the whole
+//              endpointer, with `SILENCE_HOLD_MS` after speech ends the turn.
+//              The kiosk brackets the turn (startActivity + endActivity).
+//   hybrid   — the provider VAD emits `speech-stopped`, which is the primary
+//              end-of-turn signal; the mic-level check is a longer-hold backstop
+//              (`SERVER_VAD_BACKSTOP_MS`) for when it doesn't arrive. endActivity
+//              still fires to finalise.
+//   provider — the provider owns end-of-speech and the reply; the mic-level
+//              check does NOT endpoint (only `MAX_LISTEN_MS` and the Stop tap
+//              do), and endActivity is a no-op.
+//
+// The backstop judges "are they still talking?" *relative to how loud this
+// speaker's speech has actually been*. An absolute floor cuts the quiet tail of
+// a normal sentence ("...for five minutes" trails ~15 dB under the stressed head)
+// off mid-word — see docs/voice-support-plan.md, tenth run.
+//
+// Every RMS below is stated at `LEVEL_REFERENCE_GAIN_DB` (gain.ts), and
+// `MicCapture` normalises the level it reports to that reference. So these are
+// properties of the room and the microphone, and re-tuning
+// `MISSION_CONTROL_MIC_INPUT_GAIN_DB` for a quiet mic does not silently move the
+// speech gate with it. Re-measure them only against a capture recorded at the
+// reference gain.
+/** RMS that arms "someone is speaking" the first time. Absolute — room noise
+ * must not open a turn. */
 const SPEECH_RMS = 0.01
-/** Silence this long after speech ends the turn. This is dead time on every
- * single turn — the person has stopped talking and nothing is happening yet — so
- * it is kept just long enough to ride out a mid-sentence pause. The service VAD
- * is a backstop underneath it (see `voice_silence_duration_ms` on the backend). */
+/** Once armed, a frame still counts as speech at this fraction of the turn's
+ * running speech level... */
+const SPEECH_LEVEL_FRACTION = 0.12
+/** ...but never below this absolute floor. */
+const SPEECH_RMS_FLOOR = 0.004
+/** The speech-level estimate is clamped here, so a cough or a clipped sample
+ * can't lift the relative gate out of reach of a normal voice. */
+const SPEECH_LEVEL_CEILING = 0.25
+/** Silence this long after speech ends the turn when the mic-level check is the
+ * only endpointer. Dead time on every such turn, so kept just long enough to
+ * ride out a mid-sentence pause. */
 const SILENCE_HOLD_MS = 700
+/** Silence hold when the provider VAD owns the endpoint (`endpointing: hybrid`,
+ * or after a `speech-started` on any provider): trust it to send `speech-stopped`
+ * and only step in as a backstop if it doesn't. */
+const SERVER_VAD_BACKSTOP_MS = 2_500
 /** Never auto-end before this, so a slow start isn't cut off. */
 const MIN_LISTEN_MS = 600
 /** Hard cap on a single listening turn. */
@@ -68,9 +105,12 @@ const PLAYOUT_GRACE_MS = 20_000
 /** End reasons that mean "we decided on our own that nothing was said". Only
  * these abandon the turn; an explicit tap always submits what we captured. */
 const AUTO_ABANDON_REASONS = new Set(['no-speech', 'max-listen-silent'])
-/** Extra margin past the cue before the level detector is trusted, covering
- * speaker latency and the ~100 ms worklet frame the tone tail lands in. */
-const CUE_GUARD_MS = 150
+/** The mic's echo canceller (browser AEC over the loopback playout) takes a beat
+ * to converge on turn start. For this long, don't trust the level enough to arm
+ * `spoke` or grow the speech-level estimate — but do keep the silence clock
+ * fresh (treat the window as "voice active") so the hold isn't already spent
+ * when the window lifts. */
+const AEC_SETTLE_MS = 250
 
 const FALLBACK_MESSAGE: Record<VoiceErrorKind, string> = {
   disabled: 'Voice support is turned off.',
@@ -114,14 +154,18 @@ interface Options {
  * The wake-word front end (`useWakeWord`, wired in below) is exactly that: on a
  * local "Mission Control" detection it calls the same `startTurn()` the Ask
  * button does, flushing the buffered pre-roll audio into the session so the
- * start of the command is not lost, and end-of-speech is the existing
- * client-side silence detection. Push-to-talk stays independent of all of it.
+ * start of the command is not lost. End-of-speech follows `session.endpointing`
+ * exactly as it does for a tap (see the constants block below). Push-to-talk
+ * stays independent of all of it.
  */
 export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options) {
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [transcript, setTranscript] = useState<VoiceTranscript>({ user: '', assistant: '' })
   const [error, setError] = useState<VoiceError | null>(null)
   const [micActive, setMicActive] = useState(false)
+  // Latest transcript, for the debug recorder to file alongside the audio it kept.
+  const transcriptRef = useRef(transcript)
+  transcriptRef.current = transcript
 
   const sessionRef = useRef<ConversationalVoiceProvider | null>(null)
   const micRef = useRef<MicCapture | null>(null)
@@ -147,9 +191,16 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
   const listenStartRef = useRef(0)
   const levelLoggedAtRef = useRef(0)
   const peakRmsRef = useRef(0)
-  // `performance.now()` before which mic levels are ignored: the listening cue
-  // is still sounding and would otherwise register as the user speaking.
-  const deafUntilRef = useRef(0)
+  // Running estimate of this speaker's speech level (peak chunk RMS this turn,
+  // clamped), for the relative "still talking" gate.
+  const speechLevelRef = useRef(0)
+  // Set once the provider VAD reports speech this turn; switches the mic-level
+  // backstop to a longer hold (see SERVER_VAD_BACKSTOP_MS).
+  const serverVadSeenRef = useRef(false)
+  // End-of-speech ownership for the active turn, from `session.endpointing`.
+  // Drives whether the mic-level check endpoints (`client` / `hybrid`) or is
+  // only a MAX_LISTEN safety cap (`provider`), and the silence-hold length.
+  const endpointingRef = useRef<EndpointingMode>('client')
   const actionsRef = useRef(actions)
   actionsRef.current = actions
   const errorRef = useRef(error)
@@ -183,6 +234,7 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
     sinkRef.current?.flush()
     turnCompleteRef.current = false
     sinkBusyRef.current = false
+    voiceDebugRecorder.endTurn()
   }, [clearWatchdog])
 
   const finishTurn = useCallback(() => {
@@ -200,6 +252,7 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
       })
       timelineRef.current = null
     }
+    voiceDebugRecorder.note({ transcript: transcriptRef.current })
     teardown()
     setStatus((current) => (current === 'unavailable' ? current : 'idle'))
   }, [teardown])
@@ -226,6 +279,11 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
       })
       timelineRef.current = null
     }
+    voiceDebugRecorder.note({
+      outcome: 'failed',
+      failureKind: next.kind,
+      transcript: transcriptRef.current,
+    })
     teardown()
     failuresRef.current += 1
     setError(next)
@@ -364,6 +422,45 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
         case 'error':
           recordFailure({ kind: event.kind, message: event.error.message || FALLBACK_MESSAGE[event.kind] })
           break
+        case 'diagnostic':
+          // Local / Hybrid pipeline trace. The provider already logs it and
+          // stashes the full object on `window.__voiceLocal`; mark the turn.
+          timelineRef.current?.mark('local-diagnostic', {
+            disposition: String((event.data as Record<string, unknown>)?.disposition ?? ''),
+            intent: String((event.data as Record<string, unknown>)?.intent ?? ''),
+          })
+          break
+        case 'escalation':
+          // The local layer handed this turn to the cloud. There is no cloud
+          // text path wired yet — the following `assistant-transcript` carries
+          // the user-facing note; just mark it for the bake-off timeline.
+          timelineRef.current?.mark('escalation', { reason: event.reason, tier: event.tier })
+          break
+        case 'speech-started':
+          // The provider VAD (`endpointing: hybrid` / `provider`) heard the user
+          // begin. Trust it to endpoint the turn; the mic-level check relaxes to
+          // a long backstop from here (SERVER_VAD_BACKSTOP_MS).
+          serverVadSeenRef.current = true
+          spokeRef.current = true
+          lastVoiceAtRef.current = performance.now()
+          timelineRef.current?.mark('server-speech-started')
+          break
+        case 'speech-stopped':
+          // Semantic VAD does not endpoint an incomplete phrase ("set a timer
+          // for…"), so this is a trustworthy end-of-turn — more so than the
+          // raw-energy backstop. In `hybrid` mode `endActivity` still goes out
+          // from `endUserTurn` to finalise; in `provider` mode it is a no-op and
+          // the reply is already on its way.
+          serverVadSeenRef.current = true
+          timelineRef.current?.mark('server-speech-stopped')
+          if (
+            statusRef.current === 'listening' &&
+            spokeRef.current &&
+            performance.now() - listenStartRef.current >= MIN_LISTEN_MS
+          ) {
+            endUserTurnRef.current('server-vad')
+          }
+          break
         case 'open':
           break
       }
@@ -391,6 +488,7 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
       // SPEECH_RMS is exactly the case where they most need it to go through.
       if (!spokeRef.current && AUTO_ABANDON_REASONS.has(reason)) {
         timelineRef.current?.mark('turn-abandoned-no-speech')
+        voiceDebugRecorder.note({ outcome: 'abandoned' })
         finishTurn()
         return
       }
@@ -403,39 +501,77 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
 
   const stopTurn = useCallback(() => endUserTurn('tap'), [endUserTurn])
 
-  // Called ~every 100 ms with the mic RMS while listening. Ends the turn after a
-  // clear pause once speech has been heard, or at the hard cap. The service's own
-  // VAD stays on as a backstop.
+  // `handleEvent` is defined above `endUserTurn`; the provider VAD path needs to
+  // reach it, so bounce through a ref.
+  const endUserTurnRef = useRef(endUserTurn)
+  endUserTurnRef.current = endUserTurn
+
+  // Called ~every 100 ms with the mic RMS while listening. Backstop for the
+  // provider VAD: ends the turn after a clear pause once speech has been heard,
+  // or at the hard cap.
   const handleLevel = useCallback(
     (rms: number) => {
       if (statusRef.current !== 'listening') return
       const now = performance.now()
-      if (now < deafUntilRef.current) {
-        // The cue is still sounding. Ignore the level entirely *and* keep the
-        // listen window starting from now, so MIN_LISTEN_MS / NO_SPEECH_TIMEOUT_MS
-        // measure the person's time, not the tone's.
-        listenStartRef.current = now
+      const listenedMs = now - listenStartRef.current
+
+      peakRmsRef.current = Math.max(peakRmsRef.current, rms)
+
+      // While the echo canceller converges, keep the silence clock fresh but
+      // don't trust the level enough to arm `spoke` or grow the speech-level
+      // estimate — residual cue/echo is still leaking through.
+      if (listenedMs < AEC_SETTLE_MS) {
+        lastVoiceAtRef.current = now
         return
       }
-      peakRmsRef.current = Math.max(peakRmsRef.current, rms)
+
+      if (rms > speechLevelRef.current) {
+        speechLevelRef.current = Math.min(rms, SPEECH_LEVEL_CEILING)
+      }
+      // "Still talking" is judged relative to this speaker's own speech level,
+      // floored, so the quiet tail of a sentence still counts. Arming `spoke`
+      // the first time stays absolute so room noise can't start a turn.
+      const voiceGate = spokeRef.current
+        ? Math.max(SPEECH_RMS_FLOOR, speechLevelRef.current * SPEECH_LEVEL_FRACTION)
+        : SPEECH_RMS
+
       if (now - levelLoggedAtRef.current > 1_000) {
         levelLoggedAtRef.current = now
         console.info('[voice] mic level', {
           peakRms: Math.round(peakRmsRef.current * 1000) / 1000,
-          threshold: SPEECH_RMS,
+          gate: Math.round(voiceGate * 1000) / 1000,
           spoke: spokeRef.current,
-          listenedMs: Math.round(now - listenStartRef.current),
+          endpointing: endpointingRef.current,
+          serverVad: serverVadSeenRef.current,
+          listenedMs: Math.round(listenedMs),
         })
         peakRmsRef.current = 0
       }
-      if (rms >= SPEECH_RMS) {
+
+      if (rms >= voiceGate) {
         spokeRef.current = true
         lastVoiceAtRef.current = now
       }
-      const listenedMs = now - listenStartRef.current
+
       if (listenedMs < MIN_LISTEN_MS) return
-      if (spokeRef.current && now - lastVoiceAtRef.current >= SILENCE_HOLD_MS) {
-        endUserTurn('silence')
+
+      // `provider` end-of-speech: the provider VAD owns the boundary. The
+      // mic-level check does not endpoint — only the hard cap and the Stop tap.
+      if (endpointingRef.current === 'provider') {
+        if (listenedMs >= MAX_LISTEN_MS) {
+          endUserTurn(spokeRef.current ? 'max-listen' : 'max-listen-silent')
+        }
+        return
+      }
+
+      // `hybrid`: the provider's `speech-stopped` is the primary endpoint, so the
+      // mic-level check waits the longer backstop. `client`: it is the whole
+      // endpointer, so the short hold. A `speech-started` on any provider also
+      // switches to the backstop.
+      const useBackstop = endpointingRef.current === 'hybrid' || serverVadSeenRef.current
+      const hold = useBackstop ? SERVER_VAD_BACKSTOP_MS : SILENCE_HOLD_MS
+      if (spokeRef.current && now - lastVoiceAtRef.current >= hold) {
+        endUserTurn(useBackstop ? 'silence-backstop' : 'silence')
       } else if (!spokeRef.current && listenedMs >= NO_SPEECH_TIMEOUT_MS) {
         endUserTurn('no-speech')
       } else if (listenedMs >= MAX_LISTEN_MS) {
@@ -479,27 +615,43 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
     try {
       const session = await createVoiceProvider(apiBaseUrl, handleEvent, surface, timeline)
       sessionRef.current = session
+      endpointingRef.current = session.endpointing
       await session.connect()
+
+      // Start retaining the audio this turn sends to the provider (the pre-roll
+      // below and then every live-mic chunk) for `window.__voiceDebug`.
+      sinkRef.current?.setOutputSampleRate(session.outputSampleRate)
+
+      voiceDebugRecorder.beginTurn({
+        sampleRate: session.inputSampleRate,
+        viaWake,
+        apiBaseUrl,
+      })
+      const { provider, model } = timeline.toReport()
+      voiceDebugRecorder.note({ provider: provider ?? null, model: model ?? null })
 
       spokeRef.current = false
       lastVoiceAtRef.current = 0
       levelLoggedAtRef.current = 0
       peakRmsRef.current = 0
+      speechLevelRef.current = 0
+      serverVadSeenRef.current = false
       listenStartRef.current = performance.now()
-      // The cue plays out of the speakers while the mic is coming up, and the
-      // mic hears it: playing "first" does not keep it out of the capture, it
-      // only overlaps the first ~250 ms of it. Note when it stops and stay deaf
-      // until then rather than pretending the ordering solves it.
-      deafUntilRef.current =
-        performance.now() + playListeningCue(sinkRef.current) + CUE_GUARD_MS
-      // Manual activity detection: open the user's turn before any audio frame.
+      // The cue routes through the echo-cancelled output, so the open mic no
+      // longer hears it as speech — just play it.
+      playListeningCue(sinkRef.current)
+      // Open the user's turn before any audio frame. Only `client` end-of-speech
+      // actually sends an activity marker; `hybrid` / `provider` no-op here.
       session.startActivity()
       if (viaWake) {
         // Flush the audio captured between the wake phrase and now (session
         // setup takes a few seconds; the person is already talking) so the
         // start of the command reaches the model.
         const preroll = wakeApiRef.current?.takeRetainedAudio(session.inputSampleRate) ?? []
-        for (const chunk of preroll) session.sendAudio(chunk)
+        for (const chunk of preroll) {
+          session.sendAudio(chunk)
+          voiceDebugRecorder.appendChunk(chunk, 'preroll')
+        }
         timeline.mark('wake-preroll-flushed', { chunks: preroll.length })
       }
       try {
@@ -507,7 +659,10 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
           (chunk) => {
             // Never send audio after we've closed the activity — a stray frame
             // after `activityEnd` can leave the turn without a transcript or reply.
-            if (statusRef.current === 'listening') sessionRef.current?.sendAudio(chunk)
+            if (statusRef.current === 'listening') {
+              sessionRef.current?.sendAudio(chunk)
+              voiceDebugRecorder.appendChunk(chunk, 'mic')
+            }
           },
           handleLevel,
           session.inputSampleRate,

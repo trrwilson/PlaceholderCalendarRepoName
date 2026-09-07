@@ -9,6 +9,7 @@ import type { LiveServerMessage, Session } from '@google/genai'
 import { VoiceTimeline } from '../instrument'
 import {
   type ConversationalVoiceProvider,
+  type EndpointingMode,
   type VoiceEvent,
   type VoiceGrant,
   VoiceSessionError,
@@ -16,8 +17,10 @@ import {
 
 export class GeminiVoiceProvider implements ConversationalVoiceProvider {
   readonly inputSampleRate = 16_000
+  // Gemini Live streams 24 kHz mono PCM16 back.
+  readonly outputSampleRate = 24_000
+  readonly endpointing: EndpointingMode
   private session: Session | null = null
-  private manualActivity: boolean
   private firstAudioChunk = true
   private firstAudioSent = true
   private firstInterim = true
@@ -37,7 +40,15 @@ export class GeminiVoiceProvider implements ConversationalVoiceProvider {
     this.grant = grant
     this.onEvent = onEvent
     this.timeline = timeline
-    this.manualActivity = grant.manual_activity ?? false
+    this.endpointing = grant.endpointing ?? 'client'
+  }
+
+  /** `client` end-of-speech: the service VAD is off and the kiosk brackets the
+   * turn with activityStart/activityEnd. `hybrid`: the service VAD runs and the
+   * kiosk sends `audioStreamEnd` on its own silence detection. `provider`: the
+   * service VAD owns the whole boundary; the kiosk sends neither. */
+  private get manualActivity(): boolean {
+    return this.endpointing === 'client'
   }
 
   async connect(): Promise<void> {
@@ -63,8 +74,8 @@ export class GeminiVoiceProvider implements ConversationalVoiceProvider {
         model,
         // Model, tools, voice, transcription and VAD are all locked into the
         // token. The ephemeral-token constraint appeared to drop
-        // `realtimeInputConfig`, so the manual-activity case repeats it here;
-        // in hybrid mode we deliberately send nothing and let the token's
+        // `realtimeInputConfig`, so `client` end-of-speech repeats the "VAD off"
+        // here; `hybrid` / `provider` send nothing and let the token's
         // service-VAD settings stand.
         config: this.manualActivity
           ? { realtimeInputConfig: { automaticActivityDetection: { disabled: true } } }
@@ -254,28 +265,31 @@ export class GeminiVoiceProvider implements ConversationalVoiceProvider {
   }
 
   /**
-   * Open the user's turn.
+   * Open the user's turn — see {@link endpointing}.
    *
-   * In manual mode the token has the service VAD switched off and we bracket the
-   * turn ourselves with activityStart/activityEnd. That is deterministic, but it
-   * also stops the service transcribing incrementally — it buffers the whole
-   * utterance and only runs ASR once `activityEnd` lands, which is where the
-   * multi-second post-utterance stall came from.
+   * `client`: the token has the service VAD switched off and we bracket the turn
+   * ourselves with activityStart/activityEnd. Deterministic, but it also stops
+   * the service transcribing incrementally — it buffers the whole utterance and
+   * only runs ASR once `activityEnd` lands, which is where the multi-second
+   * post-utterance stall came from.
    *
-   * In hybrid mode (the default) the service VAD is on and already has a
-   * streaming recogniser running under the audio, so there is nothing to open —
-   * `startActivity` is a no-op and {@link endActivity} sends `audioStreamEnd`
-   * instead, which flushes cached audio and finalises the turn immediately
-   * rather than waiting out the server's silence timer.
+   * `hybrid` (the default): the service VAD is on and already has a streaming
+   * recogniser running under the audio, so there is nothing to open —
+   * `startActivity` is a no-op and {@link endActivity} sends `audioStreamEnd`,
+   * which flushes cached audio and finalises the turn immediately rather than
+   * waiting out the server's silence timer.
+   *
+   * `provider`: the service VAD owns the whole boundary; both are no-ops.
    */
   startActivity(): void {
-    if (!this.manualActivity) return
+    if (this.endpointing !== 'client') return
     this.timeline.mark('activity-start')
     this.session?.sendRealtimeInput({ activityStart: {} })
   }
 
   endActivity(): void {
-    if (this.manualActivity) {
+    if (this.endpointing === 'provider') return
+    if (this.endpointing === 'client') {
       this.timeline.mark('activity-end')
       this.session?.sendRealtimeInput({ activityEnd: {} })
       return

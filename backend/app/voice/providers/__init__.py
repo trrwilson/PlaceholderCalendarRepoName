@@ -44,6 +44,7 @@ _IMPLEMENTED: tuple[VoiceProviderId, ...] = (
     "azure_voice_live",
     "azure_openai_realtime",
     "azure_openai_realtime_mini",
+    "local",
 )
 
 _override: VoiceProviderId | None = None
@@ -94,6 +95,10 @@ def _adapter_for(provider: VoiceProviderId) -> VoiceProviderAdapter:
         from app.voice.providers.azure_voice_live import AzureVoiceLiveAdapter
 
         return AzureVoiceLiveAdapter()
+    if provider == "local":
+        from app.voice.local.adapter import LocalHybridAdapter
+
+        return LocalHybridAdapter()
     raise VoiceUnavailable(
         f"voice provider {provider!r} is not implemented yet "
         "(set MISSION_CONTROL_VOICE_PROVIDER=gemini)"

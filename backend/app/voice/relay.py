@@ -15,10 +15,18 @@ That keeps "shared conversational semantics above provider protocols"
 (``AGENTS.md`` -> "Voice assistant -> Provider architecture"): a future
 local/hybrid backend can reuse this exact relay contract.
 
-Turn control is **manual** in this v1 (``turn_detection: null`` upstream; the
-kiosk brackets the turn with ``activity-start`` / ``activity-end``), mirroring
-what the Gemini path settled on. Server-VAD for incremental ASR is a documented
-follow-up needing an on-Azure spike.
+End-of-speech ownership is **negotiated per provider** (``UpstreamConfig.endpointing``;
+see ``docs/voice-provider-bakeoff-plan.md`` -> "End-of-speech ownership"):
+
+* ``client`` — ``turn_detection: null`` upstream; the kiosk brackets the turn
+  with ``activity-start`` / ``activity-end`` and this relay turns ``activity-end``
+  into ``commit`` + ``response.create``.
+* ``hybrid`` — a provider VAD runs (``semantic_vad`` / ``azure_semantic_vad``)
+  with ``create_response: false``; its ``speech_started`` / ``speech_stopped`` are
+  forwarded so the kiosk endpoints on the semantic endpoint instead of a
+  raw-energy guess, and ``activity-end`` still drives ``commit`` + ``response.create``.
+* ``provider`` — the provider VAD runs with ``create_response: true`` and answers
+  on its own endpoint; ``activity-end`` only commits (no ``response.create``).
 
 UNVERIFIED against live Azure resources — see
 ``docs/voice-provider-bakeoff-plan.md``.
@@ -50,6 +58,10 @@ class UpstreamConfig:
     headers: dict[str, str]
     #: the ``session`` object sent as a ``session.update`` immediately on connect
     session_update: dict
+    #: end-of-speech ownership (see the module docstring). ``client`` / ``hybrid``
+    #: -> the kiosk's ``activity-end`` asks for the reply; ``provider`` -> the
+    #: provider answers on its own VAD endpoint and ``activity-end`` only commits.
+    endpointing: str = "client"
 
 
 @dataclass
@@ -100,6 +112,33 @@ def to_wss(endpoint: str) -> str:
 # nested `audio.input`/`audio.output`). Azure Voice Live is a separate product
 # still on the flat/beta shape (`modalities`, a `voice` object, flat
 # `turn_detection`) and its own `api-version`.
+#
+# `turn_detection` is chosen by the adapter from its `endpointing` mode (see
+# `openai_turn_detection` / `voice_live_turn_detection`), not hard-coded here.
+
+
+def openai_turn_detection(endpointing: str) -> dict | None:
+    """The GA `audio.input.turn_detection` for an end-of-speech mode.
+
+    `client` -> null (the kiosk's mic-RMS detector is the whole endpointer).
+    `hybrid` -> `semantic_vad` with `create_response: false` (streaming ASR +
+    a forwarded `speech_stopped`; the kiosk still owns the reply).
+    `provider` -> `semantic_vad` with `create_response: true` (the model answers
+    on its own endpoint).
+    """
+    if endpointing == "client":
+        return None
+    return {"type": "semantic_vad", "create_response": endpointing == "provider"}
+
+
+def voice_live_turn_detection(endpointing: str) -> dict:
+    """`azure_semantic_vad` is always present for Voice Live (its echo canceller
+    requires it); only `create_response` moves with the mode."""
+    return {
+        "type": "azure_semantic_vad",
+        "silence_duration_ms": 500,
+        "create_response": endpointing == "provider",
+    }
 
 
 def build_openai_ga_session(
@@ -107,13 +146,13 @@ def build_openai_ga_session(
     instructions: str,
     tools: list[dict],
     voice: str,
+    turn_detection: dict | None,
     transcribe_deployment: str = "",
 ) -> dict:
     """The GA `/openai/v1` realtime ``session`` object (Azure OpenAI Realtime)."""
     audio_input: dict = {
         "format": {"type": "audio/pcm", "rate": 24_000},
-        # Manual turn control: the kiosk owns the boundary (see module docstring).
-        "turn_detection": None,
+        "turn_detection": turn_detection,
     }
     if transcribe_deployment:
         audio_input["transcription"] = {"model": transcribe_deployment}
@@ -137,16 +176,19 @@ def build_voice_live_session(
     voice: str,
     voice_type: str,
     transcription_model: str,
+    turn_detection: dict | None = None,
     extras: dict | None = None,
 ) -> dict:
     """The flat Voice Live ``session`` object (`voice` is an object here).
 
     ``turn_detection`` **must** be set — Voice Live rejects server-side echo
-    cancellation "when turn detection is disabled" and then kills the session. But
-    the kiosk still owns the turn boundary (commit + response.create on
-    ``activity-end``), so ``create_response`` is off: the VAD runs for the audio
-    pipeline, we decide when the reply happens. (Verified live: semantic VAD alone
-    never endpoints a hesitant speaker, and won't fire without words at all.)
+    cancellation "when turn detection is disabled" and then kills the session, so
+    ``client`` end-of-speech is not available for this product. In ``hybrid``
+    (the default) ``create_response`` is off: the VAD runs for the audio pipeline
+    and emits ``speech_stopped``, but the kiosk owns the reply (commit +
+    response.create on ``activity-end``). ``provider`` flips ``create_response``
+    on. (Verified live: semantic VAD alone never endpoints a hesitant speaker,
+    and won't fire without words at all — hence the kiosk backstop in ``hybrid``.)
     """
     session: dict = {
         "modalities": ["text", "audio"],
@@ -155,11 +197,7 @@ def build_voice_live_session(
         "input_audio_format": "pcm16",
         "output_audio_format": "pcm16",
         "input_audio_transcription": {"model": transcription_model},
-        "turn_detection": {
-            "type": "azure_semantic_vad",
-            "silence_duration_ms": 500,
-            "create_response": False,
-        },
+        "turn_detection": turn_detection or voice_live_turn_detection("hybrid"),
         "tools": tools,
         "tool_choice": "auto",
     }
@@ -197,6 +235,10 @@ class _RelayTurn:
     response_done: bool = False  # ...and that response has finished
     calls: int = 0  # function calls in the in-flight response (runaway guard)
     cancelled: bool = False  # we sent response.cancel to break a tool loop
+    #: end-of-speech ownership for this connection (see the module docstring).
+    #: In ``provider`` mode the provider VAD triggers the reply itself, so
+    #: ``activity-end`` must not also send ``response.create``.
+    endpointing: str = "client"
 
     def follow_up_ready(self) -> bool:
         return self.made_calls and self.response_done and not self.awaiting
@@ -233,6 +275,14 @@ def translate_upstream(event: dict, turn: _RelayTurn | None = None) -> list[dict
         "conversation.item.audio_transcription.completed",
     ):
         return [{"type": "user-transcript", "text": event.get("transcript", ""), "final": True}]
+    if kind == "input_audio_buffer.speech_started":
+        return [{"type": "speech-started"}]
+    if kind == "input_audio_buffer.speech_stopped":
+        # The provider VAD's semantic endpoint. In `hybrid` mode `create_response`
+        # is off, so this is the kiosk's cue to end the user's turn — it still
+        # sends `activity-end` itself, which commits the buffer and asks for the
+        # reply. In `provider` mode the reply is already on its way.
+        return [{"type": "speech-stopped"}]
     if kind in ("response.output_audio.delta", "response.audio.delta"):
         return [{"type": "audio", "data": event.get("delta", "")}]
     if kind in ("response.output_audio_transcript.delta", "response.audio_transcript.delta"):
@@ -264,10 +314,12 @@ def translate_upstream(event: dict, turn: _RelayTurn | None = None) -> list[dict
 def translate_client(event: dict, *, turn: _RelayTurn | None = None) -> list[dict]:
     """One Mission Control uplink frame -> zero or more provider realtime events.
 
-    The kiosk owns the turn boundary for both Azure products: on ``activity-end``
-    it commits the buffer and asks for the reply. (For Voice Live an
-    ``azure_semantic_vad`` still runs in the session for the audio pipeline, but
-    with ``create_response`` off — we decide when the reply happens.)
+    For ``client`` / ``hybrid`` end-of-speech the kiosk owns the turn boundary: on
+    ``activity-end`` it commits the buffer and asks for the reply. (A provider VAD
+    may still run in ``hybrid`` — for streaming ASR / the echo canceller — but
+    with ``create_response`` off, so we decide when the reply happens.) In
+    ``provider`` mode the provider VAD triggers the reply on its own endpoint, so
+    ``activity-end`` only commits.
     """
     turn = turn if turn is not None else _RelayTurn()
     kind = event.get("type")
@@ -277,11 +329,14 @@ def translate_client(event: dict, *, turn: _RelayTurn | None = None) -> list[dic
         # Fresh session per turn — the buffer is already empty; nothing to do.
         return []
     if kind == "activity-end":
-        # Finalise the user's turn and ask for the reply. The commit is
-        # best-effort — a provider VAD may have consumed the buffer already
-        # (`input_audio_buffer_commit_empty`, swallowed) — but `response.create`
-        # is what produces the answer.
-        return [{"type": "input_audio_buffer.commit"}, {"type": "response.create"}]
+        # Finalise the user's turn. The commit is best-effort — a provider VAD may
+        # have consumed the buffer already (`input_audio_buffer_commit_empty`,
+        # swallowed). In `client` / `hybrid` we also ask for the reply;
+        # `provider` mode leaves that to the provider's own VAD endpoint.
+        frames: list[dict] = [{"type": "input_audio_buffer.commit"}]
+        if turn.endpointing != "provider":
+            frames.append({"type": "response.create"})
+        return frames
     if kind == "tool-response":
         turn.awaiting.discard(event.get("id", ""))
         # `output` is already a JSON string from the frontend (the realtime
@@ -396,7 +451,7 @@ async def run_relay(client: WebSocket, config: UpstreamConfig) -> None:
                 json.dumps({"type": "session.update", "session": config.session_update})
             )
             ready = asyncio.Event()
-            turn = _RelayTurn()
+            turn = _RelayTurn(endpointing=config.endpointing)
             tasks = [
                 asyncio.create_task(
                     _pump_client_to_upstream(client, upstream, ready=ready, turn=turn)

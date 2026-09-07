@@ -68,9 +68,11 @@ export function useVoiceConfig(apiBaseUrl: string) {
     }
   }, [load])
 
-  // Push the configured capture gain down to the shared microphone. Applies even
+  // Push the configured capture gain down to the shared microphone — the single
+  // path by which the backend setting reaches the one gain stage. Applies even
   // when voice is disabled (wake word may still be listening); `EMPTY` carries
-  // the +12 dB default so an unreachable or malformed backend keeps it.
+  // `DEFAULT_INPUT_GAIN_DB` so an unreachable or malformed backend keeps a
+  // sensible boost rather than dropping to unity.
   useEffect(() => {
     const db = config.mic_input_gain_db
     micSource.setInputGainDb(Number.isFinite(db) ? db : DEFAULT_INPUT_GAIN_DB)

@@ -21,6 +21,7 @@ const h = vi.hoisted(() => {
       level: (() => {}) as (rms: number) => void,
       connectBehavior: (() => Promise.resolve()) as () => Promise<void>,
       micStart: (() => Promise.resolve()) as () => Promise<void>,
+      endpointing: 'client' as 'client' | 'hybrid' | 'provider',
     },
     spies: {
       endActivity: vi.fn(),
@@ -38,6 +39,8 @@ vi.mock('./providers', () => ({
     return {
       timeline: { mark: vi.fn() },
       inputSampleRate: 16_000,
+      outputSampleRate: 24_000,
+      endpointing: h.state.endpointing,
       connect: () => h.state.connectBehavior(),
       startActivity: vi.fn(),
       endActivity: h.spies.endActivity,
@@ -59,6 +62,7 @@ vi.mock('./audio', () => ({
   },
   AudioSink: class {
     activate = vi.fn()
+    setOutputSampleRate = vi.fn()
     state = vi.fn(() => 'running')
     pending = vi.fn(() => false)
     playTestTone = vi.fn(() => 450)
@@ -107,12 +111,18 @@ vi.mock('./wake/useWakeWord', () => ({
   }),
 }))
 
-const actions = { showView: vi.fn(), focusDate: vi.fn(), highlightEvent: vi.fn(() => ({ matched: false })) }
+const actions = {
+  showView: vi.fn(),
+  focusDate: vi.fn(),
+  highlightEvent: vi.fn(() => ({ matched: false })),
+  setPeopleFilter: vi.fn(() => ({ matched: [], unmatched: [] })),
+}
 const options = { apiBaseUrl: 'http://api.test', actions }
 
 beforeEach(() => {
   h.state.connectBehavior = () => Promise.resolve()
   h.state.micStart = () => Promise.resolve()
+  h.state.endpointing = 'client'
   vi.clearAllMocks()
 })
 afterEach(() => vi.unstubAllGlobals())
@@ -213,12 +223,153 @@ describe('useVoiceSession', () => {
     }
   })
 
-  it('does not mistake the listening cue for the user speaking', async () => {
-    // The regression: the cue plays out of the speakers while the mic is already
-    // open, and the level detector heard it at 0.063 RMS — six times SPEECH_RMS.
-    // That set `spoke`, and SILENCE_HOLD_MS then ended the turn ~700 ms after the
-    // mic opened, before the person had said anything. The model got a beep,
-    // answered nothing, and the response watchdog blamed it for the silence.
+  it('keeps listening through the quiet tail of a sentence, not just an absolute floor', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+
+      // Stressed head of the command.
+      for (let i = 0; i < 8; i += 1) {
+        act(() => h.state.level(0.06))
+        vi.advanceTimersByTime(100)
+      }
+      // Quiet tail — under the old 0.01 absolute floor, but well above
+      // 0.12x the speaker's own level, so still "talking".
+      for (let i = 0; i < 8; i += 1) {
+        act(() => h.state.level(0.009))
+        vi.advanceTimersByTime(100)
+      }
+      expect(result.current.status).toBe('listening')
+      expect(h.spies.endActivity).not.toHaveBeenCalled()
+
+      // Actually stop now.
+      for (let i = 0; i < 10; i += 1) {
+        act(() => h.state.level(0.001))
+        vi.advanceTimersByTime(100)
+      }
+      expect(result.current.status).toBe('thinking')
+      expect(h.spies.endActivity).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ends the turn when the provider VAD reports speech stopped', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+
+      act(() => h.state.emit({ type: 'speech-started' }))
+      await act(async () => {
+        vi.advanceTimersByTime(800)
+        h.state.level(0.05)
+      })
+      act(() => h.state.emit({ type: 'speech-stopped' }))
+
+      expect(result.current.status).toBe('thinking')
+      expect(h.spies.endActivity).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives the mic backstop a longer hold once the provider VAD is active', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+
+      act(() => h.state.emit({ type: 'speech-started' }))
+      await act(async () => {
+        vi.advanceTimersByTime(800)
+        h.state.level(0.05)
+      })
+      // A pause past SILENCE_HOLD_MS (700) — but the provider VAD owns the
+      // endpoint now, so the backstop waits much longer.
+      for (let i = 0; i < 9; i += 1) {
+        act(() => h.state.level(0.001))
+        vi.advanceTimersByTime(100)
+      }
+      expect(result.current.status).toBe('listening')
+      expect(h.spies.endActivity).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('hybrid endpointing: a short pause does not end the turn — the provider VAD owns it', async () => {
+    h.state.endpointing = 'hybrid'
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+      // Speech, then a pause well past SILENCE_HOLD_MS (700) — but no
+      // `speech-stopped`, and in hybrid mode the mic check waits the 2.5 s
+      // backstop, so the turn stays open for the provider VAD.
+      for (let i = 0; i < 8; i += 1) {
+        act(() => h.state.level(0.06))
+        vi.advanceTimersByTime(100)
+      }
+      for (let i = 0; i < 12; i += 1) {
+        act(() => h.state.level(0.001))
+        vi.advanceTimersByTime(100)
+      }
+      expect(result.current.status).toBe('listening')
+      expect(h.spies.endActivity).not.toHaveBeenCalled()
+
+      // The provider's semantic endpoint arrives — now the turn ends and is
+      // finalised.
+      act(() => h.state.emit({ type: 'speech-stopped' }))
+      expect(result.current.status).toBe('thinking')
+      expect(h.spies.endActivity).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('provider endpointing: the mic-level check never ends the turn', async () => {
+    h.state.endpointing = 'provider'
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+      // Speech then a long silence — the mic check must not endpoint; only the
+      // provider VAD, the hard cap, or a Stop tap do.
+      for (let i = 0; i < 6; i += 1) {
+        act(() => h.state.level(0.06))
+        vi.advanceTimersByTime(100)
+      }
+      for (let i = 0; i < 40; i += 1) {
+        act(() => h.state.level(0.001))
+        vi.advanceTimersByTime(100)
+      }
+      expect(result.current.status).toBe('listening')
+
+      // The provider's own endpoint ends it (endActivity is a no-op in the
+      // provider, but the state machine still transitions).
+      act(() => h.state.emit({ type: 'speech-stopped' }))
+      expect(result.current.status).toBe('thinking')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores a transient in the AEC settle window at turn start', async () => {
+    // The cue and any residual echo are cancelled by the loopback-AEC output, but
+    // the canceller takes ~250 ms to converge. A spike in that window must not set
+    // `spoke` and end the turn before the person has said anything.
     vi.useFakeTimers()
     try {
       const { result } = renderHook(() => useVoiceSession(options))
@@ -227,10 +378,9 @@ describe('useVoiceSession', () => {
       })
       expect(result.current.status).toBe('listening')
 
+      // Loud sample while the canceller is still converging — ignored.
       act(() => h.state.level(0.063))
 
-      // Comfortably past SILENCE_HOLD_MS: had the cue counted, the turn would be
-      // over by now.
       await act(async () => {
         vi.advanceTimersByTime(1_500)
         h.state.level(0.001)

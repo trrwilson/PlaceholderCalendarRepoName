@@ -48,7 +48,8 @@ def build_system_instruction(
             "",
             "You can set one kitchen timer or alarm, up to six hours out: start_timer "
             "(with duration_minutes, or fires_at for 'an alarm at 3pm'), extend_timer, "
-            "cancel_timer (also handles 'stop' / 'dismiss' when it is ringing), get_timer. "
+            "pause_timer, resume_timer, restart_timer, cancel_timer (also handles 'stop' "
+            "/ 'dismiss' when it is ringing), get_timer. "
             "Setting a new one replaces the current one — say so if it did. For 'thirty "
             "minutes before the game', find the event first with get_agenda/get_events, "
             "then start_timer with fires_at that many minutes before it. If a timer is "

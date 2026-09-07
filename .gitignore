@@ -25,6 +25,16 @@ frontend/blob-report/
 *.msal_token_cache.json
 .msal_token_cache*
 
+# Voice debug audio captures (MISSION_CONTROL_VOICE_DEBUG_CAPTURE_DIR)
+backend/voice-captures/
+voice-captures/
+
+# Local STT benchmark samples + downloaded model caches (provisioned per install)
+backend/voice-samples/
+voice-samples/
+backend/models/stt/
+*.stt-bench.json
+
 # Editors and OS
 .vscode/*
 !.vscode/extensions.json

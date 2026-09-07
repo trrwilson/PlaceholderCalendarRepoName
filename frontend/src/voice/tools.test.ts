@@ -14,6 +14,7 @@ function context(overrides: Partial<ToolContext['actions']> = {}): ToolContext {
       showView: vi.fn(),
       focusDate: vi.fn(),
       highlightEvent: vi.fn(() => ({ matched: true, title: 'Swim practice', when: 'Fri 4:00 PM' })),
+      setPeopleFilter: vi.fn(() => ({ matched: ['jordan'], unmatched: [] })),
       ...overrides,
     },
   }
@@ -164,5 +165,59 @@ describe('voice tool dispatch', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }))
     const result = await dispatchToolCall('extend_timer', { add_minutes: 5 }, context())
     expect(result).toEqual({ ok: false, error: 'no timer is running' })
+  })
+
+  it('pauses the running timer via its pause sub-resource', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [{ id: 't3', label: null, fires_at: 'x', state: 'running' }] })
+      .mockResolvedValueOnce({ ok: true })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await dispatchToolCall('pause_timer', {}, context())
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/api/timers/t3/pause')
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'POST' })
+    expect(result).toEqual({ ok: true })
+  })
+
+  it('does not re-pause an already paused timer', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [{ id: 't3', label: null, fires_at: 'x', state: 'paused' }] })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await dispatchToolCall('pause_timer', {}, context())
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({ ok: true, already_paused: true })
+  })
+
+  it('resumes a paused timer and restarts from any state', async () => {
+    const paused = { id: 't4', label: null, fires_at: 'x', state: 'paused', remaining_seconds: 120 }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [paused] })
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => [paused] })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...paused, state: 'running', fires_at: 'y' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await dispatchToolCall('resume_timer', {}, context())).toEqual({ ok: true })
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/api/timers/t4/resume')
+
+    const restarted = await dispatchToolCall('restart_timer', {}, context())
+    expect(String(fetchMock.mock.calls[3][0])).toContain('/api/timers/t4/restart')
+    expect(restarted).toMatchObject({ ok: true })
+  })
+
+  it('reports paused state through get_timer using the frozen remaining time', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [{ id: 't5', label: 'bread', fires_at: 'x', state: 'paused', remaining_seconds: 300 }],
+      }),
+    )
+    const result = await dispatchToolCall('get_timer', {}, context())
+    expect(result).toMatchObject({ running: false, paused: true, remaining_minutes: 5, label: 'bread' })
   })
 })

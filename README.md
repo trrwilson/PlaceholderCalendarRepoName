@@ -6,7 +6,9 @@ schedule for glanceable, ambient viewing. The current milestone exercises Home /
 Month navigation, agenda display, calendar identity colors, an event detail sheet, a
 category-vs-person color mode, per-calendar identity color overrides, a configurable
 start-of-week (default Monday), an on-kiosk calendar sign-in flow, a minimal live
-WebSocket connection, and an initial tap-to-talk voice assistant (Gemini Live, read-only).
+WebSocket connection, a dedicated kitchen-timer tab (backend-owned, one active timer),
+and a voice assistant (tap-to-talk plus dormant local wake word) that answers schedule
+questions, drives the display, and controls the timer — but never writes the calendar.
 
 ## Architecture
 
@@ -25,19 +27,23 @@ WebSocket connection, and an initial tap-to-talk voice assistant (Gemini Live, r
   {login,status,logout}` is the headless equivalent.
 - `backend/app/config.py`: `MISSION_CONTROL_*` settings (provider selection + credentials),
   read from the environment and an optional `.env` file.
-- `backend/app/api.py`: HTTP calendar/health endpoints and the minimal WebSocket endpoint
-  at `/api/ws`.
+- `backend/app/api.py`: HTTP calendar/health endpoints, the `/api/timers` control surface,
+  and the WebSocket endpoint at `/api/ws` (calendar + timer push).
+- `backend/app/timers.py`: the in-memory single-timer store and `asyncio` scheduler.
 - `backend/app/voice/` + `POST /api/voice/token`: mints a short-lived, capability-locked
-  Gemini Live ephemeral token so the kiosk can run the voice session directly without the
-  API key. `frontend/src/voice/` holds the tap-to-talk session, audio, and tools.
-- `backend/tests/`: focused provider, model, and Graph-mapping tests.
+  grant for the selected voice provider — a Gemini Live ephemeral token the kiosk uses
+  directly, or a single-use ticket for the Azure relay (`WS /api/voice/live`) or the
+  local pipeline (`WS /api/voice/local`). `backend/app/voice/local/` is the on-device
+  STT + intent/entity pipeline; `frontend/src/voice/` holds the session, audio, wake
+  word, and tools. `docs/audio-pipeline.md` is the authority on capture/playout.
+- `backend/tests/`: focused provider, model, Graph-mapping, timer, and voice tests.
 - `AGENTS.md`: durable architecture, product constraints, conventions, and definition of
   done for future coding-agent work (`.github/copilot-instructions.md` points here).
 
-Credentials, OAuth tokens, important household state, and future AI/audio/video processing
-belong on the server. Future voice and AI work should call explicit application tools such
-as `get_calendar_events` or `create_calendar_event`, never providers directly. There is no
-persistence yet; SQLite is the natural next step.
+Credentials, OAuth tokens, important household state, and AI/audio/video processing belong
+on the server. Voice and AI work calls explicit application tools (`get_events`,
+`get_agenda`, `start_timer`, …), never providers directly. There is no persistence yet;
+SQLite is the natural next step.
 
 ## Local development
 
@@ -100,13 +106,28 @@ account management. Two providers exist:
 ### Enabling the voice assistant
 
 Voice is off by default. In `backend/.env` set `MISSION_CONTROL_VOICE_ENABLED=true` and
-provide a Gemini API key as `GEMINI_API_KEY_MISSION_CONTROL` (from Google AI Studio;
-`MISSION_CONTROL_GEMINI_API_KEY` also works). The key stays on the backend — the kiosk
-gets only a short-lived token from `POST /api/voice/token` (loopback/LAN-only, same as
-calendar sign-in). Tap **Ask** in the header, speak, tap again to finish. The assistant
-answers schedule questions and moves the display; it cannot change the calendar. The
-model, voice, and language are `MISSION_CONTROL_GEMINI_*` settings — verify the
-native-audio model id against current Google documentation.
+configure at least one provider. Credentials stay on the backend — the kiosk gets only a
+short-lived grant from `POST /api/voice/token` (loopback/LAN-only, same as calendar
+sign-in). Tap **Ask** in the header, speak, tap again to finish. The assistant answers
+schedule questions, moves the display, and controls the kitchen timer; it cannot change
+the calendar.
+
+`MISSION_CONTROL_VOICE_PROVIDER` picks who handles a turn (also switchable at runtime in
+Settings). It is a bake-off — see `docs/voice-provider-bakeoff-plan.md`:
+
+- `gemini` (default): browser-direct Gemini Live (native audio). Provide a key as
+  `GEMINI_API_KEY_MISSION_CONTROL` (from Google AI Studio; `MISSION_CONTROL_GEMINI_API_KEY`
+  also works). Verify the native-audio model id against current Google documentation.
+- `azure_openai_realtime` / `azure_openai_realtime_mini` / `azure_voice_live`: run through
+  the backend relay; fill in the matching `MISSION_CONTROL_AZURE_*` block.
+- `local` (experimental): on-device STT + intent/entity interpretation, cloud only for
+  genuine reasoning. Degrades to a text bypass when no STT engine is installed. See
+  `docs/local-voice-plan.md` and `docs/local-stt-evaluation.md`.
+
+Each provider 409s until its own credential block is filled in. Local "Mission Control"
+wake-word activation is integrated but off by default and needs `MISSION_CONTROL_WAKE_WORD_ENABLED=true`
+plus a trained model asset — see `docs/wake-word-plan.md`. `backend/.env.example`
+documents every variable.
 
 ## Validation
 
@@ -120,6 +141,7 @@ cd ..\frontend
 npm run test
 npm run lint
 npm run build
+npm run test:e2e   # Playwright; when frontend behavior or layout changed
 ```
 
 The frontend targets pointer/touch interaction and does not depend on keyboard input.

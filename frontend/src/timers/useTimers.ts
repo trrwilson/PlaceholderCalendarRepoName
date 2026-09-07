@@ -22,6 +22,9 @@ export interface TimersApi {
   hasActiveTimer: boolean
   start: (durationSeconds: number, label?: string | null) => Promise<TimerMutationResult>
   extend: (addSeconds: number) => Promise<void>
+  pause: () => Promise<void>
+  resume: () => Promise<void>
+  restart: () => Promise<void>
   cancel: () => Promise<void>
   dismiss: () => Promise<void>
 }
@@ -53,7 +56,11 @@ export function useTimers({ apiBaseUrl, onConnectionChange, onStarted, onFired }
     hasActiveTimer && (timer.state === 'fired' || (timer.state === 'running' && remainingMs <= 0))
 
   const applyTimers = useCallback((list: Timer[]) => {
-    const next = list.find((entry) => entry.state === 'running' || entry.state === 'fired') ?? null
+    const next =
+      list.find(
+        (entry) =>
+          entry.state === 'running' || entry.state === 'paused' || entry.state === 'fired',
+      ) ?? null
     if (next) firedRef.current.forEach((id) => id !== next.id && firedRef.current.delete(id))
     setTimer(next)
   }, [])
@@ -104,6 +111,11 @@ export function useTimers({ apiBaseUrl, onConnectionChange, onStarted, onFired }
   useEffect(() => {
     if (!timer || timer.state === 'dismissed') {
       setRemainingMs(0)
+      return
+    }
+    if (timer.state === 'paused') {
+      // Frozen: no tick, and `fires_at` is stale — read the held seconds.
+      setRemainingMs(Math.max(0, (timer.remaining_seconds ?? 0) * 1000))
       return
     }
     const target = new Date(timer.fires_at).getTime()
@@ -221,6 +233,29 @@ export function useTimers({ apiBaseUrl, onConnectionChange, onStarted, onFired }
     [apiBaseUrl],
   )
 
+  const post = useCallback(
+    async (action: 'pause' | 'resume' | 'restart') => {
+      const current = timerRef.current
+      if (!current) return
+      const response = await fetch(`${apiBaseUrl}/api/timers/${current.id}/${action}`, {
+        method: 'POST',
+      })
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => ({}))
+        const detail = (body as { detail?: unknown }).detail
+        throw new Error(typeof detail === 'string' ? detail : `Could not ${action} the timer.`)
+      }
+      const next = (await response.json()) as Timer
+      firedRef.current.delete(next.id)
+      setTimer(next)
+    },
+    [apiBaseUrl],
+  )
+
+  const pause = useCallback(() => post('pause'), [post])
+  const resume = useCallback(() => post('resume'), [post])
+  const restart = useCallback(() => post('restart'), [post])
+
   const remove = useCallback(async () => {
     const current = timerRef.current
     if (!current) return
@@ -240,9 +275,12 @@ export function useTimers({ apiBaseUrl, onConnectionChange, onStarted, onFired }
       hasActiveTimer,
       start,
       extend,
+      pause,
+      resume,
+      restart,
       cancel: remove,
       dismiss: remove,
     }),
-    [timer, remainingMs, alarm, hasActiveTimer, start, extend, remove],
+    [timer, remainingMs, alarm, hasActiveTimer, start, extend, pause, resume, restart, remove],
   )
 }

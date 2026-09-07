@@ -11,6 +11,9 @@ const baseProps = {
   alarm: false,
   onStart: noop,
   onExtend: noop,
+  onPause: noop,
+  onResume: noop,
+  onRestart: noop,
   onCancel: noop,
   onDismiss: noop,
 }
@@ -56,6 +59,28 @@ describe('TimerView', () => {
     expect(screen.getByText('01:30')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '+5 min' }))
     expect(onExtend).toHaveBeenCalledWith(300)
+  })
+
+  it('pauses a running timer and resumes a paused one', () => {
+    const running: Timer = {
+      id: 't',
+      label: 'pasta',
+      created_at: '2026-09-06T08:00:00',
+      fires_at: '2026-09-06T08:10:00',
+      duration_seconds: 600,
+      state: 'running',
+    }
+    const onPause = vi.fn()
+    const { rerender } = render(<TimerView {...baseProps} timer={running} remainingMs={300_000} onPause={onPause} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }))
+    expect(onPause).toHaveBeenCalled()
+
+    const onResume = vi.fn()
+    const paused: Timer = { ...running, state: 'paused', remaining_seconds: 300 }
+    rerender(<TimerView {...baseProps} timer={paused} remainingMs={300_000} onResume={onResume} />)
+    expect(screen.getByText('Paused')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    expect(onResume).toHaveBeenCalled()
   })
 
   it('dismisses the alarm when the surface is tapped', () => {

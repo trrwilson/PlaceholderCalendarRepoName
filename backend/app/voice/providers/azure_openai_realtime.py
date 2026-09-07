@@ -23,7 +23,13 @@ from app.config import Settings
 from app.models import VoiceProviderId, VoiceToken
 from app.voice.base import VoiceUnavailable
 from app.voice.prompt import build_system_instruction
-from app.voice.relay import UpstreamConfig, build_openai_ga_session, issue_ticket, to_wss
+from app.voice.relay import (
+    UpstreamConfig,
+    build_openai_ga_session,
+    issue_ticket,
+    openai_turn_detection,
+    to_wss,
+)
 from app.voice.tools import as_openai_tools
 
 
@@ -31,6 +37,7 @@ class AzureOpenAIRealtimeAdapter:
     """``VoiceProviderAdapter`` for Azure OpenAI Realtime."""
 
     reusable_grant = False  # the relay ticket is single-use
+    default_endpointing = "hybrid"
 
     def __init__(self, *, mini: bool) -> None:
         self._mini = mini
@@ -63,11 +70,13 @@ class AzureOpenAIRealtimeAdapter:
             raise VoiceUnavailable(reason)
 
         deployment = self._deployment(settings)
+        endpointing = settings.azure_openai_realtime_endpointing
         url = f"{to_wss(settings.azure_openai_endpoint)}/openai/v1/realtime?model={deployment}"
         session = build_openai_ga_session(
             instructions=build_system_instruction(now_local, calendar_names, timezone),
             tools=as_openai_tools(),
             voice=settings.azure_openai_realtime_voice,
+            turn_detection=openai_turn_detection(endpointing),
             transcribe_deployment=settings.azure_openai_transcribe_deployment,
         )
         config = UpstreamConfig(
@@ -75,6 +84,7 @@ class AzureOpenAIRealtimeAdapter:
             url=url,
             headers={"api-key": settings.azure_openai_api_key},
             session_update=session,
+            endpointing=endpointing,
         )
         ttl = settings.voice_relay_ticket_ttl_seconds
         ticket = issue_ticket(config, ttl)
@@ -83,6 +93,6 @@ class AzureOpenAIRealtimeAdapter:
             token=ticket,
             model=deployment,
             expires_at=datetime.now(UTC) + timedelta(seconds=ttl),
-            manual_activity=True,
+            endpointing=endpointing,
             surface=surface,
         )

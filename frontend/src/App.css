@@ -57,7 +57,7 @@
 .day-sheet-list { display: grid; gap: clamp(8px, .7vw, 18px); margin-top: clamp(12px, 1vw, 26px); max-height: 60vh; overflow-y: auto; }
 .day-sheet .section-kicker { margin-bottom: 4px; }
 @media (max-width: 1100px) { .home-grid { grid-template-columns: minmax(0, 1.4fr) minmax(280px, .8fr); }.large-event { grid-template-columns: 75px minmax(0, 1fr) 25px; }.event-owner { display: none; } }
-@media (max-width: 760px) { html, body, #root { overflow: auto; }.kiosk-shell { height: auto; min-height: 100dvh; overflow: visible; }.global-header { grid-template-columns: 1fr auto; }.header-center { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; padding: 10px 0; }.view-frame { min-height: 720px; }.home-grid { grid-template-columns: 1fr; height: auto; }.home-rail { grid-template-rows: auto; }.today-schedule { min-height: 520px; }.week-view, .month-view { min-height: 680px; }.view-pager { grid-template-columns: minmax(0, 1fr); touch-action: auto; }.page-edge { display: none; }.bottom-dock { flex-wrap: wrap; gap: 8px; }.dock-primary { order: 3; width: 100%; flex-wrap: wrap; }.bottom-dock nav { flex: 1; }.bottom-dock nav button { flex: 1; }.week-grid { grid-template-columns: 42px repeat(7, minmax(100px, 1fr)); overflow-x: auto; }.week-column, .week-day-head { min-width: 100px; } }
+@media (max-width: 760px) { html, body, #root { overflow: auto; }.kiosk-shell { height: auto; min-height: 100dvh; overflow: visible; }.global-header { grid-template-columns: 1fr auto; }.header-center { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; padding: 10px 0; }.view-frame { min-height: 720px; }.home-grid { grid-template-columns: 1fr; height: auto; }.home-rail { grid-template-rows: auto; }.today-schedule { min-height: 520px; }.week-view, .month-view { min-height: 680px; }.view-pager { grid-template-columns: minmax(0, 1fr); touch-action: auto; }.page-edge { display: none; }.bottom-dock { flex-wrap: wrap; gap: 8px; }.dock-primary { order: 3; width: 100%; flex-wrap: wrap; }.bottom-dock nav { flex: 1; }.bottom-dock nav button { flex: 1; }.mode-nav .dock-timer { margin-left: clamp(4px, .4vw, 10px); }.mode-nav .dock-timer::before { display: none; }.week-grid { grid-template-columns: 42px repeat(7, minmax(100px, 1fr)); overflow-x: auto; }.week-column, .week-day-head { min-width: 100px; } }
 
 /* --- Home composition: bottom-dock popovers, settings, semantic markers --- */
 .dock-actions { position: relative; }
@@ -174,11 +174,27 @@
 .voice-toast-close { flex: 0 0 auto; width: 38px; height: 38px; border: 0; border-radius: 50%; background: #f0cdb8; font-size: 1.4em; line-height: 1; }
 @media (max-width: 760px) { .voice-toast { flex-wrap: wrap; left: 3vw; right: 3vw; transform: none; max-width: none; } }
 
-/* --- Timers (dedicated tab; default view while a timer is active) --- */
-.dock-timer { position: relative; }
-.dock-timer .timer-dot { position: absolute; top: clamp(4px, .4vw, 12px); right: clamp(4px, .4vw, 12px); width: clamp(9px, .7vw, 16px); height: clamp(9px, .7vw, 16px); border-radius: 50%; background: var(--coral); }
-.dock-timer .timer-dot.firing { animation: voice-blink 1s steps(2, start) infinite; }
-.timer-view { display: grid; place-items: center; height: 100%; min-height: 0; padding: clamp(10px, 1vw, 32px); overflow: hidden; }
+/* --- Timers -------------------------------------------------------------------
+   The Timer tab is a role/appliance mode, not another calendar view. It sits
+   apart from the Home / Week / Month family — a gap plus a hairline, the same way
+   the contextual Today action is placed visually outside the mode group — and
+   wears the timer's coral identity instead of the neutral ink the calendar modes
+   use. While a timer runs anywhere in the app the button also carries the
+   soonest-to-fire countdown, so navigating away never hides how much time is left
+   (it's dropped only on the Timer view itself, where the big countdown repeats it). */
+.dock-timer { position: relative; display: inline-flex; align-items: center; gap: clamp(6px, .5vw, 13px); }
+.mode-nav .dock-timer { margin-left: clamp(11px, 1vw, 26px); }
+.mode-nav .dock-timer::before { content: ''; position: absolute; left: calc(-1 * clamp(6px, .5vw, 13px)); top: 50%; width: 2px; height: 54%; transform: translateY(-50%); background: var(--line); }
+.dock-timer-remaining { font-variant-numeric: tabular-nums; font-weight: 800; letter-spacing: -.01em; }
+.dock-timer.running:not(.active) { border-color: var(--coral); color: #b5462f; }
+.bottom-dock nav button.dock-timer.active { color: #fff; background: var(--coral); border-color: var(--coral); }
+.dock-timer.firing:not(.active) { animation: voice-blink 1s steps(2, start) infinite; }
+.dock-timer.paused:not(.active) .dock-timer-remaining { opacity: .6; font-weight: 700; letter-spacing: 0; }
+
+/* A distinct "room": the calendar views sit straight on the cool --canvas; the
+   timer view is a warm, self-contained panel so stepping into it reads as a
+   change of context rather than a fourth calendar mode. */
+.timer-view { display: grid; place-items: center; height: 100%; min-height: 0; padding: clamp(14px, 1.4vw, 40px); overflow: hidden; background: var(--warm); border: 1px solid var(--line); border-radius: clamp(14px, 1.1vw, 26px); }
 
 .timer-setup { display: grid; justify-items: center; gap: clamp(12px, 1.4vw, 34px); width: min(760px, 92%); text-align: center; }
 .timer-dial { display: flex; align-items: center; gap: clamp(14px, 1.6vw, 44px); }
@@ -198,9 +214,12 @@
 .timer-countdown-text { display: grid; justify-items: center; gap: clamp(4px, .6vw, 16px); }
 .timer-countdown-text strong { font-family: Georgia, serif; font-size: clamp(60px, 9vw, 240px); font-weight: 400; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
 .timer-countdown-text span { color: var(--ink-soft); font-size: clamp(18px, 1.4vw, 44px); }
+.timer-countdown-text .timer-paused-tag { color: var(--coral); font-weight: 800; letter-spacing: .12em; text-transform: uppercase; font-size: clamp(14px, 1vw, 30px); }
+.timer-paused .timer-ring-value { opacity: .4; }
 .timer-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: clamp(8px, .8vw, 22px); }
 .timer-controls button { min-height: clamp(52px, 4vw, 110px); padding: 0 clamp(20px, 1.8vw, 52px); border: 2px solid var(--line-dark); border-radius: 12px; background: var(--warm); font-size: clamp(16px, 1vw, 34px); font-weight: 700; }
 .timer-controls .timer-cancel { color: #fff; background: var(--ink); border-color: var(--ink); }
+.timer-controls .timer-pause, .timer-controls .timer-resume { color: #fff; background: var(--coral); border-color: var(--coral); }
 
 .timer-alarm { display: grid; justify-items: center; align-content: center; gap: clamp(14px, 1.6vw, 40px); width: 100%; height: 100%; border: 0; border-radius: 20px; color: #fff; background: var(--coral); text-align: center; animation: voice-blink 1.1s steps(2, start) infinite; }
 .timer-alarm-mark { font-size: clamp(64px, 8vw, 200px); }
@@ -213,7 +232,7 @@
 
 .timer-notice { position: fixed; z-index: 13; left: 50%; bottom: clamp(72px, 9vh, 170px); transform: translateX(-50%); display: flex; align-items: center; gap: 14px; max-width: min(560px, 92vw); padding: clamp(12px, 1vw, 24px) clamp(16px, 1.2vw, 32px); border: 2px solid var(--line-dark); border-radius: 12px; color: var(--ink); background: var(--surface); box-shadow: 0 18px 50px #263c3b2e; font-size: clamp(14px, .82vw, 27px); font-weight: 600; }
 .timer-notice button { flex: 0 0 auto; width: 34px; height: 34px; border: 0; border-radius: 50%; background: var(--warm); font-size: 1.3em; line-height: 1; }
-@media (max-width: 760px) { .timer-view { min-height: 620px; } .timer-countdown { width: 78vw; } }
+@media (max-width: 760px) { .timer-view { min-height: 620px; border-radius: 0; border-width: 1px 0 0; } .timer-countdown { width: 78vw; } }
 
 /* --- Multi-day / all-day spanning bars (Month overlay + Week all-day lane) --- */
 .span-bar { display: flex; align-items: center; gap: 6px; min-width: 0; height: var(--span-h); padding: 0 clamp(6px, .5vw, 14px); border: 0; border-left: 5px solid currentColor; border-radius: 5px; color: #704537; background: var(--coral-pale); text-align: left; font-size: clamp(11px, .68vw, 22px); overflow: hidden; }
