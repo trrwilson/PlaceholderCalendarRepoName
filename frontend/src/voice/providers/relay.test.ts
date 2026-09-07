@@ -134,4 +134,31 @@ describe('RelayVoiceProvider', () => {
     const { provider } = setup()
     expect(provider.inputSampleRate).toBe(24_000)
   })
+
+  it('defaults endpointing to `client` and brackets the turn', () => {
+    const { provider } = setup()
+    expect(provider.endpointing).toBe('client')
+  })
+
+  it('provider endpointing: sends no activity markers — the upstream VAD owns the turn', async () => {
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const provider = new RelayVoiceProvider(
+      'http://api.test',
+      { ...grant, endpointing: 'provider' },
+      () => {},
+    )
+    const connected = provider.connect()
+    FakeWebSocket.instances[0].open()
+    await connected
+
+    provider.startActivity()
+    provider.sendAudio('QQ==')
+    provider.endActivity()
+
+    expect(provider.endpointing).toBe('provider')
+    expect(FakeWebSocket.instances[0].sent.map((s) => JSON.parse(s))).toEqual([
+      { type: 'audio', data: 'QQ==' },
+    ])
+  })
 })

@@ -8,8 +8,11 @@ in `docs/voice-support-plan.md`.
 ## How to talk to it
 
 - **Tap the "Ask" button** in the header, speak, and stop. The kiosk detects when
-  you have finished talking (about a second of silence, or 15 seconds maximum) and
-  sends the turn. There is nothing to press to "send".
+  you have finished talking and sends the turn — there is nothing to press to
+  "send". Depending on the voice provider that is a second of silence, or the
+  provider recognising the end of your sentence directly (which handles a pause
+  mid-phrase, like "set a timer for… ten minutes", without cutting you off).
+  Either way there is a 15-second maximum.
 - Saying **"Mission Control"** to wake it hands-free is built but **dormant** — it
   needs a trained wake-word model and on-hardware tuning before it does anything.
   Until then, every command starts with a tap.
@@ -245,7 +248,8 @@ time remains.
 | System instruction / spoken behaviour | `backend/app/voice/prompt.py` |
 | Frontend tool dispatch | `frontend/src/voice/tools.ts` |
 | Display actions the tools can call | `frontend/src/App.tsx` (`voiceActions`) |
-| Turn state machine, end-of-speech, error handling | `frontend/src/voice/useVoiceSession.ts` |
+| Turn state machine, end-of-speech backstop, error handling | `frontend/src/voice/useVoiceSession.ts` |
+| End-of-speech ownership per provider (`endpointing`) | `backend/app/voice/providers/`, `docs/voice-provider-bakeoff-plan.md` |
 | Locked-tool-set test | `backend/tests/test_voice.py` |
 | Design record & live-tuning history | `docs/voice-support-plan.md` |
 | Cloud provider bake-off | `docs/voice-provider-bakeoff-plan.md` |

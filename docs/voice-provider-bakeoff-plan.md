@@ -98,9 +98,12 @@ Gemini-specific (needs a seam):
 ```ts
 export interface ConversationalVoiceProvider {
   readonly timeline: VoiceTimeline
+  readonly inputSampleRate: number
+  readonly outputSampleRate: number
+  readonly endpointing: EndpointingMode    // 'client' | 'hybrid' | 'provider' — see below
   connect(): Promise<void>                 // fetch grant, open transport, emit 'open'
-  startActivity(): void                    // open the user's turn (manual VAD) — no-op otherwise
-  endActivity(): void                      // end the user's turn (activityEnd | audioStreamEnd | commit)
+  startActivity(): void                    // open the user's turn — client mode only, no-op otherwise
+  endActivity(): void                      // finalise the user's turn (client/hybrid); no-op in provider
   sendAudio(base64Pcm16: string): void
   respondTool(id: string, name: string, response: Record<string, unknown>): void
   close(): void
@@ -196,11 +199,51 @@ stays `POST /api/voice/token` (rename the response model, not the route).
 
 `frontend/src/voice/tools.ts` is unaffected — it dispatches by name.
 
+## End-of-speech ownership
+
+**Legitimised 2026-09-07.** The original design made voice-activity / end-of-speech
+detection the responsibility of the shared provider layer, full stop: `useVoiceSession`
+ran a mic-RMS silence detector as *the* endpointer and the relay forced manual turn
+control. That broke down — the OpenAI-realtime relay was hand-edited to `semantic_vad`
+(which endpoints an incomplete phrase like "set a timer for…" correctly, where a
+raw-energy detector cuts it off), and it "greatly improved the experience". This section
+makes that a first-class, negotiated property.
+
+`grant.endpointing` (`app.models.Endpointing`; `ConversationalVoiceProvider.endpointing`
+on the frontend) is one of:
+
+| mode | provider VAD | ends the user's turn | client activity brackets | mic-RMS endpointer |
+| --- | --- | --- | --- | --- |
+| `client` *(default / fallback)* | off | mic-RMS silence (`SILENCE_HOLD_MS`), `MAX_LISTEN_MS`, or Stop tap | yes — `activityStart`/`activityEnd` (Gemini), `activity-start`/`activity-end` (relay) | **primary** |
+| `hybrid` | on, `create_response: false` | provider `speech-stopped` (**primary**); client finalises with `audioStreamEnd` / `activity-end` | finalise only | **backstop**, `SERVER_VAD_BACKSTOP_MS` |
+| `provider` | on, `create_response: true` | provider entirely (VAD + auto response) | none | disabled — `MAX_LISTEN_MS` + Stop tap only |
+
+`client` is the documented default applied whenever a provider declares nothing suitable.
+`hybrid` unifies Gemini's "hybrid VAD" and the Azure `semantic_vad` path. `provider` is a
+declared seam — no contestant uses it today.
+
+Per-contestant mapping and knobs:
+
+| contestant | default | knob | notes |
+| --- | --- | --- | --- |
+| Gemini | `hybrid` | `MISSION_CONTROL_VOICE_MANUAL_ACTIVITY=true` → `client` | the operator escape hatch adopted in 2026-09 for the silent-turn failure |
+| Azure OpenAI Realtime (+ mini) | `hybrid` | `MISSION_CONTROL_AZURE_OPENAI_REALTIME_ENDPOINTING` (`client` \| `hybrid` \| `provider`) | `openai_turn_detection(mode)` builds `turn_detection` |
+| Azure Voice Live | `hybrid` | `MISSION_CONTROL_AZURE_VOICE_LIVE_ENDPOINTING` (`hybrid` \| `provider`) | `azure_semantic_vad` must stay on for its echo canceller, so `client` is unavailable |
+| Local / Hybrid | `client` | — | a streaming STT engine may still self-endpoint early by emitting its final transcript mid-turn — an optimization within `client` |
+
+Wiring: each adapter has a `default_endpointing` class attribute and writes the effective
+mode onto the grant in `create_grant`. `relay.py` carries it on `UpstreamConfig` and
+`_RelayTurn`; `translate_client` omits `response.create` from `activity-end` in `provider`
+mode. `useVoiceSession` captures `session.endpointing` at turn start into `endpointingRef`
+and switches its `handleLevel` / `speech-stopped` strategy on it — it no longer infers
+ownership from whether a `speech-stopped` event happened to arrive. `VoiceTurnReport`
+records the mode.
+
 ## Provider connection details
 
 ### Gemini (`gemini`) — unchanged
 Browser-direct. `auth_tokens.create` with `LiveConnectConstraints`; `v1beta`; the grant
-carries `gemini.token` / `api_version` / `manual_activity`. No behaviour change.
+carries `token` / `api_version` / `endpointing` (see "End-of-speech ownership").
 
 ### Azure OpenAI Realtime (`azure_openai_realtime`, `azure_openai_realtime_mini`)
 Browser-direct over WebSocket.
@@ -361,8 +404,9 @@ Frontend:
 3. **Azure OpenAI Realtime + Azure Voice Live via a backend relay. — DONE.** Both Azure
    contestants relay through `WS /api/voice/live` (`app/voice/relay.py`) — the browser
    `WebSocket` API can't set the `api-key` header. The relay translates realtime events ↔
-   `VoiceEvent` JSON; turn control is **manual** (`turn_detection: null`; the kiosk
-   brackets the turn). Grant carries a single-use ticket.
+   `VoiceEvent` JSON; end-of-speech follows `grant.endpointing` (default `hybrid` —
+   `semantic_vad` with `create_response: false` + the kiosk's `speech-stopped` endpoint;
+   see "End-of-speech ownership"). Grant carries a single-use ticket.
 
    **Verified against current Microsoft/OpenAI docs (2026-09) — the two Azure products
    are not one protocol:**
@@ -378,12 +422,12 @@ Frontend:
      flat/beta session (`modalities`, `voice` as an **object** `{name, type}`).
      `build_voice_live_session`. `turn_detection` **must** be set — the live resource
      rejects echo cancellation "when turn detection is disabled" and then kills the
-     session — so it is `azure_semantic_vad` with `create_response: false`: the VAD runs
-     for the audio pipeline, but the **kiosk still owns the turn** (commit +
-     `response.create` on `activity-end`, same as the OpenAI path). Verified live: the
-     VAD alone never endpoints a tone and can stall a hesitant speaker; a benign
-     `input_audio_buffer_commit_empty` (the commit racing the VAD) is logged and
-     swallowed and the reply still comes back.
+     session — so `client` end-of-speech is unavailable here; the default is `hybrid`
+     (`azure_semantic_vad` with `create_response: false`, the kiosk endpoints on the
+     forwarded `speech-stopped` and asks for the reply on `activity-end`). Verified live:
+     the VAD alone never endpoints a tone and can stall a hesitant speaker — hence the
+     kiosk backstop; a benign `input_audio_buffer_commit_empty` (the commit racing the
+     VAD) is logged and swallowed and the reply still comes back.
 
    `translate_upstream` accepts both event-name sets. Unit-tested
    (`test_voice_relay.py`, `providers/relay.test.ts`) incl. one end-to-end relay run
@@ -392,8 +436,9 @@ Frontend:
 4. _(folded into 3)_
 5. **Measurement pass. — DONE (instrumentation).** `VoiceTurnReport` +
    `recordVoiceTurn` (`instrument.ts`): every turn logs `[voice] turn-report {json}` and
-   the last 20 land on `window.__voiceTurns`, grouped by `provider` / `model` lifted off
-   the `token-received` mark. `docs/voice-provider-bakeoff-results.md` is the write-up
+   the last 20 land on `window.__voiceTurns`, grouped by `provider` / `model` /
+   `endpointing` lifted off the `token-received` mark.
+   `docs/voice-provider-bakeoff-results.md` is the write-up
    template. The on-kiosk runs of a fixed script across all four contestants — and the
    pick — still need real hardware + Azure credentials.
 
@@ -410,11 +455,15 @@ Left to do:
    script in `voice-provider-bakeoff-results.md` per contestant, pull `window.__voiceTurns`,
    fill in the tables, pick one.
 2. **Voice Live under real speech** — the connectivity check can't trip its VAD. Confirm
-   end-of-speech → auto-response timing on the kiosk, and whether the kiosk's local
-   `activity-end` (currently dropped) should instead nudge a commit.
+   `hybrid` end-of-speech timing on the kiosk (`speech-stopped` → `activity-end` →
+   reply), and whether `provider` mode (`create_response: true`, no client finalise) is
+   the better trade for this product.
 3. **User transcript on the Azure OpenAI path** — optional; set
    `MISSION_CONTROL_AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT` to a transcribe-model deployment.
 4. **Tool-call streaming shape** — we only handle `response.function_call_arguments.done`
    (full args). Add `.delta` accumulation if a run shows partial args.
-5. **Manual vs server VAD for Azure OpenAI Realtime** — currently manual; the session
-   builder has the hook for `server_vad` if the measurement pass favours it.
+5. **End-of-speech mode for Azure OpenAI Realtime** — resolved: negotiated via
+   `MISSION_CONTROL_AZURE_OPENAI_REALTIME_ENDPOINTING`, default `hybrid` (`semantic_vad`
+   + `create_response: false` + the kiosk's `speech-stopped` endpoint and mic-RMS
+   backstop). The measurement pass can compare `client` / `hybrid` / `provider` per turn
+   from the `endpointing` field on `VoiceTurnReport`.

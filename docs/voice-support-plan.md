@@ -863,6 +863,29 @@ Not touched, worth a look if this recurs: `azure_semantic_vad`'s
 `silence_duration_ms` is still 500; if `speech-stopped` ever fires mid-phrase,
 raise it there rather than re-tuning the client backstop.
 
+### Legitimised: end-of-speech ownership is negotiated (2026-09-07)
+
+The tenth-run fix above was a good change wearing a bad disguise — a `semantic_vad`
+literal hand-edited into a relay session builder, and a state machine that *inferred*
+"the provider owns end-of-speech" from whether a `speech-stopped` event happened to show
+up. It is now a first-class design property:
+
+- `grant.endpointing` — `client` | `hybrid` | `provider` (`app.models.Endpointing`),
+  declared per adapter (`default_endpointing`) and written onto the grant. Replaces the
+  `manual_activity` bool. `client` is the **default**, applied whenever a provider has no
+  suitable end-of-speech detection — the shared mic-RMS silence detector +
+  `MAX_LISTEN_MS` + Stop tap. `hybrid` is the tenth-run path (provider VAD +
+  `speech-stopped` primary, mic-RMS backstop). `provider` is a declared seam for a
+  provider that fully owns the boundary.
+- The `semantic_vad` choice is config-driven — `azure_openai_realtime_endpointing` /
+  `azure_voice_live_endpointing`, and `voice_manual_activity` for Gemini — via
+  `openai_turn_detection` / `voice_live_turn_detection` in `relay.py`.
+- `useVoiceSession` captures `session.endpointing` into `endpointingRef` at turn start
+  and switches strategy on it (client short hold / hybrid long backstop / provider no
+  mic endpointing), instead of the `serverVadSeenRef` inference.
+- The contract lives in `AGENTS.md` → "Voice assistant" and
+  `docs/voice-provider-bakeoff-plan.md` → "End-of-speech ownership".
+
 ## Follow-ups / not done
 
 - Confirm the exact native-audio Live model id and region availability against current
