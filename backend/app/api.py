@@ -9,13 +9,32 @@ import app.calendar.personal_auth as personal_auth
 from app.calendar.provider import CalendarProvider, MockCalendarProvider
 from app.config import get_settings
 from app.models import (
+    ApplicationMessage,
     CalendarAuthStatus,
     CalendarRange,
     CalendarSnapshot,
+    Timer,
+    TimerCreateRequest,
+    TimerExtendRequest,
+    TimerMutationResult,
+    VoiceConfig,
+    VoiceConfigUpdate,
+    VoiceProviderInfo,
     VoiceToken,
     VoiceTokenRequest,
+    WakeWordConfig,
 )
-from app.voice import VoiceUnavailable, mint_token
+from app.realtime import connections
+from app.timers import TimerError, get_timer_store
+from app.voice import VoiceUnavailable, get_voice_token, reset_voice_token_cache
+from app.voice.base import PROVIDER_LABELS
+from app.voice.providers import (
+    effective_provider,
+    implemented_providers,
+    provider_configured,
+    set_provider_override,
+)
+from app.voice.relay import redeem_ticket, run_relay
 
 router = APIRouter(prefix="/api")
 
@@ -38,19 +57,23 @@ def get_provider() -> CalendarProvider:
     return _build_provider()
 
 
-def _require_local(request: Request) -> None:
-    """Gate the calendar sign-in endpoints to loopback / LAN unless opted out."""
+def _is_local_client(host: str) -> bool:
     if get_settings().allow_remote_auth:
-        return
-    host = request.client.host if request.client else ""
+        return True
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        address = None
-    if address is None or not (address.is_loopback or address.is_private or address.is_link_local):
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
+
+
+def _require_local(request: Request) -> None:
+    """Gate the calendar sign-in endpoints to loopback / LAN unless opted out."""
+    host = request.client.host if request.client else ""
+    if not _is_local_client(host):
         raise HTTPException(
             status_code=403,
-            detail="calendar sign-in is only available on the local network",
+            detail="this endpoint is only available on the local network",
         )
 
 
@@ -119,46 +142,174 @@ async def voice_token(
     body: VoiceTokenRequest | None = None,
     calendar_provider: CalendarProvider = Depends(get_provider),
 ) -> VoiceToken:
-    """Mint a constrained ephemeral token for the kiosk's Gemini Live session."""
-    from app.voice.trace import note, timed
+    """Hand the kiosk a constrained ephemeral token for its Gemini Live session.
+
+    Backed by two caches (``app/voice/cache.py``): the calendar snapshot the
+    system prompt is built from, and the minted token itself. A cached token is
+    re-served only until the next event boundary / local midnight / staleness cap,
+    so the agent never reasons from a "what's next" that has gone out of date.
+    """
+    from app.voice.trace import note
 
     _require_local(request)
     note("token request received")
-    today = date.today()
-    # NOTE: this is a synchronous provider call on the token path; for the
-    # Outlook provider it is a blocking Graph request and shows up as dead time
-    # in the kiosk's `connecting` phase. It only supplies calendar names for the
-    # system prompt — a future change should cache these.
-    with timed("calendar snapshot (for prompt calendar names)"):
-        calendar_names = [
-            calendar.name
-            for calendar in calendar_provider.snapshot(
-                CalendarRange(starts_on=today, ends_on=today)
-            ).calendars
-        ]
     try:
-        with timed("mint ephemeral token (Google auth_tokens.create)"):
-            token = await mint_token(
-                get_settings(),
-                calendar_names=calendar_names,
-                surface=body.surface if body else None,
-                timezone=body.timezone if body else None,
-                client_time=body.client_time if body else None,
-            )
-        note("token minted and returned")
-        return token
+        return await get_voice_token(get_settings(), calendar_provider, body)
     except VoiceUnavailable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _voice_config() -> VoiceConfig:
+    settings = get_settings()
+    implemented = set(implemented_providers())
+    return VoiceConfig(
+        enabled=settings.voice_enabled,
+        provider=effective_provider(settings),
+        mic_input_gain_db=settings.mic_input_gain_db,
+        providers=[
+            VoiceProviderInfo(
+                id=pid,
+                label=label,
+                implemented=pid in implemented,
+                configured=provider_configured(settings, pid),
+            )
+            for pid, label in PROVIDER_LABELS.items()
+        ],
+    )
+
+
+@router.get("/voice/config", response_model=VoiceConfig)
+def voice_config(request: Request) -> VoiceConfig:
+    """Which conversational voice provider is active, and which the kiosk could
+    switch to. Always safe to call; ``enabled`` is false until
+    ``MISSION_CONTROL_VOICE_ENABLED``."""
+    _require_local(request)
+    return _voice_config()
+
+
+@router.put("/voice/config", response_model=VoiceConfig)
+def set_voice_config(request: Request, body: VoiceConfigUpdate) -> VoiceConfig:
+    """Point every subsequent turn at ``body.provider`` (bake-off A/B control).
+
+    Process-memory only — a restart reverts to ``MISSION_CONTROL_VOICE_PROVIDER``.
+    The token cache is cleared so a grant for the previous provider is not
+    re-served.
+    """
+    _require_local(request)
+    try:
+        set_provider_override(body.provider)
+    except VoiceUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    reset_voice_token_cache()
+    return _voice_config()
+
+
+@router.websocket("/voice/live")
+async def voice_live_relay(websocket: WebSocket) -> None:
+    """Relay for the Azure voice contestants: the kiosk connects here with the
+    single-use ticket from its grant, and the backend bridges to the provider,
+    translating both directions to the shared ``VoiceEvent`` protocol
+    (``app/voice/relay.py``). Loopback / LAN only, like every other voice route.
+    """
+    host = websocket.client.host if websocket.client else ""
+    if not _is_local_client(host):
+        await websocket.close(code=4403)
+        return
+    config = redeem_ticket(websocket.query_params.get("ticket"))
+    if config is None:
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    try:
+        await run_relay(websocket, config)
+    except WebSocketDisconnect:
+        return
+
+
+@router.get("/voice/wake-config", response_model=WakeWordConfig)
+def voice_wake_config(request: Request) -> WakeWordConfig:
+    """Local wake-word settings for the kiosk.
+
+    Detection is entirely browser-side (see ``docs/wake-word-plan.md``); this
+    endpoint only hands over thresholds and asset locations. It is always safe
+    to call — ``enabled`` is false until both voice and wake word are switched
+    on and a model is provisioned.
+    """
+    _require_local(request)
+    settings = get_settings()
+    return WakeWordConfig(
+        enabled=settings.wake_word_enabled and settings.voice_enabled,
+        phrase=settings.wake_word_phrase,
+        threshold=settings.wake_word_threshold,
+        cooldown_ms=settings.wake_word_cooldown_ms,
+        model_path=settings.wake_word_model_path,
+        models_base_url=settings.wake_word_models_base_url,
+    )
+
+
+# -- timers ------------------------------------------------------------------
+# Backend-owned, in-memory, one active timer for now (see docs/timer-plan.md).
+# Gated to loopback / LAN like the other control surfaces. Every mutation returns
+# the resulting Timer *and* broadcasts, so the initiating kiosk and any other
+# screen converge through the same path.
+
+
+@router.get("/timers", response_model=list[Timer])
+async def list_timers(request: Request) -> list[Timer]:
+    _require_local(request)
+    return get_timer_store().list_timers()
+
+
+@router.post("/timers", response_model=TimerMutationResult)
+async def create_timer(request: Request, body: TimerCreateRequest) -> TimerMutationResult:
+    _require_local(request)
+    try:
+        return await get_timer_store().create(body)
+    except TimerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.patch("/timers/{timer_id}", response_model=Timer)
+async def extend_timer(request: Request, timer_id: str, body: TimerExtendRequest) -> Timer:
+    _require_local(request)
+    try:
+        return await get_timer_store().extend(timer_id, body)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such timer") from exc
+    except TimerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/timers/{timer_id}", status_code=204)
+async def delete_timer(request: Request, timer_id: str) -> None:
+    """Cancel a running timer or dismiss a fired one — same call for both."""
+    _require_local(request)
+    try:
+        await get_timer_store().cancel(timer_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such timer") from exc
 
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    connections.add(websocket)
     try:
         await websocket.send_json(
             {"type": "connected", "message": "Dashboard live connection ready"}
+        )
+        # Send the current timer list so a just-loaded / just-reconnected kiosk is
+        # immediately correct (a restart cleared them → the kiosk clears too).
+        await websocket.send_json(
+            ApplicationMessage(
+                type="timers",
+                message="current timers",
+                timers=get_timer_store().list_timers(),
+            ).model_dump(mode="json", exclude_none=True)
         )
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         return
+    finally:
+        connections.discard(websocket)

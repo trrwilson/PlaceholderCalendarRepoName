@@ -18,6 +18,19 @@ Give Mission Control a first, genuinely useful voice capability:
   `AGENTS.md`.
 - **No calendar writes** in this milestone. `get`-style tools only.
 
+> **Timer exception (added with `docs/timer-plan.md`).** Voice may now
+> **set, cancel, and extend a single kitchen timer** — `start_timer`,
+> `cancel_timer`, `extend_timer`, plus read-only `get_timer`. These are the first
+> state-mutating voice tools. They are a deliberate, narrow exception to the
+> read-only rule: timer state is ephemeral, local, single-appliance, and has no
+> external side effect and no calendar/provider write. Calendar writes remain out
+> of scope. `start_timer` takes a duration or an absolute local target time and
+> the six-hour cap is stated in its schema so the agent speaks the rejection.
+> Dismissing a ringing alarm by voice ("stop") maps to `cancel_timer`; a fired
+> timer does **not** open a voice session on its own (one-session-per-turn), so
+> there is no spoken announcement on fire in this task — the chime + forced Timer
+> view are the notification. Revisit with the wake-word work.
+
 Non-negotiable from `AGENTS.md` / `.prompts/0001-bootstrap.txt`:
 
 > browser microphone → speech service → agent → **explicit application tools** → actions →
@@ -326,7 +339,9 @@ Push-to-talk latency / behaviour issues were investigated and partly fixed:
   stamps every turn milestone (`tap → token → sdk → live-open → mic-started →
   input-transcript-first → stop-tap → tool-call → tool-response →
   audio-first-chunk → turn-complete → turn-finished`) to the console; disable
-  with `localStorage['voice.trace'] = 'off'`. `session.ts` also logs
+  with `localStorage['voice.trace'] = 'off'`. **Update (2026-09-06):** the
+  token-path snapshot and the ephemeral token are now cached — see
+  `docs/voice-token-caching-notes.md`. `session.ts` also logs
   `setup-complete`, `usage`, `generation-complete`, `turn-complete-reason`,
   `model-text-part` / `model-other-part` / `unhandled-message`,
   `tool-call-cancelled` and `live-close` (with reason/code), so a turn that
@@ -459,6 +474,277 @@ reliable end-of-turn signal here.** Switched to **manual activity detection**:
 If the model still stalls after this, the fallbacks are a backend WS proxy (so
 we own the whole lifecycle) or text + a separate TTS call.
 
+### Seventh run (2026-09-06) — everything works, everything is slow
+
+A complete, correct push-to-talk turn ("set a five minute timer"): connected in
+238 ms, transcribed, called `start_timer`, spoke a confirmation. It just took
+21.7 s. Measured from the console timeline:
+
+| Segment | Cost | What was happening |
+|---|---|---|
+| tap -> `mic-first-chunk-sent` | 437 ms | fine — token + snapshot caching is working |
+| speech | ~2.1 s | |
+| `SILENCE_HOLD_MS` | 1.0 s | client waiting out the pause |
+| `activity-end` -> `input-transcript-first` | **5.67 s** | server produced nothing at all |
+| -> `tool-call` | 232 ms | |
+| `tool-response` -> `output-transcript-first` | **4.67 s** | our tool dispatch itself took 18 ms |
+| -> `audio-first-chunk` | **3.87 s** | |
+| audio delivery | 3.68 s wall for **1.7 s** of speech | ~0.46x real time |
+
+So ~6.9 s from "stopped talking" to the timer visibly starting, ~15.6 s to hear
+anything, four playback underruns, and no `interimInputTranscription` at any
+point. A previous turn in the same session died to the 12 s watchdog.
+
+**None of it was thinking** (`thinking_budget: 0` is honoured — no
+`model-text-part` marks) and none of it was our backend. Four causes:
+
+1. **The model was deprecated.** Google's Live API guidance now lists
+   `gemini-2.5-flash-native-audio-preview-12-2025` under "deprecated and will be
+   shut down — migrate to `gemini-3.1-flash-live-preview`". Sub-real-time audio
+   generation and multi-second per-stage stalls are what a wound-down preview
+   endpoint looks like.
+2. **The v1alpha pin that forced it was based on a stale doc.** #2 in the
+   2026-09-05 root-cause list above quoted the ephemeral-tokens page as
+   "v1alpha". That page now says **v1beta**, and its JS example connects with
+   `gemini-3.1-flash-live-preview`. (The `.md.txt` mirror of the same page still
+   says v1alpha — it is behind the HTML.) The v1beta + Gemini 3.1 path that
+   returned `code 1008` in September is the documented path now.
+3. **Manual activity detection switched off the server's streaming recogniser.**
+   With `automatic_activity_detection.disabled = true` the service does not
+   transcribe as the audio arrives; it buffers the utterance and runs ASR once
+   `activityEnd` lands. That is exactly the 5.67 s hole, and it is why
+   `interimInputTranscription` ("low latency transcription updated while the user
+   is speaking") never appeared once. The fourth live run, which still used
+   service VAD, got its transcript **37 ms** after endpointing.
+4. **`AudioSink` had no jitter buffer.** It scheduled each chunk 120 ms after
+   arrival, which cannot work against a stream the API documents as "generated as
+   quickly as possible, and not in real time". On underrun it logged, then
+   scheduled the next chunk at `now + 120 ms` — re-opening the gap it had just
+   reported.
+
+Not a free-tier throttle in any actionable sense: `gemini-3.1-flash-live-preview`
+is free-tier eligible, and Priority Inference (the paid low-latency tier) does not
+cover the Live API, so there is no "pay to make Live fast" lever to pull. Billing
+is still worth enabling for a kitchen microphone: free-tier traffic is used to
+improve Google's products, paid-tier traffic is not, and paid tiers get capacity
+ahead of free. At $0.005/min audio in, $0.018/min audio out and $0.75/1M text in,
+this turn would have cost ~$0.002 ($0.0015 of that the 1,937-token system
+prompt, which the token cache already amortises) — a couple of dollars a month at
+kiosk volumes.
+
+### Fixes shipped (2026-09-06)
+
+- **Model / API version.** Default is now `gemini-3.1-flash-live-preview` on
+  `v1beta`. The version is minted into the token *and returned on the token
+  response*, and the browser opens its socket with what it was given — the two
+  sides can no longer drift into a 1008. `MISSION_CONTROL_GEMINI_LIVE_MODEL` +
+  `..._LIVE_API_VERSION` revert the pair together.
+- **`thinking_level: "minimal"`** for Gemini 3.x (`thinking_budget: 0` is kept for
+  a `gemini-2.*` model id — sending the wrong one is a setup error).
+- **Hybrid VAD is the default.** The service VAD runs (so ASR streams under the
+  audio) with `END_SENSITIVITY_HIGH` / `silence_duration_ms: 250`, and the kiosk's
+  RMS detector now sends `audioStreamEnd` instead of `activityEnd` so the turn
+  still finalises the instant *we* hear the pause. `MISSION_CONTROL_VOICE_MANUAL_ACTIVITY=true`
+  restores the fully-manual path if the silent-turn failure comes back.
+- **`SILENCE_HOLD_MS` 1000 -> 600.** Dead time on every turn.
+- **Real jitter buffer.** `AudioSink` holds 450 ms before starting, schedules
+  queued chunks contiguously off `cursor`, and on underrun re-buffers instead of
+  scheduling into the gap. `finalizeStream()` releases the cushion at
+  `turnComplete` so a reply shorter than 450 ms still plays. Covered by
+  `frontend/src/voice/audio.test.ts`.
+- **Truncation fix.** `pending()` now counts buffered-but-unscheduled audio.
+  Under underrun the sink emptied four or five times mid-reply; a `turnComplete`
+  or `closing` in one of those windows used to tear the session down and clip the
+  answer.
+- **Watchdog re-arms on `user-transcript`.** It previously only re-armed on
+  assistant text, audio and tool calls, so a turn that transcribed late but was
+  otherwise healthy could still be killed.
+
+Still open, and needing a real kiosk to settle:
+
+- **On-kiosk verification of all of the above.** None of it is testable from here.
+  Watch the timeline for `token-received {apiVersion, manualActivity}`, then
+  `input-transcript-first` relative to `audio-stream-end`.
+- **Recognised text while the person is still speaking.** The conversational
+  models do not emit `interimInputTranscription` — it is a
+  `gemini-3.5-transcribe-live` feature. Hybrid VAD gets the transcript on screen
+  at roughly end-of-speech + 1 s, ahead of the action, which is the actual bug;
+  true live text needs a second recogniser. The cheap option is a parallel
+  `gemini-3.5-transcribe-live` session fed from the *existing* shared `MicSource`
+  (a second socket, not a second microphone — no new `getUserMedia`), ~$0.009/min.
+  The Web Speech API is free but opens its own mic stream, which is the exact
+  two-audio-stacks-per-device failure mode `MicSource` exists to prevent.
+- **`transcript` lives in `App`-level state** (`App.tsx:314`), so every streamed
+  fragment re-renders the whole dashboard while the audio socket is being pumped
+  on the same thread. Suspected minor contributor to the 3.87 s
+  transcript-to-audio gap; measure with a Performance profile before restructuring.
+
+### Eighth run (2026-09-06) — the listening cue ended the turn
+
+First run on `gemini-3.1-flash-live-preview`. It **connected clean** — `live-open`
+88 ms after the SDK loaded, `setup-complete` at 1477 ms — then nothing came back
+and the watchdog fired at 14.4 s. No tool call was attempted, because no speech
+was ever sent.
+
+**The cue is what ended the turn.** `playTestTone` schedules 440 Hz at
+`currentTime + 0.05` for 0.4 s, so it sounds until ~t+1922 ms. The mic opened at
+t+1594 ms and delivered its first frame at t+1688 ms — the last ~230 ms of the
+tone went straight into the capture. Speaker and mic run on separate
+`AudioContext`s, so browser echo cancellation never touched it, and the level
+detector read **0.063 RMS, six times `SPEECH_RMS`**. That set `spoke`, and the
+silence timer then ended the turn 700 ms after the mic opened:
+
+    last voice 1787 ms + SILENCE_HOLD_MS 700* = 2387 ms = observed user-turn-end
+    (* the run used 600 ms; see below)
+
+The person had 699 ms from mic-open to start talking, and did not. The comment on
+that line — "Cue first (through the speakers), then open the mic turn — so the
+tone isn't captured as the start of the user's speech" — was simply wrong;
+ordering the calls does not keep a 450 ms tone out of a mic that opens 120 ms
+later. The same `peakRms: 0.063` at `listenedMs ~200` is in the *seventh* run's
+log too. It has always been there; it only became fatal when someone did not
+start talking immediately, and dropping `SILENCE_HOLD_MS` to 600 ms narrowed that
+window from ~1.1 s to ~0.7 s.
+
+Then a second defect turned a non-event into a hard failure: we sent
+`audioStreamEnd` on an empty turn, the model correctly had nothing to answer, and
+the 12 s response watchdog reported "The assistant stopped responding." The
+session was healthy throughout — a `sessionResumptionUpdate` arrived at 2659 ms
+and the socket closed 1000.
+
+### Correcting the record on `gemini-3.1-flash-live-preview`
+
+The instability in the 2026-09-05 notes was **`gemini-2.5-flash-native-audio-preview-09-2025`**
+(root cause #1: connected, transcribed, called a tool, then produced nothing and
+1011'd after ~64 s). 3.1 Flash Live was never assessed for tool calling — root
+cause #2 records the only attempt, and it failed at `connect` with `code 1008
+"... not found for API version ..."`, i.e. the model was not reachable on the
+version we were using. It never opened a session, never transcribed, never
+reached a tool call.
+
+The eighth run settles the connectivity half: 3.1 Flash Live on `v1beta` **opens
+and completes setup**. Its tool calling remains genuinely unverified — the run
+that was supposed to test it never sent any speech. Treat "3.1 is unsuitable" as
+unproven in both directions until a turn with actual audio in it comes back.
+
+One thing that looks alarming and is not: the SDK logs *"The SDK's ephemeral token
+support is in v1alpha only."* That check is
+`if (apiVersion !== 'v1alpha') console.warn(...)` in `@google/genai` 2.21.0 and
+guards nothing — the next line builds
+`.../ws/google.ai.generativelanguage.${apiVersion}.GenerativeService.BidiGenerateContentConstrained`
+either way. `setup-complete` proves the v1beta constrained endpoint accepted the
+token. It is a stale string, like the stale `.md.txt` mirror of the docs page.
+
+### Fixes shipped (2026-09-06, second pass)
+
+- **The cue can no longer be heard as speech.** `playTestTone()` now returns how
+  long it will sound; `startTurn` records `deafUntil = now + cue + 150 ms` and
+  `handleLevel` ignores levels until then, restarting the listen window at the
+  cue's end so `MIN_LISTEN_MS` / `NO_SPEECH_TIMEOUT_MS` measure the person rather
+  than the tone.
+- **`SILENCE_HOLD_MS` back to 700 ms** (from the 600 ms of the seventh-run pass).
+  The 400 ms it saves is not worth the cut-off risk on a ~7 s problem.
+- **A turn with no speech is abandoned, not failed.** `NO_SPEECH_TIMEOUT_MS`
+  (5 s) ends a silent turn quietly back to idle instead of waiting out
+  `MAX_LISTEN_MS`; neither it nor `max-listen-silent` submits to the model or
+  arms the response watchdog. **An explicit Stop tap always submits** regardless
+  of the threshold — a quiet voice that never crossed `SPEECH_RMS` is exactly
+  when the person needs the tap to go through. (The existing watchdog tests
+  caught this: the first cut swallowed tapped turns too.)
+- **`waitingForInput` is handled** — the server saying "I am waiting for more
+  input" now ends the turn quietly rather than being indistinguishable from a
+  stall for 12 s. `sessionResumptionUpdate` no longer logs as `unhandled-message`
+  on a perfectly healthy session.
+- Regression coverage in `useVoiceSession.test.ts`: the cue at 0.063 RMS must not
+  end the turn; real speech then a pause must; a silent turn must land on `idle`
+  with no error and nothing armed.
+
+### Ninth run (2026-09-06) — 3.1 Flash Live works; the underrun is the last problem
+
+The turn was correct end to end and the cue fix held (`user-turn-end
+{reason: 'silence', spoke: true}` at 5040 ms, after the person actually stopped).
+Two things worth recording:
+
+**3.1 Flash Live tool-calls fine.** Two calls in one turn — `get_events` then
+`start_timer` with a computed `fires_at` ("10 min before storm game") — both
+answered in ~340 ms and ~16 ms. That closes the question left open after the
+eighth run. The "3.1 is unsuitable" note was always about the 09-2025 native-audio
+model; nothing about 3.1's tool use has ever failed here.
+
+**Hybrid VAD did what it was supposed to.** `input-transcript-first` landed at
+4955 ms — *85 ms before* `user-turn-end`, i.e. the transcript is now on screen
+while the person is still finishing, instead of 5.7 s after they stopped. This
+was the single biggest user-facing complaint and it is fixed.
+
+**The underrun got worse, not better.** 21 chunks, ~5.4 s of speech, delivered
+between `audio-first-chunk` 10052 ms and `generation-complete` 30521 ms:
+
+    5.4 s of audio / 20.5 s of wall clock = 0.26x real time  (was 0.46x)
+
+The drains tell the shape: roughly 0.5-0.9 s of audio arrives, plays out, then
+~2 s of nothing. Eight underruns. **A fixed 450 ms cushion cannot fix this** —
+450 ms of audio buys 450 ms of playback and the next burst is two seconds away.
+The seventh-run fix was the right mechanism at the wrong depth.
+
+**And `turnComplete` never arrived**, which is what actually failed the turn. The
+server holds it back until it believes playback has finished (the SDK documents
+exactly this: "there will be delay between generation_complete and turn_complete
+that is caused by model waiting for playback to finish"). On a reply arriving at
+a quarter of real time it had not come 10.3 s after `generationComplete`, and the
+response watchdog killed a turn that had already said everything it had to say.
+The sink flushed with `stillQueued: 1` — the last chunk of the reply was dropped.
+
+### The open question: whose fault is 0.26x?
+
+Two mechanisms produce identical arrival timestamps and the log cannot yet tell
+them apart:
+
+1. **The server is generating slowly.** Nothing client-side will fix it; the
+   answer is to buffer more, or to leave native-audio generation behind (see the
+   split-pipeline option below).
+2. **This thread is too busy to drain the socket.** The browser stops reading,
+   TCP backpressure throttles the sender, and slow arrival is *self-inflicted*.
+   Plausible here: `transcript` lives in `App`-level state and neither `WeekView`
+   nor `MonthView` is memoised, so every streamed transcript fragment re-renders
+   the whole calendar — and output transcription streams alongside the audio
+   (`output-transcript-first` and `audio-first-chunk` were the same millisecond).
+
+`MainThreadLagProbe` (`instrument.ts`) now settles it. It samples how late a
+100 ms interval actually fires for the duration of the turn and the timeline
+reports `main-thread-lag {maxLagMs, meanLagMs}` alongside
+`audio-arrival {realtimeRatio, maxGapMs, underruns, prebufferMs}`.
+
+- `maxLagMs` near zero while `realtimeRatio` stays ~0.26 → **server-bound**.
+  Accept the buffering, or split the pipeline.
+- `maxLagMs` in the hundreds → **we are starving the socket**. Memoise the
+  calendar views and move `transcript` out of `App` state; expect the ratio to
+  jump once the render work is off the message pump.
+
+### Fixes shipped (2026-09-06, third pass)
+
+- **Adaptive jitter buffer.** Depth starts at 450 ms, doubles on every underrun
+  up to 3 s, and relaxes by 25% after a clean turn. It persists across turns
+  (`learnedPrebufferSeconds`), so the second reply of a session starts with a
+  cushion sized for this kiosk's actual link. On a 0.26x stream it settles at
+  "wait for most of the reply, then play it perfectly", which is the right trade
+  for a five-second spoken answer — a reply that starts 2 s late and is smooth
+  beats one that starts instantly and stutters eight times.
+- **`generationComplete` is now the end-of-audio signal**, not `turnComplete`.
+  It releases the jitter buffer (`finalizeStream`) so the tail is never stranded,
+  and starts a bounded `PLAYOUT_GRACE_MS` (20 s) play-out window instead of
+  leaving the response watchdog to kill a finished turn.
+- **`voiceActivity` is handled**, so the server's own VAD signals stop appearing
+  as `unhandled-message` on a healthy session.
+- Coverage: the underrun test now asserts the depth actually doubles, and
+  `resetLearnedPrebuffer()` keeps the suite order-independent.
+
+If the probe says server-bound, the remaining option is to stop using a
+native-audio model for the *speaking* half: `gemini-3.5-transcribe-live` or the
+existing Live session for understanding plus a normal text model for the answer,
+spoken by Gemini TTS or the browser's `speechSynthesis`. A kiosk with eight fixed
+intents does not need audio-to-audio nuance, and a locally-synthesised reply
+cannot underrun at all.
+
 ## Follow-ups / not done
 
 - Confirm the exact native-audio Live model id and region availability against current
@@ -466,3 +752,7 @@ we own the whole lifecycle) or text + a separate TTS call.
 - No session-resumption / `goAway` recovery beyond "close and let the next tap reconnect".
 - Manual on-kiosk verification of the real audio round-trip (no automated audio test).
 - `@google/genai` adds a ~390 kB lazy chunk (loaded only on first use).
+- **Cold-start latency: token + snapshot caching shipped 2026-09-06**
+  (`docs/voice-token-caching-notes.md`). The remaining per-turn cost is the Live
+  WebSocket handshake — lingering the session for fast follow-ups is the next
+  step, written up there but deferred (needs on-kiosk audio testing).

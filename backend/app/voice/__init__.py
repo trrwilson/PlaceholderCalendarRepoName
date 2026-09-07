@@ -1,10 +1,21 @@
-"""Voice assistant support: minting constrained Gemini Live ephemeral tokens.
+"""Voice assistant support.
 
-The kiosk browser holds the Live session itself (see ``docs/voice-support-plan.md``);
-this package only mints a short-lived token whose model, system instruction, tools,
-voice, and transcription config are locked server-side.
+The kiosk browser runs the conversational turn itself (see
+``docs/voice-support-plan.md``); the backend hands it a short-lived, constrained
+session grant via ``POST /api/voice/token`` and answers the read-only calendar /
+timer tools on ``/api/*``. Which provider mints that grant is a bake-off
+(``docs/voice-provider-bakeoff-plan.md``); the shared prompt, tool contract and
+grant caching sit above the provider adapters in ``app/voice/providers/``.
 """
 
-from app.voice.tokens import VoiceUnavailable, mint_token
+from app.voice.base import VoiceProviderAdapter, VoiceUnavailable
+from app.voice.cache import get_voice_token, reset_voice_token_cache
+from app.voice.providers import get_adapter
 
-__all__ = ["VoiceUnavailable", "mint_token"]
+__all__ = [
+    "VoiceProviderAdapter",
+    "VoiceUnavailable",
+    "get_adapter",
+    "get_voice_token",
+    "reset_voice_token_cache",
+]

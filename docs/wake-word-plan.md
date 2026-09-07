@@ -8,11 +8,43 @@ The wake phrase is:
 
 Mission Control already has a functional tap/push-to-talk voice path using the browser microphone and Gemini Live. Wake-word activation should build on that existing voice architecture rather than replace or duplicate it unnecessarily.
 
-> **Status (2026-09-05): not started; gated on push-to-talk stabilization.** A
-> feasibility assessment and the pre-work context an implementer needs are captured in
-> [Feasibility assessment & pre-work context](#feasibility-assessment--pre-work-context)
-> at the end of this document. Read that section before acting on the plan above — it
-> resolves several questions the body leaves open and corrects a few stale references.
+> **Status (2026-09-06): application integration implemented; trained model not yet
+> produced.** The browser-resident architecture is on `master` — a `WakeDetector`
+> seam (`frontend/src/voice/wake/`), a shared reference-counted `MicSource`, an
+> `armed` voice state, the pre-roll ring-buffer handoff, backend config
+> (`MISSION_CONTROL_WAKE_WORD_*`) + `GET /api/voice/wake-config`, a Settings
+> control with diagnostics, and the plan's deterministic state-machine tests
+> (`frontend/src/voice/wake/wakeSession.test.ts`). The feature is **off by default**
+> and degrades to push-to-talk with no error when the model/runtime is absent.
+> **Outstanding:** train the "Mission Control" openWakeWord model, `npm i
+> onnxruntime-web`, drop the assets in, and validate on kiosk hardware (latency,
+> CPU, false-positive/negative tuning). Full engine rationale, the
+> microphone-ownership decision, the training procedure and the licensing/
+> provenance record are in
+> [`docs/wake-word-model-training.md`](wake-word-model-training.md).
+>
+> The [Feasibility assessment & pre-work context](#feasibility-assessment--pre-work-context)
+> at the end of this document informed the implementation and is kept for reference.
+>
+> **Arbitrary/implementation decisions made autonomously (for review):**
+> - Engine: **openWakeWord** over Porcupine (own the phrase, no AccessKey
+>   phone-home, local-by-default) — Porcupine documented as the fallback if
+>   accuracy disappoints, contingent on a recorded licensing decision.
+> - Microphone: **Option B** (browser owns the mic via one shared `MicSource`);
+>   no host audio service introduced.
+> - `onnxruntime-web` is **not** added to `package.json` yet — it is lazy-loaded
+>   via an external dynamic import, so the kiosk bundle is unchanged until an
+>   install opts in. The ONNX feature maths is written to openWakeWord's
+>   documented tensor shapes but is **unvalidated against the real models**.
+> - Wake activation reuses the existing `connecting` overlay as the immediate
+>   acknowledgement (appears with no network wait); no separate "● Listening"
+>   pre-connect state was added.
+> - Re-arm after every turn; detector suspended during
+>   `connecting/listening/thinking/speaking` (covers self-triggering + the
+>   assistant's own audio); abandoned activations fall through the existing
+>   response watchdog + client-side silence detection.
+> - Pre-roll: retain from the detection instant forward, 4 s cap, flushed to the
+>   session before the live mic. Phrase-trimming left as a hardware-tuning knob.
 
 The primary deployment host is likely Windows, but Linux remains possible. Do not assume a specific wake-word engine, microphone architecture, or OS integration before inspecting the repository and corroborating current options.
 

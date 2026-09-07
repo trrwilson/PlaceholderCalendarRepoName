@@ -206,6 +206,14 @@ Expected behavior:
 - Reappearance after sleep should wake promptly.
 - Touch interaction resets inactivity.
 - Active voice interaction resets inactivity.
+- **An active timer is a keep-awake vote.** While a timer is `running` or `fired`
+  (the kiosk exposes these as `hasActiveTimer` / `alarm` from `useTimers()`, and a
+  best-effort `navigator.wakeLock('screen')` is already held), the inactivity
+  policy must treat it as equal in weight to touch and active voice. When the
+  policy would otherwise sleep the display and a timer is active, it must instead
+  switch the view to the Timer tab and keep the panel powered rather than issue
+  the sleep command; on `fired` it must wake the display if asleep. See
+  `docs/timer-plan.md` → "Physical display stays awake".
 - Do not repeatedly issue identical display-power commands.
 
 Configuration should include reasonable controls for:

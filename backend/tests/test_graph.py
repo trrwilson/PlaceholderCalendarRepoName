@@ -9,6 +9,7 @@ from app.config import Settings
 from app.models import CalendarRange, CalendarSnapshot
 
 TOKEN_URL = "https://login.microsoftonline.com/test-tenant/oauth2/v2.0/token"
+PROFILE_URL = "https://graph.microsoft.com/v1.0/users/alex@example.com"
 CALENDAR_VIEW = "https://graph.microsoft.com/v1.0/users/alex@example.com/calendarView"
 EVENTS_URL = "https://graph.microsoft.com/v1.0/users/alex@example.com/events"
 MASTER_CATEGORIES = (
@@ -305,6 +306,41 @@ def test_snapshot_returns_valid_snapshot_across_users() -> None:
         "alex@example.com",
         "jordan@example.com",
     }
+
+
+@respx.mock
+def test_household_calendar_uses_the_holders_given_name_and_outlook_source() -> None:
+    respx.post(TOKEN_URL).mock(return_value=token_response())
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    profile = respx.get(PROFILE_URL).mock(
+        return_value=httpx.Response(200, json={"givenName": "Alex", "displayName": "Alex Rivera"})
+    )
+
+    provider = MicrosoftGraphCalendarProvider(make_settings())
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    (calendar,) = snapshot.calendars
+    assert calendar.name == "alex"
+    assert calendar.display_name == "Alex"
+    assert calendar.source == "outlook"
+    assert profile.called
+
+
+@respx.mock
+def test_household_calendar_falls_back_to_account_name_without_directory_access() -> None:
+    respx.post(TOKEN_URL).mock(return_value=token_response())
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    respx.get(PROFILE_URL).mock(return_value=httpx.Response(403, json={"error": "Denied"}))
+
+    provider = MicrosoftGraphCalendarProvider(make_settings())
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    (calendar,) = snapshot.calendars
+    assert calendar.display_name == "alex"
 
 
 @respx.mock

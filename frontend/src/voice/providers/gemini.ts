@@ -1,49 +1,23 @@
-// Thin wrapper around a single Gemini Live API turn: fetch a constrained
-// ephemeral token from our backend, open the session directly to Google, and
-// surface a small set of typed events. The API key never reaches the browser.
+// Gemini Live provider: open the Live session directly to Google with the
+// backend-minted ephemeral token in the grant, and translate `LiveServerMessage`s
+// to the neutral `VoiceEvent` union. The Gemini API key never reaches the
+// browser. The on-kiosk debugging record for this path is in
+// docs/voice-support-plan.md.
 
 import type { LiveServerMessage, Session } from '@google/genai'
 
-import { VoiceTimeline } from './instrument'
-import type { VoiceErrorKind } from './types'
+import { VoiceTimeline } from '../instrument'
+import {
+  type ConversationalVoiceProvider,
+  type VoiceEvent,
+  type VoiceGrant,
+  VoiceSessionError,
+} from './types'
 
-export type VoiceEvent =
-  | { type: 'open' }
-  | { type: 'user-transcript'; text: string; final: boolean }
-  | { type: 'assistant-transcript'; text: string }
-  | { type: 'audio'; data: string }
-  | { type: 'tool-call'; id: string; name: string; args: Record<string, unknown> }
-  | { type: 'turn-complete' }
-  | { type: 'interrupted' }
-  | { type: 'closing' }
-  | { type: 'error'; kind: VoiceErrorKind; error: Error }
-
-/** Raised when the backend reports voice is switched off or misconfigured (HTTP 409). */
-export class VoiceUnavailableError extends Error {}
-
-/** A connect-time failure, tagged with where it broke. */
-export class VoiceSessionError extends Error {
-  readonly kind: VoiceErrorKind
-  constructor(kind: VoiceErrorKind, message: string) {
-    super(message)
-    this.kind = kind
-  }
-}
-
-type TokenResponse = { token: string; model: string; expires_at: string }
-
-/** Local wall-clock time as `YYYY-MM-DDTHH:mm:ss` with no timezone offset. */
-function localIsoNow(): string {
-  const d = new Date()
-  const p = (n: number) => String(n).padStart(2, '0')
-  return (
-    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
-    `T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-  )
-}
-
-export class GeminiVoiceSession {
+export class GeminiVoiceProvider implements ConversationalVoiceProvider {
+  readonly inputSampleRate = 16_000
   private session: Session | null = null
+  private manualActivity: boolean
   private firstAudioChunk = true
   private firstAudioSent = true
   private firstInterim = true
@@ -51,51 +25,25 @@ export class GeminiVoiceSession {
   private firstOutputTranscript = true
   private audioChunks = 0
   private audioBytes = 0
-  private readonly apiBaseUrl: string
+  private readonly grant: VoiceGrant
   private readonly onEvent: (event: VoiceEvent) => void
-  private readonly surface: string | null
   readonly timeline: VoiceTimeline
 
   constructor(
-    apiBaseUrl: string,
+    grant: VoiceGrant,
     onEvent: (event: VoiceEvent) => void,
-    surface: string | null = null,
     timeline: VoiceTimeline = new VoiceTimeline(),
   ) {
-    this.apiBaseUrl = apiBaseUrl
+    this.grant = grant
     this.onEvent = onEvent
-    this.surface = surface
     this.timeline = timeline
+    this.manualActivity = grant.manual_activity ?? false
   }
 
   async connect(): Promise<void> {
-    let response: Response
-    this.timeline.mark('token-request')
-    try {
-      response = await fetch(`${this.apiBaseUrl}/api/voice/token`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          surface: this.surface,
-          // The backend may run in UTC; the assistant's "today" must be the
-          // kiosk's local day. Send local wall-clock time (no offset) plus the
-          // zone name as a label.
-          client_time: localIsoNow(),
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        }),
-      })
-    } catch {
-      throw new VoiceSessionError('network', 'Could not reach the voice service.')
-    }
-    if (response.status === 409) {
-      const detail = (await response.json().catch(() => ({}))).detail
-      throw new VoiceUnavailableError(detail ?? 'voice support is unavailable')
-    }
-    if (!response.ok) {
-      throw new VoiceSessionError('network', `Voice token request failed (${response.status}).`)
-    }
-    const { token, model }: TokenResponse = await response.json()
-    this.timeline.mark('token-received', { model })
+    const token = this.grant.token
+    const model = this.grant.model
+    const apiVersion = this.grant.api_version ?? 'v1beta'
 
     let GoogleGenAI: typeof import('@google/genai').GoogleGenAI
     try {
@@ -106,17 +54,21 @@ export class GeminiVoiceSession {
     }
     this.timeline.mark('sdk-loaded')
 
-    // Ephemeral tokens are only accepted on v1alpha (the SDK warns otherwise),
-    // and this must match the version the backend minted the token with.
-    const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1alpha' } })
+    // This MUST match the version the backend minted the token with — a mismatch
+    // surfaces as `code 1008 "... not found for API version ..."` — so it comes
+    // back on the token response rather than being hard-coded here.
+    const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion } })
     try {
       this.session = await ai.live.connect({
         model,
-        // Model, tools, voice, and transcription are locked into the token. The
-        // ephemeral-token constraint appears to drop `realtimeInputConfig`, so
-        // disable the service VAD here too — the kiosk drives the turn with
-        // explicit activityStart / activityEnd.
-        config: { realtimeInputConfig: { automaticActivityDetection: { disabled: true } } },
+        // Model, tools, voice, transcription and VAD are all locked into the
+        // token. The ephemeral-token constraint appeared to drop
+        // `realtimeInputConfig`, so the manual-activity case repeats it here;
+        // in hybrid mode we deliberately send nothing and let the token's
+        // service-VAD settings stand.
+        config: this.manualActivity
+          ? { realtimeInputConfig: { automaticActivityDetection: { disabled: true } } }
+          : {},
         callbacks: {
           onopen: () => {
             this.timeline.mark('live-open')
@@ -168,7 +120,34 @@ export class GeminiVoiceSession {
     if (message.toolCallCancellation) {
       this.timeline.mark('tool-call-cancelled', { ids: message.toolCallCancellation.ids })
     }
-    if (content?.generationComplete) this.timeline.mark('generation-complete')
+    // "The model is done generating." Distinct from `turnComplete`, which the
+    // server holds back until it believes playback has finished — and which, on
+    // a reply delivered at a quarter of real time, may never arrive before our
+    // watchdog gives up. This is the reliable end-of-audio signal.
+    if (content?.generationComplete) {
+      this.timeline.mark('generation-complete')
+      this.onEvent({ type: 'generation-complete' })
+    }
+    // The server is telling us it has nothing to answer and expects more audio —
+    // an empty turn, typically because the service VAD heard no speech in it.
+    // Left unhandled this is indistinguishable from a stalled model and burns
+    // the whole response watchdog before failing.
+    if (content?.waitingForInput) {
+      this.timeline.mark('waiting-for-input')
+      this.onEvent({ type: 'waiting-for-input' })
+    }
+    // Not something we act on yet, but it is a normal keep-alive on a healthy
+    // session — logging it as "unhandled" made a working session look broken.
+    if (message.voiceActivity) {
+      this.timeline.mark('voice-activity', {
+        type: String(message.voiceActivity.voiceActivityType ?? ''),
+      })
+    }
+    if (message.sessionResumptionUpdate) {
+      this.timeline.mark('session-resumption-update', {
+        resumable: message.sessionResumptionUpdate.resumable === true,
+      })
+    }
     if (content?.turnCompleteReason) {
       this.timeline.mark('turn-complete-reason', { reason: String(content.turnCompleteReason) })
     }
@@ -256,6 +235,9 @@ export class GeminiVoiceSession {
       message.toolCall ||
       message.toolCallCancellation ||
       message.goAway ||
+      message.sessionResumptionUpdate ||
+      message.voiceActivity ||
+      content?.waitingForInput ||
       content?.modelTurn ||
       content?.inputTranscription ||
       content?.interimInputTranscription ||
@@ -272,20 +254,34 @@ export class GeminiVoiceSession {
   }
 
   /**
-   * Manual activity detection: the token disables the service VAD, so we bracket
-   * the user's turn explicitly. `startActivity` before the first audio frame,
-   * `endActivity` when our client-side silence detection fires. This is the
-   * deterministic push-to-talk path — automatic VAD + a late `audioStreamEnd`
-   * was leaving turns that never produced a transcript or a response.
+   * Open the user's turn.
+   *
+   * In manual mode the token has the service VAD switched off and we bracket the
+   * turn ourselves with activityStart/activityEnd. That is deterministic, but it
+   * also stops the service transcribing incrementally — it buffers the whole
+   * utterance and only runs ASR once `activityEnd` lands, which is where the
+   * multi-second post-utterance stall came from.
+   *
+   * In hybrid mode (the default) the service VAD is on and already has a
+   * streaming recogniser running under the audio, so there is nothing to open —
+   * `startActivity` is a no-op and {@link endActivity} sends `audioStreamEnd`
+   * instead, which flushes cached audio and finalises the turn immediately
+   * rather than waiting out the server's silence timer.
    */
   startActivity(): void {
+    if (!this.manualActivity) return
     this.timeline.mark('activity-start')
     this.session?.sendRealtimeInput({ activityStart: {} })
   }
 
   endActivity(): void {
-    this.timeline.mark('activity-end')
-    this.session?.sendRealtimeInput({ activityEnd: {} })
+    if (this.manualActivity) {
+      this.timeline.mark('activity-end')
+      this.session?.sendRealtimeInput({ activityEnd: {} })
+      return
+    }
+    this.timeline.mark('audio-stream-end')
+    this.session?.sendRealtimeInput({ audioStreamEnd: true })
   }
 
   sendAudio(base64: string): void {
@@ -296,8 +292,14 @@ export class GeminiVoiceSession {
     this.session?.sendRealtimeInput({ audio: { data: base64, mimeType: 'audio/pcm;rate=16000' } })
   }
 
-  respondTool(id: string, name: string, response: Record<string, unknown>): void {
+  respondTool(id: string, name: string, result: Record<string, unknown>): void {
     this.timeline.mark('tool-response', { name })
+    // Gemini's FunctionResponse contract: `{ output }` for a result, `{ error }`
+    // for a failure (a dispatch result carrying `ok: false`).
+    const response =
+      result && result.ok === false
+        ? { error: String(result.error ?? 'tool failed') }
+        : { output: result }
     this.session?.sendToolResponse({ functionResponses: [{ id, name, response }] })
   }
 

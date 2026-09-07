@@ -1,18 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import './App.css'
 import { addDays, DAY_MS, isSameDay, resolveMonthView, sameMonth, startOfDay, startOfWeek, toIsoDate, type WeekStart } from './dates'
 import type { DashboardActions } from './voice/types'
+import type { WakeState } from './voice/wake/useWakeWord'
 import { useVoiceSession } from './voice/useVoiceSession'
+import { useVoiceConfig } from './voice/useVoiceConfig'
 import { VoiceOverlay } from './voice/VoiceOverlay'
 import { VoiceToast } from './voice/VoiceToast'
+import { TimerView } from './timers/TimerView'
+import { useTimers } from './timers/useTimers'
 
-type Calendar = { id: string; name: string; color: string; enabled: boolean }
+type CalendarSource = 'mock' | 'outlook' | 'google'
+// `name` is the raw account handle; `display_name` is the natural personal name the
+// provider resolved (given name > full name > handle). Older snapshots omit both new
+// fields, so treat them as optional and fall back.
+type Calendar = { id: string; name: string; display_name?: string; color: string; source?: CalendarSource; enabled: boolean }
 type EventCategory = { id: string; name: string; color: string } // color: a concrete #rrggbb from the provider (e.g. Outlook master-category swatch)
 type CalendarEvent = { id: string; calendar_id: string; title: string; starts_at: string; ends_at: string; location: string | null; all_day: boolean; categories?: EventCategory[] }
 type Snapshot = { calendars: Calendar[]; events: CalendarEvent[] }
 type ConnectionState = 'connecting' | 'live' | 'offline'
-type ViewMode = 'home' | 'week' | 'month'
+type ViewMode = 'home' | 'week' | 'month' | 'timer'
 type SemanticColorMode = 'category-first' | 'people-first'
 type CalendarAuthState = 'connected' | 'connecting' | 'disconnected' | 'not_applicable'
 type CalendarAuth = { provider: string; state: CalendarAuthState; account: string | null; accounts?: string[]; user_code: string | null; verification_uri: string | null; verification_uri_complete: string | null; verification_qr: string | null; expires_in: number | null; error: string | null }
@@ -24,6 +32,31 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const WAKE_HOURS = Array.from({ length: 14 }, (_, index) => index + 7)
 const MOCK_EXCEPTION: HouseholdException = { title: 'Garage door open', detail: 'Open for 43 minutes', action: 'Check garage' }
 const colorClass = (color: string) => `calendar-${color}`
+const personName = (calendar?: Calendar) => calendar?.display_name || calendar?.name || ''
+// A small provider mark shown after a person's name (e.g. "Travis ⧉"). Inline SVG so it
+// scales with the surrounding type and needs no asset. `mock` has no badge.
+function ProviderBadge({ source }: { source?: CalendarSource }) {
+  if (source === 'outlook') {
+    return (
+      <svg className="provider-badge" viewBox="0 0 24 24" role="img" aria-label="Outlook calendar" focusable="false">
+        <rect x="1" y="4" width="22" height="16" rx="2.5" fill="#0F6CBD" />
+        <path fill="#fff" d="M8 8.4c-2 0-3.4 1.5-3.4 3.7S6 15.8 8 15.8s3.4-1.5 3.4-3.7S10 8.4 8 8.4zm0 5.9c-1 0-1.7-.9-1.7-2.2S7 9.9 8 9.9s1.7.9 1.7 2.2-.7 2.2-1.7 2.2z" />
+        <path fill="#fff" opacity=".85" d="M12.4 9.3 19 6.7v10.6l-6.6-2.6z" />
+      </svg>
+    )
+  }
+  if (source === 'google') {
+    return (
+      <svg className="provider-badge" viewBox="0 0 24 24" role="img" aria-label="Google calendar" focusable="false">
+        <path fill="#4285F4" d="M22 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.6a4.8 4.8 0 0 1-2.1 3.1v2.6h3.4c2-1.8 3.1-4.5 3.1-7.6z" />
+        <path fill="#34A853" d="M12 22c2.7 0 5-.9 6.7-2.4l-3.4-2.6c-.9.6-2 1-3.3 1-2.6 0-4.8-1.7-5.5-4.1H2.9v2.6A10 10 0 0 0 12 22z" />
+        <path fill="#FBBC05" d="M6.5 13.9a6 6 0 0 1 0-3.8V7.5H2.9a10 10 0 0 0 0 9z" />
+        <path fill="#EA4335" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 2.9 7.5l3.6 2.6C7.2 7.7 9.4 6 12 6z" />
+      </svg>
+    )
+  }
+  return null
+}
 const COLOR_MODE_KEY = 'mission-control.semantic-color-mode'
 const readColorMode = (): SemanticColorMode => window.localStorage.getItem(COLOR_MODE_KEY) === 'people-first' ? 'people-first' : 'category-first'
 const WEEK_START_KEY = 'mission-control.week-start'
@@ -31,6 +64,32 @@ const readWeekStart = (): WeekStart => window.localStorage.getItem(WEEK_START_KE
 const CALENDAR_PALETTE = ['coral', 'ocean', 'gold', 'fern', 'violet'] as const
 // Stacked all-day/multi-day bars shown in Week and Month before the rest collapse to a "+N" count.
 const SPAN_MAX_LANES = 3
+// The most rows (full-size event chips, plus a "+N more" row when it's needed) a Month day cell
+// will ever show. Event typography and touch size never shrink to fit more — the overflow is
+// disclosed progressively instead (see AGENTS.md). A 4K kiosk cell clears three rows; a 1080p
+// cell only two, so the ceiling follows viewport height rather than scaling the chips down.
+function readMonthRowCap() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 2
+  return window.matchMedia('(min-height: 1600px)').matches ? 3 : 2
+}
+function useMonthRowCap() {
+  const [cap, setCap] = useState(readMonthRowCap)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia('(min-height: 1600px)')
+    const update = () => setCap(readMonthRowCap())
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+  return cap
+}
+const WAKE_STATUS_TEXT: Record<WakeState, string> = {
+  off: 'Off',
+  loading: 'Starting…',
+  armed: 'Armed — listening locally for the phrase',
+  suspended: 'Paused while you’re talking',
+  error: 'Unavailable — push-to-talk still works',
+}
 const CALENDAR_COLORS_KEY = 'mission-control.calendar-colors'
 const readCalendarColors = (): Record<string, string> => {
   try {
@@ -58,9 +117,11 @@ function App() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [addingCalendar, setAddingCalendar] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [timerNotice, setTimerNotice] = useState<string | null>(null)
   const filterRef = useRef<HTMLDivElement>(null)
   const settingsRef = useRef<HTMLDivElement>(null)
   const linkedAccountsRef = useRef(0)
+  const hadActiveTimerRef = useRef(false)
 
   const authNeedsSetup = auth != null && auth.state !== 'connected' && auth.state !== 'not_applicable'
 
@@ -152,6 +213,7 @@ function App() {
   }, [calendarColors])
 
   useEffect(() => {
+    if (mode === 'timer') return
     const range = rangeForView(mode, viewDate, now, weekStart)
     const params = new URLSearchParams({ starts_on: toIsoDate(range.start), ends_on: toIsoDate(range.end) })
     fetch(`${API_URL}/api/calendar?${params}`)
@@ -169,12 +231,32 @@ function App() {
       .catch(() => setConnection('offline'))
   }, [mode, viewDate, now, weekStart, reloadKey])
 
+  const timers = useTimers({
+    apiBaseUrl: API_URL,
+    onConnectionChange: setConnection,
+    onStarted: (_timer, replaced) => {
+      setMode('timer')
+      setSelectedEvent(null)
+      if (replaced) setTimerNotice(`Replaced your ${replaced.label ? `“${replaced.label}” ` : ''}timer`)
+    },
+    onFired: () => { setMode('timer'); setSelectedEvent(null); setFilterOpen(false); setSettingsOpen(false) },
+  })
+
+  // Once a timer exists it becomes the default view: the first time one appears
+  // (any modality, cold boot included) switch to the Timer tab. Manual
+  // navigation afterwards is left alone — the switch only fires on the edge.
   useEffect(() => {
-    const socket = new WebSocket(API_URL.replace(/^http/, 'ws') + '/api/ws')
-    socket.addEventListener('open', () => setConnection('live'))
-    socket.addEventListener('close', () => setConnection('offline'))
-    return () => socket.close()
-  }, [])
+    if (timers.hasActiveTimer && !hadActiveTimerRef.current) setMode('timer')
+    hadActiveTimerRef.current = timers.hasActiveTimer
+  }, [timers.hasActiveTimer])
+
+  useEffect(() => {
+    if (!timerNotice) return
+    const clear = window.setTimeout(() => setTimerNotice(null), 6_000)
+    return () => window.clearTimeout(clear)
+  }, [timerNotice])
+
+  const defaultView = (): ViewMode => (timers.hasActiveTimer ? 'timer' : 'home')
 
   const providerCalendars = snapshot?.calendars ?? []
   const calendars = providerCalendars.map((calendar) => {
@@ -191,6 +273,18 @@ function App() {
   const pinnedIds = new Set([...todayEvents, ...todaySpans].map((event) => event.id))
   const nextEvents = upcoming.filter((event) => !pinnedIds.has(event.id))
 
+  // The viewed period now lives in the global header (Week/Month dropped their own heading
+  // band); the dock offers a "Today" jump only while you've paged away from the current one.
+  const weekStartDate = startOfWeek(viewDate, weekStart)
+  const viewedPeriod = mode === 'week'
+    ? formatMonthRange(weekStartDate, addDays(weekStartDate, 6))
+    : mode === 'month'
+      ? resolveMonthView(viewDate, now, weekStart).title
+      : null
+  const viewingToday = mode === 'home' || mode === 'timer'
+    || (mode === 'week' && isSameDay(weekStartDate, startOfWeek(now, weekStart)))
+    || (mode === 'month' && sameMonth(viewDate, now))
+
   const voiceActions = useMemo<DashboardActions>(() => ({
     showView: (view, date) => {
       setMode(view as ViewMode)
@@ -202,7 +296,7 @@ function App() {
     focusDate: (date) => { setViewDate(date); setSelectedEvent(null) },
     highlightEvent: (query) => {
       const events = snapshot?.events ?? []
-      const named = new Map((snapshot?.calendars ?? []).map((calendar) => [calendar.id, calendar.name.toLowerCase()]))
+      const named = new Map((snapshot?.calendars ?? []).map((calendar) => [calendar.id, `${calendar.name} ${personName(calendar)}`.toLowerCase()]))
       const needle = query.trim().toLowerCase()
       const match = needle
         ? events.find((event) => event.title.toLowerCase().includes(needle))
@@ -219,6 +313,7 @@ function App() {
   }), [snapshot])
 
   const voice = useVoiceSession({ apiBaseUrl: API_URL, actions: voiceActions, surface: 'kiosk' })
+  const voiceConfig = useVoiceConfig(API_URL)
 
   function navigate(amount: number) {
     setViewDate((current) => amount === 0 ? (mode === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1) : new Date(now)) : mode === 'month' ? new Date(current.getFullYear(), current.getMonth() + amount, 1) : addDays(current, amount * (mode === 'week' ? 7 : 1)))
@@ -229,7 +324,9 @@ function App() {
 
   function goHome() {
     setViewDate(new Date())
-    setMode('home')
+    // While a timer is running or fired, every "return to default" path resolves
+    // to the timer, not Home (see docs/timer-plan.md).
+    setMode(defaultView())
     setSelectedEvent(null)
     setFilterOpen(false)
     setSettingsOpen(false)
@@ -249,25 +346,39 @@ function App() {
     setEnabledCalendars((current) => current.includes(calendarId) ? current.filter((id) => id !== calendarId) : [...current, calendarId])
   }
 
+  function startTimerFromTouch(durationSeconds: number, label: string | null) {
+    timers.start(durationSeconds, label).catch((error: unknown) => {
+      setTimerNotice(error instanceof Error ? error.message : 'Could not start the timer.')
+    })
+  }
+
+  function extendTimer(addSeconds: number) {
+    timers.extend(addSeconds).catch((error: unknown) => {
+      setTimerNotice(error instanceof Error ? error.message : 'Could not extend the timer.')
+    })
+  }
+
   return (
     <main className="kiosk-shell">
       <header className="global-header">
-        <button className="brand-lockup" onClick={goHome} aria-label="Go to Home"><span className="brand-icon">M</span><span><strong>Mission Control</strong><small>the household calendar</small></span></button>
-        <div className="header-date"><span>{formatDate(now)}</span><strong>{formatTime(now)}</strong></div>
-        <div className="header-actions">{authNeedsSetup ? <button className="calendar-alert" onClick={() => { goHome(); setAddingCalendar(false); setConnectOpen(true) }}><i />Calendar sign-in</button> : <span className={`connection ${connection}`}><i />{connection === 'live' ? 'Live sync' : connection === 'offline' ? 'Offline mode' : 'Connecting'}</span>}<button className={`ask-button voice-${voice.status}`} aria-label={voice.status === 'listening' ? 'Stop voice input' : 'Ask Mission Control'} aria-pressed={voice.status === 'listening'} disabled={voice.status === 'unavailable' && voice.error?.kind === 'disabled'} onClick={() => (voice.status === 'listening' ? voice.stopTurn() : voice.startTurn())}><span className="mic-symbol">◉</span><b>{voice.status === 'unavailable' ? 'Voice off' : voice.status === 'listening' ? 'Listening' : 'Ask'}</b></button>{voice.micActive && <span className="mic-live" role="status" aria-label="Microphone is on"><i />Mic on</span>}<button className="add-button" aria-label="Add an event"><span>+</span><b>Add</b></button></div>
+        <button className="brand-lockup" onClick={goHome} aria-label="Go to Home"><span className="brand-icon">M</span><strong>Mission Control</strong></button>
+        <div className="header-center"><span className="header-period">{viewedPeriod ?? formatDate(now)}</span><span className="header-now">{viewedPeriod && <small>{formatShortDate(now)}</small>}<strong>{formatTime(now)}</strong></span></div>
+        <div className="header-actions">{authNeedsSetup ? <button className="calendar-alert" onClick={() => { goHome(); setAddingCalendar(false); setConnectOpen(true) }}><i />Calendar sign-in</button> : <SyncStatus connection={connection} />}<button className={`ask-button voice-${voice.status}`} aria-label={voice.status === 'listening' ? 'Stop voice input' : 'Ask Mission Control'} aria-pressed={voice.status === 'listening'} disabled={voice.status === 'unavailable' && voice.error?.kind === 'disabled'} onClick={() => (voice.status === 'listening' ? voice.stopTurn() : voice.startTurn())}><span className="mic-symbol">◉</span><b>{voice.status === 'unavailable' ? 'Voice off' : voice.status === 'listening' ? 'Listening' : 'Ask'}</b></button>{voice.micActive && <span className="mic-live" role="status" aria-label="Microphone is on"><i />Mic on</span>}{voice.status === 'armed' && !voice.micActive && <span className="wake-armed" role="status" aria-label={`Listening for ${voice.wake.phrase}`}><i />“{voice.wake.phrase}”</span>}<button className="add-button" aria-label="Add an event"><span>+</span><b>Add</b></button></div>
       </header>
 
       <section className="view-frame">
         {mode === 'home' && <HomeView now={now} todayEvents={todayEvents} todaySpans={todaySpans} upcoming={nextEvents} calendarById={calendarById} onSelect={setSelectedEvent} colorMode={colorMode} calendarAlert={authNeedsSetup ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} />}
         {mode === 'week' && <WeekView viewDate={viewDate} now={now} events={visibleEvents} calendarById={calendarById} onSelect={setSelectedEvent} onNavigate={navigate} colorMode={colorMode} weekStart={weekStart} />}
         {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={visibleEvents} calendarById={calendarById} onSelect={setSelectedEvent} onNavigate={navigate} colorMode={colorMode} weekStart={weekStart} />}
+        {mode === 'timer' && <TimerView timer={timers.timer} remainingMs={timers.remainingMs} alarm={timers.alarm} onStart={startTimerFromTouch} onExtend={extendTimer} onCancel={() => { void timers.cancel() }} onDismiss={() => { void timers.dismiss() }} />}
       </section>
 
-      <footer className="bottom-dock"><nav><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></nav><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span>{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span>{calendar.name}</span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings">⚙<span>Settings</span></button>{settingsOpen && <div className="settings-popover" role="dialog" aria-label="Settings" onKeyDown={(event) => { if (event.key === 'Escape') setSettingsOpen(false) }}>{auth?.provider === 'outlook_personal' && auth.state === 'connected' && <><strong>Calendars</strong><button className="add-calendar-button" onClick={addCalendar}>Add another Outlook calendar</button></>}<strong>Event colors</strong><button className={colorMode === 'category-first' ? 'selected' : ''} onClick={() => setColorMode('category-first')}>Color events by category</button><button className={colorMode === 'people-first' ? 'selected' : ''} onClick={() => setColorMode('people-first')}>Color events by person/calendar</button><strong>Week starts on</strong><button className={weekStart === 'monday' ? 'selected' : ''} onClick={() => setWeekStart('monday')}>Monday</button><button className={weekStart === 'sunday' ? 'selected' : ''} onClick={() => setWeekStart('sunday')}>Sunday</button>{calendars.length > 0 && <><strong>Calendar colors</strong>{calendars.map((calendar) => <div className="calendar-color-row" key={calendar.id}><span className="calendar-color-name"><span className={`calendar-swatch ${colorClass(calendar.color)}`} />{calendar.name}</span><span className="calendar-color-options" role="group" aria-label={`${calendar.name} color`}>{CALENDAR_PALETTE.map((color) => <button type="button" key={color} className={`color-dot ${colorClass(color)} ${calendar.color === color ? 'selected' : ''}`} aria-label={`${calendar.name}: ${color}`} aria-pressed={calendar.color === color} onClick={() => chooseCalendarColor(calendar.id, color)} />)}</span></div>)}</>}</div>}</div></footer>
+      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''}`}>Timer{timers.hasActiveTimer && <span className={`timer-dot ${timers.alarm ? 'firing' : ''}`} aria-hidden />}</button></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span>{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings">⚙<span>Settings</span></button>{settingsOpen && <div className="settings-popover" role="dialog" aria-label="Settings" onKeyDown={(event) => { if (event.key === 'Escape') setSettingsOpen(false) }}>{auth?.provider === 'outlook_personal' && auth.state === 'connected' && <><strong>Calendars</strong><button className="add-calendar-button" onClick={addCalendar}>Add another Outlook calendar</button></>}<strong>Event colors</strong><button className={colorMode === 'category-first' ? 'selected' : ''} onClick={() => setColorMode('category-first')}>Color events by category</button><button className={colorMode === 'people-first' ? 'selected' : ''} onClick={() => setColorMode('people-first')}>Color events by person/calendar</button><strong>Week starts on</strong><button className={weekStart === 'monday' ? 'selected' : ''} onClick={() => setWeekStart('monday')}>Monday</button><button className={weekStart === 'sunday' ? 'selected' : ''} onClick={() => setWeekStart('sunday')}>Sunday</button>{voiceConfig.config.enabled && voiceConfig.config.providers.length > 0 && <><strong>Voice provider</strong>{voiceConfig.config.providers.map((provider) => <button key={provider.id} className={voiceConfig.config.provider === provider.id ? 'selected' : ''} aria-pressed={voiceConfig.config.provider === provider.id} disabled={voiceConfig.busy || !provider.implemented || (!provider.configured && voiceConfig.config.provider !== provider.id)} onClick={() => { void voiceConfig.setProvider(provider.id) }}>{provider.label}{!provider.implemented ? ' — soon' : !provider.configured ? ' — needs config' : ''}</button>)}<span className="settings-note">Bake-off switch — applies to the next turn.</span></>}{voice.wake.available && <><strong>Wake word</strong><button className={voice.wake.userEnabled ? 'selected' : ''} aria-pressed={voice.wake.userEnabled} onClick={() => voice.setWakeEnabled(!voice.wake.userEnabled)}>Say “{voice.wake.phrase}” to start talking</button><span className="settings-note">{WAKE_STATUS_TEXT[voice.wake.state]}{voice.wake.detail ? ` — ${voice.wake.detail}` : ''}{voice.wake.activationLatencyMs != null ? ` · last wake→listening ${voice.wake.activationLatencyMs} ms` : ''}</span></>}{calendars.length > 0 && <><strong>Calendar colors</strong>{calendars.map((calendar) => <div className="calendar-color-row" key={calendar.id}><span className="calendar-color-name"><span className={`calendar-swatch ${colorClass(calendar.color)}`} />{personName(calendar)}<ProviderBadge source={calendar.source} /></span><span className="calendar-color-options" role="group" aria-label={`${personName(calendar)} color`}>{CALENDAR_PALETTE.map((color) => <button type="button" key={color} className={`color-dot ${colorClass(color)} ${calendar.color === color ? 'selected' : ''}`} aria-label={`${personName(calendar)}: ${color}`} aria-pressed={calendar.color === color} onClick={() => chooseCalendarColor(calendar.id, color)} />)}</span></div>)}</>}</div>}</div></footer>
       {selectedEvent && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
       {connectOpen && auth && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}
       <VoiceOverlay status={voice.status} transcript={voice.transcript} error={voice.error} onStop={voice.stopTurn} onDismissError={voice.dismissError} />
       {voice.status === 'unavailable' && voice.error && <VoiceToast error={voice.error} onRetry={voice.startTurn} onDismiss={voice.dismissError} />}
+      {timerNotice && <div className="timer-notice" role="status">{timerNotice}<button aria-label="Dismiss" onClick={() => setTimerNotice(null)}>×</button></div>}
     </main>
   )
 }
@@ -277,19 +388,54 @@ function HomeView({ now, todayEvents, todaySpans, upcoming, calendarById, onSele
   return <div className="home-view"><div className="home-grid"><section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><h2>{todayEvents.length} things on the rhythm</h2></div><span className="date-pill">{formatShortDate(now)}</span></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section><aside className="home-rail"><section className="next-card"><div className="view-heading"><div><p className="section-kicker">Coming up</p><h2>Next</h2></div><span className="arrow-mark">→</span></div><div className="next-list">{upcoming.slice(0, 4).map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div></section><section className="tomorrow-card"><p className="section-kicker">Tomorrow</p><h2>{formatWeekday(addDays(now, 1))}</h2>{tomorrow.length ? tomorrow.map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />) : <p>No events planned yet.</p>}</section>{calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>{MOCK_EXCEPTION.title}</strong><span>{MOCK_EXCEPTION.detail}</span></div><button onClick={() => undefined}>{MOCK_EXCEPTION.action}</button></section>}</aside></div></div>
 }
 
+// Wraps a Week/Month grid with the navigation that used to sit in the heading: a quiet ‹ ›
+// zone down each margin (they occupy their own grid tracks, so they never cover a day cell),
+// plus a horizontal drag anywhere on the view — pull right for the previous period, flick
+// left for the next. The drag has to be mostly horizontal and clear a screen-relative
+// distance so it can't be mistaken for a tap or a vertical scroll of a packed day cell.
+const SWIPE_DOMINANCE = 1.4
+function ViewPager({ unit, onNavigate, children }: { unit: 'week' | 'month'; onNavigate: (amount: number) => void; children: ReactNode }) {
+  const gesture = useRef({ x: 0, y: 0, swiped: false })
+  return (
+    <div
+      className="view-pager"
+      onPointerDown={(event) => { if (event.isPrimary) gesture.current = { x: event.clientX, y: event.clientY, swiped: false } }}
+      onPointerUp={(event) => {
+        const { x, y } = gesture.current
+        const dx = event.clientX - x
+        const dy = event.clientY - y
+        const narrow = typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 760px)').matches
+        if (narrow || Math.abs(dx) < Math.max(80, window.innerWidth * 0.05) || Math.abs(dx) < Math.abs(dy) * SWIPE_DOMINANCE) return
+        gesture.current.swiped = true
+        window.setTimeout(() => { gesture.current.swiped = false }, 0)
+        onNavigate(dx > 0 ? -1 : 1)
+      }}
+      onPointerCancel={() => { gesture.current.swiped = false }}
+      onClickCapture={(event) => { if (gesture.current.swiped) { event.stopPropagation(); event.preventDefault() } }}
+    >
+      <button className="page-edge page-edge-prev" aria-label={`Previous ${unit}`} onClick={() => onNavigate(-1)}><span aria-hidden>‹</span></button>
+      {children}
+      <button className="page-edge page-edge-next" aria-label={`Next ${unit}`} onClick={() => onNavigate(1)}><span aria-hidden>›</span></button>
+    </div>
+  )
+}
+
 function WeekView({ viewDate, now, events, calendarById, onSelect, onNavigate, colorMode, weekStart }: { viewDate: Date; now: Date; events: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; onNavigate: (amount: number) => void; colorMode: SemanticColorMode; weekStart: WeekStart }) {
   const start = startOfWeek(viewDate, weekStart)
   const weekDays = Array.from({ length: 7 }, (_, index) => addDays(start, index))
   const { bars, overflow } = layoutSpans(events, weekDays, SPAN_MAX_LANES)
   const laneCount = bars.reduce((max, bar) => Math.max(max, bar.lane + 1), 0)
-  return <div className="week-view"><div className="view-heading week-heading"><div><p className="section-kicker">Week at a glance</p><h1>{formatMonthRange(start, addDays(start, 6))}</h1></div><div className="view-nav"><button onClick={() => onNavigate(-1)} aria-label="Previous week">‹</button><button onClick={() => onNavigate(1)} aria-label="Next week">›</button></div></div><div className="week-grid"><div className="time-gutter week-corner" />{weekDays.map((day) => <div className={`week-day-head ${isSameDay(day, now) ? 'today' : ''}`} key={toIsoDate(day)}><span>{WEEKDAYS[day.getDay()]}</span><strong>{day.getDate()}</strong></div>)}<div className="time-gutter allday-label"><span>{laneCount ? 'all-day' : ''}</span></div><div className="allday-lane">{bars.map((bar) => <SpanBar bar={bar} calendar={calendarById.get(bar.event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={bar.event.id} />)}{weekDays.map((day, index) => { const extra = overflow.get(toIsoDate(day)) ?? 0; return extra ? <span className="span-overflow" style={{ gridColumn: index + 1, gridRow: SPAN_MAX_LANES + 1 }} key={toIsoDate(day)}>+{extra}</span> : null })}</div><div className="time-gutter hours">{WAKE_HOURS.map((hour) => <span key={hour}>{formatHour(hour)}</span>)}</div>{weekDays.map((day) => { const dayEvents = events.filter((event) => !isSpanningEvent(event) && isSameDay(new Date(event.starts_at), day)); return <div className={`week-column ${isSameDay(day, now) ? 'today-column' : ''}`} key={toIsoDate(day)}>{WAKE_HOURS.map((hour) => <div className="hour-line" key={hour} />)}{dayEvents.map((event) => <WeekEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div> })}</div></div>
+  return <div className="week-view"><ViewPager unit="week" onNavigate={onNavigate}><div className="week-grid"><div className="time-gutter week-corner" />{weekDays.map((day) => <div className={`week-day-head ${isSameDay(day, now) ? 'today' : ''}`} key={toIsoDate(day)}><span>{WEEKDAYS[day.getDay()]}</span><strong>{day.getDate()}</strong></div>)}<div className="time-gutter allday-label"><span>{laneCount ? 'all-day' : ''}</span></div><div className="allday-lane">{bars.map((bar) => <SpanBar bar={bar} calendar={calendarById.get(bar.event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={bar.event.id} />)}{weekDays.map((day, index) => { const extra = overflow.get(toIsoDate(day)) ?? 0; return extra ? <span className="span-overflow" style={{ gridColumn: index + 1, gridRow: SPAN_MAX_LANES + 1 }} key={toIsoDate(day)}>+{extra}</span> : null })}</div><div className="time-gutter hours">{WAKE_HOURS.map((hour) => <span key={hour}>{formatHour(hour)}</span>)}</div>{weekDays.map((day) => { const dayEvents = events.filter((event) => !isSpanningEvent(event) && isSameDay(new Date(event.starts_at), day)); return <div className={`week-column ${isSameDay(day, now) ? 'today-column' : ''}`} key={toIsoDate(day)}>{WAKE_HOURS.map((hour) => <div className="hour-line" key={hour} />)}{dayEvents.map((event) => <WeekEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div> })}</div></ViewPager></div>
 }
 
 function MonthView({ viewDate, now, events, calendarById, onSelect, onNavigate, colorMode, weekStart }: { viewDate: Date; now: Date; events: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; onNavigate: (amount: number) => void; colorMode: SemanticColorMode; weekStart: WeekStart }) {
-  const { days, title, refMonth } = resolveMonthView(viewDate, now, weekStart)
+  const { days, refMonth } = resolveMonthView(viewDate, now, weekStart)
   const weeks = Array.from({ length: days.length / 7 }, (_, index) => days.slice(index * 7, index * 7 + 7))
   const eventsByDay = groupEvents(events.filter((event) => !isSpanningEvent(event)))
-  return <div className="month-view"><div className="view-heading"><div><p className="section-kicker">Planning view</p><h1>{title}</h1></div><div className="view-nav"><button className="today-button" onClick={() => onNavigate(0)}>Today</button><button onClick={() => onNavigate(-1)} aria-label="Previous month">‹</button><button onClick={() => onNavigate(1)} aria-label="Next month">›</button></div></div><div className="month-grid">{weeks.map((week, weekIndex) => { const { bars, overflow } = layoutSpans(events, week, SPAN_MAX_LANES); const laneCount = bars.reduce((max, bar) => Math.max(max, bar.lane + 1), 0); return <div className="month-week" style={{ '--span-lanes': String(laneCount) } as CSSProperties} key={toIsoDate(week[0])}>{week.map((day) => { const dayEvents = eventsByDay.get(toIsoDate(day)) ?? []; const today = isSameDay(day, now); const extra = overflow.get(toIsoDate(day)) ?? 0; return <div className={`day-cell ${sameMonth(day, refMonth) ? '' : 'muted-day'} ${today ? 'today' : ''}`} key={toIsoDate(day)}><div className="day-heading">{weekIndex === 0 && <span className="weekday-tag">{WEEKDAYS[day.getDay()]}</span>}<span className="day-number">{day.getDate()}</span>{today && <span className="today-label">Today</span>}</div><div className="day-events">{dayEvents.map((event) => <EventChip event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}{extra > 0 && <span className="more-events">+{extra} spanning</span>}</div></div> })}{bars.length > 0 && <div className="month-week-spans">{bars.map((bar) => <SpanBar bar={bar} calendar={calendarById.get(bar.event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={bar.event.id} />)}</div>}</div> })}</div></div>
+  // Which day's full list is expanded in the contextual sheet (opened from a "+N more" chip).
+  const [openDay, setOpenDay] = useState<Date | null>(null)
+  const rowCap = useMonthRowCap()
+  return <div className="month-view"><ViewPager unit="month" onNavigate={onNavigate}><div className="month-grid">{weeks.map((week, weekIndex) => { const { bars, overflow } = layoutSpans(events, week, SPAN_MAX_LANES); const laneCount = bars.reduce((max, bar) => Math.max(max, bar.lane + 1), 0); return <div className="month-week" style={{ '--span-lanes': String(laneCount) } as CSSProperties} key={toIsoDate(week[0])}>{week.map((day) => { const dayEvents = eventsByDay.get(toIsoDate(day)) ?? []; const chipBudget = dayEvents.length > rowCap ? rowCap - 1 : rowCap; const shownEvents = dayEvents.slice(0, chipBudget); const hiddenCount = dayEvents.length - shownEvents.length; const today = isSameDay(day, now); const extra = overflow.get(toIsoDate(day)) ?? 0; return <div className={`day-cell ${sameMonth(day, refMonth) ? '' : 'muted-day'} ${today ? 'today' : ''}`} key={toIsoDate(day)}><div className="day-heading">{weekIndex === 0 && <span className="weekday-tag">{WEEKDAYS[day.getDay()]}</span>}<span className="day-number">{day.getDate()}</span>{today && <span className="today-label">Today</span>}</div><div className="day-events">{shownEvents.map((event) => <EventChip event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}{hiddenCount > 0 && <button className="day-more" onClick={() => setOpenDay(day)} aria-label={`Show ${hiddenCount} more ${hiddenCount === 1 ? 'event' : 'events'} on ${formatSpanDate(day)}`}>+{hiddenCount} more</button>}{extra > 0 && <span className="more-events">+{extra} spanning</span>}</div></div> })}{bars.length > 0 && <div className="month-week-spans">{bars.map((bar) => <SpanBar bar={bar} calendar={calendarById.get(bar.event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={bar.event.id} />)}</div>}</div> })}</div></ViewPager>{openDay && <DayEventsSheet day={openDay} events={events} calendarById={calendarById} colorMode={colorMode} onSelect={(event) => { setOpenDay(null); onSelect(event) }} onClose={() => setOpenDay(null)} />}</div>
 }
 
 const categoryVar = (color?: string): CSSProperties | undefined => color ? ({ '--category-color': color } as CSSProperties) : undefined
@@ -308,7 +454,7 @@ function semanticEventClass(_event: CalendarEvent, calendar: Calendar | undefine
 // card. Shown whenever the event has a calendar; the category half always resolves (real or generic).
 function eventAccent(event: CalendarEvent, calendar: Calendar | undefined, colorMode: SemanticColorMode): { color: string; label: string } | undefined {
   if (!calendar) return undefined
-  if (colorMode === 'category-first') return { color: PALETTE_TOKEN[calendar.color] ?? PALETTE_TOKEN.coral, label: calendar.name }
+  if (colorMode === 'category-first') return { color: PALETTE_TOKEN[calendar.color] ?? PALETTE_TOKEN.coral, label: personName(calendar) }
   const category = primaryCategory(event)
   return { color: category.color, label: category.name }
 }
@@ -323,7 +469,7 @@ function semanticEventStyle(event: CalendarEvent, calendar: Calendar | undefined
 function SecondaryTriangle({ accent }: { accent?: { color: string; label: string } }) { if (!accent) return null; return <span className="secondary-triangle" role="img" aria-label={accent.label} /> }
 function SpanBanner({ event, calendar, now, onSelect, colorMode }: EventProps & { now: Date; colorMode: SemanticColorMode }) {
   const label = isMultiDay(event) ? `Day ${dayIndexOf(event, now)} of ${spanLength(event)}` : 'All day'
-  return <button className={`today-banner ${semanticEventClass(event, calendar, colorMode)}`} style={semanticEventStyle(event, calendar, colorMode)} onClick={() => onSelect(event)}><span className="today-banner-label">{label}</span><span className="today-banner-main"><strong>{event.title}</strong>{event.location && <small>{event.location}</small>}</span><span className="event-owner">{calendar?.name}</span></button>
+  return <button className={`today-banner ${semanticEventClass(event, calendar, colorMode)}`} style={semanticEventStyle(event, calendar, colorMode)} onClick={() => onSelect(event)}><span className="today-banner-label">{label}</span><span className="today-banner-main"><strong>{event.title}</strong>{event.location && <small>{event.location}</small>}</span><span className="event-owner">{personName(calendar)}<ProviderBadge source={calendar?.source} /></span></button>
 }
 function SpanBar({ bar, calendar, onSelect, colorMode }: { bar: SpanBarLayout; calendar?: Calendar; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode }) {
   const { event, startCol, endCol, lane, continuesBefore, continuesAfter } = bar
@@ -340,12 +486,38 @@ function SpanBar({ bar, calendar, onSelect, colorMode }: { bar: SpanBarLayout; c
     {continuesAfter && <span className="span-cap span-cap-end" aria-hidden>›</span>}
   </button>
 }
-function LargeEvent({ event, calendar, onSelect, colorMode, past = false }: EventProps & { colorMode: SemanticColorMode; past?: boolean }) { return <button className={`large-event ${semanticEventClass(event, calendar, colorMode)} ${past ? 'past' : ''}`} style={semanticEventStyle(event, calendar, colorMode)} onClick={() => onSelect(event)}><SecondaryTriangle accent={eventAccent(event, calendar, colorMode)} /><span className="large-event-time">{event.all_day ? 'ALL DAY' : formatEventTime(event.starts_at)}</span><span className="large-event-main"><strong>{event.title}</strong>{event.location && <small>{event.location}</small>}</span><span className="event-owner">{calendar?.name}</span><span className="event-arrow">›</span></button> }
+function LargeEvent({ event, calendar, onSelect, colorMode, past = false }: EventProps & { colorMode: SemanticColorMode; past?: boolean }) { return <button className={`large-event ${semanticEventClass(event, calendar, colorMode)} ${past ? 'past' : ''}`} style={semanticEventStyle(event, calendar, colorMode)} onClick={() => onSelect(event)}><SecondaryTriangle accent={eventAccent(event, calendar, colorMode)} /><span className="large-event-time">{event.all_day ? 'ALL DAY' : formatEventTime(event.starts_at)}</span><span className="large-event-main"><strong>{event.title}</strong>{event.location && <small>{event.location}</small>}</span><span className="event-owner">{personName(calendar)}<ProviderBadge source={calendar?.source} /></span><span className="event-arrow">›</span></button> }
 function CompactEvent({ event, calendar, onSelect, colorMode }: EventProps & { colorMode: SemanticColorMode }) { return <button className={`compact-event ${semanticEventClass(event, calendar, colorMode)}`} style={semanticEventStyle(event, calendar, colorMode)} onClick={() => onSelect(event)}><SecondaryTriangle accent={eventAccent(event, calendar, colorMode)} /><span><strong>{event.title}</strong><small>{event.all_day ? 'All day' : formatEventTime(event.starts_at)}</small></span></button> }
 function WeekEvent({ event, calendar, onSelect, colorMode }: EventProps & { colorMode: SemanticColorMode }) { const start = new Date(event.starts_at); const end = new Date(event.ends_at); const top = ((start.getHours() + start.getMinutes() / 60) - 7) / 14 * 100; const height = Math.max(((end.getTime() - start.getTime()) / 3_600_000) / 14 * 100, 8); return <button className={`week-event ${semanticEventClass(event, calendar, colorMode)}`} style={{ top: `${Math.max(top, 1)}%`, height: `${Math.min(height, 97 - Math.max(top, 1))}%`, ...semanticEventStyle(event, calendar, colorMode) }} onClick={() => onSelect(event)}><SecondaryTriangle accent={eventAccent(event, calendar, colorMode)} /><strong>{event.title}</strong><span>{event.all_day ? 'All day' : formatEventTime(event.starts_at)}</span></button> }
 function EventChip({ event, calendar, onSelect, colorMode }: EventProps & { colorMode: SemanticColorMode }) { return <button className={`event-chip ${semanticEventClass(event, calendar, colorMode)} ${event.all_day ? 'all-day' : ''}`} style={semanticEventStyle(event, calendar, colorMode)} onClick={() => onSelect(event)}><SecondaryTriangle accent={eventAccent(event, calendar, colorMode)} /><span className="event-time">{event.all_day ? 'ALL DAY' : formatEventTime(event.starts_at)}</span><strong>{event.title}</strong></button> }
-function EventDetail({ event, calendar, onClose }: { event: CalendarEvent; calendar?: Calendar; onClose: () => void }) { const categories = event.categories ?? []; return <div className="detail-scrim" role="presentation" onClick={onClose}><section className="detail-sheet" role="dialog" aria-label="Event details" onClick={(eventClick) => eventClick.stopPropagation()}><button className="close-detail" onClick={onClose} aria-label="Close event details">×</button><span className={`detail-bar ${colorClass(calendar?.color ?? 'coral')}`} /><p className="section-kicker"><span className={`identity-dot ${colorClass(calendar?.color ?? 'coral')}`} />{calendar?.name ?? 'Household event'}</p><h2>{event.title}</h2><p className="detail-time">{formatEventWhen(event)}</p>{event.location && <p className="detail-location">{event.location}</p>}{categories.length > 0 && <div className="detail-categories"><span>Categories</span>{categories.map((category) => <span className="category-label" style={categoryVar(category.color)} key={category.id}><i />{category.name}</span>)}</div>}<div className="detail-actions"><button onClick={onClose}>Done</button><button className="quiet-action" onClick={onClose}>More actions later</button></div></section></div> }
+function EventDetail({ event, calendar, onClose }: { event: CalendarEvent; calendar?: Calendar; onClose: () => void }) { const categories = event.categories ?? []; return <div className="detail-scrim" role="presentation" onClick={onClose}><section className="detail-sheet" role="dialog" aria-label="Event details" onClick={(eventClick) => eventClick.stopPropagation()}><button className="close-detail" onClick={onClose} aria-label="Close event details">×</button><span className={`detail-bar ${colorClass(calendar?.color ?? 'coral')}`} /><p className="section-kicker"><span className={`identity-dot ${colorClass(calendar?.color ?? 'coral')}`} />{personName(calendar) || 'Household event'}<ProviderBadge source={calendar?.source} /></p><h2>{event.title}</h2><p className="detail-time">{formatEventWhen(event)}</p>{event.location && <p className="detail-location">{event.location}</p>}{categories.length > 0 && <div className="detail-categories"><span>Categories</span>{categories.map((category) => <span className="category-label" style={categoryVar(category.color)} key={category.id}><i />{category.name}</span>)}</div>}<div className="detail-actions"><button onClick={onClose}>Done</button><button className="quiet-action" onClick={onClose}>More actions later</button></div></section></div> }
 function EmptyState({ text }: { text: string }) { return <div className="empty-state"><span>✓</span><strong>{text}</strong><small>No urgent plans ahead.</small></div> }
+// Normal sync is silent — this renders nothing while the connection is healthy. Only an actual
+// exception (offline) earns header space: a compact warning flag whose detail sits behind a tap
+// (outside interaction and Escape dismiss it), never spelled out in the header itself.
+function SyncStatus({ connection }: { connection: ConnectionState }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const dismissOutside = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false) }
+    const dismissEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', dismissOutside)
+    document.addEventListener('keydown', dismissEscape)
+    return () => { document.removeEventListener('pointerdown', dismissOutside); document.removeEventListener('keydown', dismissEscape) }
+  }, [open])
+  if (connection !== 'offline') return null
+  return (
+    <div className="sync-status" ref={ref}>
+      <button className="sync-status-flag" aria-label="Sync status" aria-expanded={open} onClick={() => setOpen((value) => !value)}><span aria-hidden>!</span></button>
+      {open && <div className="sync-status-detail" role="status">Offline — showing the last schedule that loaded. The display keeps trying to reconnect on its own.</div>}
+    </div>
+  )
+}
+function DayEventsSheet({ day, events, calendarById, colorMode, onSelect, onClose }: { day: Date; events: CalendarEvent[]; calendarById: Map<string, Calendar>; colorMode: SemanticColorMode; onSelect: (event: CalendarEvent) => void; onClose: () => void }) {
+  const items = events.filter((event) => (isSpanningEvent(event) ? coversDay(event, day) : isSameDay(new Date(event.starts_at), day))).sort(sortEvents)
+  return <div className="detail-scrim" role="presentation" onClick={onClose}><section className="detail-sheet day-sheet" role="dialog" aria-label={`Events on ${formatSpanDate(day)}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}><button className="close-detail" onClick={onClose} aria-label="Close">×</button><p className="section-kicker">{formatWeekday(day)}</p><h2>{items.length} {items.length === 1 ? 'event' : 'events'}</h2><div className="day-sheet-list">{items.map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div></section></div>
+}
 function stripScheme(uri: string | null) { return (uri ?? 'microsoft.com/devicelogin').replace(/^https?:\/\//, '') }
 function CalendarConnect({ auth, addingCalendar, onStart, onCancel, onClose }: { auth: CalendarAuth; addingCalendar: boolean; onStart: () => void; onCancel: () => void; onClose: () => void }) {
   const connecting = auth.state === 'connecting'

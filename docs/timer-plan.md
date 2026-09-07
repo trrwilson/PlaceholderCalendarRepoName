@@ -1,9 +1,13 @@
 # Mission Control: Timers — design plan
 
-Status: **planned, not implemented.** This is the design record for a standalone
-implementation task. It captures the target behaviour, the decisions already made,
-the integration seams a future implementer must honour, and the open questions that
-still need an answer before or during build.
+Status: **implemented (2026-09-06).** All six phases below are built and covered by
+tests (`backend/tests/test_timers.py`, `frontend/src/timers/*.test.*`,
+`frontend/src/voice/tools.test.ts`, `frontend/e2e/timer.spec.ts`). Push-to-talk
+timer voice support is included. Wake-word integration is deliberately **not**
+done (owned by `docs/wake-word-plan.md`). Build notes and the arbitrary decisions
+taken headlessly are in `docs/timer-implementation-notes.md`. This section is kept
+as the design record; the rest of the document still describes the intended
+behaviour.
 
 Scope owner note: the requester asked for a plan that (a) gives timers a dedicated
 tab that becomes the default view while a timer is active, (b) supports

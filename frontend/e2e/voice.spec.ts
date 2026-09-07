@@ -6,6 +6,34 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/calendar**', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify(emptyCalendar) }),
   )
+  // Voice provider config — the kiosk fetches this for the Settings picker.
+  await page.route('**/api/voice/config', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        enabled: true,
+        provider: 'gemini',
+        providers: [
+          { id: 'gemini', label: 'Gemini Live', implemented: true, configured: true },
+          { id: 'azure_voice_live', label: 'Azure Voice Live', implemented: false, configured: false },
+        ],
+      }),
+    }),
+  )
+  // Wake word off by default — the kiosk asks for this on load.
+  await page.route('**/api/voice/wake-config', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        enabled: false,
+        phrase: 'Mission Control',
+        threshold: 0.5,
+        cooldown_ms: 2000,
+        model_path: '/models/wake/mission_control.onnx',
+        models_base_url: '/models/wake',
+      }),
+    }),
+  )
 })
 
 test('the Ask button is available and starts a voice turn on tap', async ({ page }) => {
@@ -41,4 +69,53 @@ test('the Ask button reports when voice support is switched off', async ({ page 
   const toast = page.getByRole('alert')
   await expect(toast).toContainText('Voice is turned off')
   await expect(toast.getByRole('button', { name: 'Try again' })).toHaveCount(0)
+})
+
+test('Settings shows the voice provider picker with the active provider selected', async ({ page }) => {
+  await page.route('**/api/voice/token', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ provider: 'gemini', token: 'auth_tokens/x', model: 'test-model', expires_at: '2099-01-01T00:00:00' }),
+    }),
+  )
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Settings' })
+  await expect(dialog.getByText('Voice provider')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Gemini Live' })).toHaveAttribute('aria-pressed', 'true')
+  // An unimplemented contestant is listed but disabled.
+  await expect(dialog.getByRole('button', { name: /Azure Voice Live/ })).toBeDisabled()
+})
+
+test('wake word shows a Settings control and degrades safely without a model', async ({ page }) => {
+  await page.route('**/api/voice/wake-config', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        enabled: true,
+        phrase: 'Mission Control',
+        threshold: 0.5,
+        cooldown_ms: 2000,
+        model_path: '/models/wake/mission_control.onnx',
+        models_base_url: '/models/wake',
+      }),
+    }),
+  )
+  await page.route('**/api/voice/token', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ token: 'auth_tokens/x', model: 'test-model', expires_at: '2099-01-01T00:00:00' }),
+    }),
+  )
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Settings' })
+  await expect(dialog.getByText('Wake word')).toBeVisible()
+  // No onnxruntime-web / model asset in the test build: the detector reports
+  // unavailable and the note says push-to-talk still works.
+  await expect(dialog.getByText(/push-to-talk still works/)).toBeVisible()
+  // And push-to-talk genuinely still works.
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: 'Ask Mission Control' }).click()
+  await expect(page.locator('.voice-overlay')).toBeVisible()
 })

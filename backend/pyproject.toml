@@ -12,6 +12,9 @@ dependencies = [
   "msal>=1.31,<2.0",
   "segno>=1.6,<2.0",
   "google-genai>=2.21,<3.0",
+  # Upstream client for the Azure voice relay (app/voice/relay.py). Already
+  # present transitively via uvicorn[standard]; pinned here because we import it.
+  "websockets>=13,<17",
 ]
 
 [project.optional-dependencies]

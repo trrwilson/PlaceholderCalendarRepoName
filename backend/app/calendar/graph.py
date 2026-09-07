@@ -19,6 +19,7 @@ from app.models import (
     CalendarEvent,
     CalendarRange,
     CalendarSnapshot,
+    CalendarSource,
     EventCategory,
     HouseholdCalendar,
 )
@@ -157,6 +158,58 @@ class CategoryColorCache:
         return colors
 
 
+# The account holder's profile is read from ``/me`` (personal) or
+# ``/users/{id}`` (tenant) purely to give each household calendar a natural
+# name. ``givenName`` is preferred so the kiosk / voice say "Travis" rather than
+# "Travis Wilson" or "trrwilson"; ``displayName`` is the next best thing.
+_PROFILE_SELECT = "givenName,displayName"
+# Names change about never; refetch at most hourly (and cache misses too, so a
+# token without directory access does not retry every snapshot).
+_PROFILE_TTL_SECONDS = 3600.0
+
+
+def _natural_name(payload: dict[str, Any]) -> str | None:
+    for key in ("givenName", "displayName"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+class ProfileNameCache:
+    """Per-account cache of the holder's natural name from Microsoft Graph.
+
+    A forbidden or failed request (the delegated token may not carry
+    ``User.Read``; an app-only token may lack ``User.Read.All``) just yields
+    ``None`` and the caller falls back to the raw account name — a friendly
+    name is a nicety, never worth failing a snapshot over.
+    """
+
+    def __init__(self, client: httpx.Client, ttl: float = _PROFILE_TTL_SECONDS) -> None:
+        self._client = client
+        self._ttl = ttl
+        self._entries: dict[str, tuple[float, str | None]] = {}
+
+    def get(self, profile_url: str, headers: dict[str, str], scope: str) -> str | None:
+        now = _time.monotonic()
+        cached = self._entries.get(scope)
+        if cached is not None and now < cached[0]:
+            return cached[1]
+        name = cached[1] if cached is not None else None
+        try:
+            response = self._client.get(
+                profile_url, params={"$select": _PROFILE_SELECT}, headers=headers
+            )
+            response.raise_for_status()
+            name = _natural_name(response.json())
+        except Exception:
+            # Any failure at all (HTTP error, missing scope, malformed body) just
+            # means we keep the raw account name. Never break a snapshot for this.
+            pass
+        self._entries[scope] = (now + self._ttl, name)
+        return name
+
+
 def _map_event(
     raw: dict[str, Any],
     calendar_id: str,
@@ -209,17 +262,21 @@ class MicrosoftGraphCalendarProvider:
 
         self._settings = settings
         self._client = client or httpx.Client(timeout=30.0)
-        self._calendars = [
-            HouseholdCalendar(
-                id=user,
-                name=user.split("@", 1)[0],
-                color=settings.calendar_color_for(index),
-            )
-            for index, user in enumerate(settings.graph_calendar_users)
-        ]
         self._token: str | None = None
         self._token_expires_at: float = 0.0
         self._category_colors = CategoryColorCache(self._client)
+        self._profile_names = ProfileNameCache(self._client)
+
+    def _household_calendar(self, user: str, index: int) -> HouseholdCalendar:
+        account_name = user.split("@", 1)[0]
+        natural = self._profile_names.get(f"{_GRAPH_BASE}/users/{user}", self._headers(), user)
+        return HouseholdCalendar(
+            id=user,
+            name=account_name,
+            display_name=natural or account_name,
+            color=self._settings.calendar_color_for(index),
+            source=CalendarSource.outlook,
+        )
 
     # -- auth ---------------------------------------------------------------
 
@@ -279,13 +336,15 @@ class MicrosoftGraphCalendarProvider:
         )
 
         events: list[CalendarEvent] = []
-        for user in self._settings.graph_calendar_users:
+        calendars: list[HouseholdCalendar] = []
+        for index, user in enumerate(self._settings.graph_calendar_users):
             raw_events = self._calendar_view(user, start, end)
             colors = self._category_colors_for(user, raw_events)
             events.extend(_map_event(raw, user, colors) for raw in raw_events)
+            calendars.append(self._household_calendar(user, index))
 
         events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
-        return CalendarSnapshot(calendars=self._calendars, events=events, range=calendar_range)
+        return CalendarSnapshot(calendars=calendars, events=events, range=calendar_range)
 
     def _category_colors_for(self, user: str, raw_events: list[dict[str, Any]]) -> dict[str, str]:
         if not any(raw.get("categories") for raw in raw_events):

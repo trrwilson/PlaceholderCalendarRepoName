@@ -30,6 +30,9 @@ def test_mock_provider_has_distinct_calendars_and_overlapping_events() -> None:
     assert len(snapshot.calendars) == 4
     assert len({calendar.color for calendar in snapshot.calendars}) == 4
     assert any(event.all_day for event in snapshot.events)
+    # The mock has no real accounts: display name mirrors the label, no provider badge.
+    assert all(calendar.display_name == calendar.name for calendar in snapshot.calendars)
+    assert {calendar.source for calendar in snapshot.calendars} == {"mock"}
 
 
 def test_mock_events_preserve_category_classification_separately_from_calendar_identity() -> None:

@@ -1,0 +1,25 @@
+# Credits & provenance for bundled media
+
+Bundled media assets get their source and licence noted here — lightweight, not a
+review process.
+
+## Audio
+
+| Asset | Source | Licence | Notes |
+| --- | --- | --- | --- |
+| Timer expiry chime | Self-made, synthesised at runtime with the Web Audio API (`frontend/src/timers/chime.ts`) | n/a (generated, no file) | Two sine partials (a fundamental + a fifth) with a short percussive envelope, repeated every ~2 s while a timer is in the `fired` state and tightening slightly after the first minute. No external sound file is committed; if a suitable CC0 chime is bundled later, add it here and switch the player over. |
+
+## Icons
+
+| Asset | Source | Licence | Notes |
+| --- | --- | --- | --- |
+| Provider badges (`ProviderBadge` in `frontend/src/App.tsx`) | Self-made, simplified inline SVG marks for Outlook (blue tile + "O") and Google (4-colour "G") | n/a (original simplified glyphs, no file) | Small identity cue next to a person's name; drawn inline so there is no asset and it scales with type. Swap for licensed brand assets if exact-mark fidelity is ever required. |
+
+## ML models
+
+Model artifacts get licence **and** provenance reviewed independently of the
+software that runs them (see `AGENTS.md`).
+
+| Asset | Source | Licence | Notes |
+| --- | --- | --- | --- |
+| Wake-word models (`frontend/public/models/wake/*.onnx`) | Not committed — provisioned per install | openWakeWord runtime + feature models Apache-2.0; trained "Mission Control" phrase model is synthetic-TTS-derived and household-owned | Full record and training procedure in `docs/wake-word-model-training.md`. `mission_control.onnx` trained locally 2026-09-06 with openWakeWord 0.6.0 (see `docs/wake-word-model-training-notes.md`), entirely from synthetic Piper LibriTTS-R speech + public augmentation sets — no human voice recordings. |

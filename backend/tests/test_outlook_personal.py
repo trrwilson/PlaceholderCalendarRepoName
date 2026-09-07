@@ -1,16 +1,26 @@
+import base64
+import json
 from datetime import UTC, date, datetime
 
 import httpx
+import msal
 import pytest
 import respx
 
+import app.calendar.outlook_personal as outlook_personal
 from app.calendar.graph import _LOCAL_TZ
-from app.calendar.outlook_personal import PersonalOutlookCalendarProvider, load_msal_app, save_cache
+from app.calendar.outlook_personal import (
+    PersonalOutlookCalendarProvider,
+    _cached_id_token_claims,
+    load_msal_app,
+    save_cache,
+)
 from app.config import Settings
 from app.models import CalendarEvent, CalendarRange, CalendarSnapshot
 
 CALENDAR_VIEW = "https://graph.microsoft.com/v1.0/me/calendarView"
 MASTER_CATEGORIES = "https://graph.microsoft.com/v1.0/me/outlook/masterCategories"
+ME_PROFILE = "https://graph.microsoft.com/v1.0/me"
 
 
 def make_settings(tmp_path, **overrides: object) -> Settings:
@@ -99,6 +109,7 @@ def test_maps_me_calendar_view_to_snapshot(tmp_path) -> None:
 
     assert isinstance(snapshot, CalendarSnapshot)
     assert [c.id for c in snapshot.calendars] == ["outlook"]
+    assert snapshot.calendars[0].source == "outlook"
     (event,) = snapshot.events
     assert event.calendar_id == "outlook"
     assert event.title == "Product stand-up"
@@ -136,6 +147,122 @@ def test_reads_each_cached_account_as_a_household_calendar(tmp_path) -> None:
         "mia@outlook.com",
         "sam@outlook.com",
     ]
+
+
+@respx.mock
+def test_display_name_comes_from_the_me_profile_given_name(tmp_path) -> None:
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    profile = respx.get(ME_PROFILE).mock(
+        return_value=httpx.Response(
+            200, json={"givenName": "Travis", "displayName": "Travis Wilson"}
+        )
+    )
+    provider = build_provider(tmp_path)
+
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    assert snapshot.calendars[0].display_name == "Travis"
+    assert profile.called
+
+
+@respx.mock
+def test_display_name_prefers_id_token_claims_over_a_me_request(tmp_path) -> None:
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    me = respx.get(ME_PROFILE).mock(return_value=httpx.Response(200, json={"givenName": "ignored"}))
+    provider = build_provider(tmp_path)
+    # A silent auth would have stashed these; simulate that.
+    provider._id_claims["outlook"] = {"given_name": "Travis", "name": "Travis Wilson"}
+
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    assert snapshot.calendars[0].display_name == "Travis"
+    assert not me.called
+
+
+@respx.mock
+def test_display_name_falls_back_to_account_handle(tmp_path) -> None:
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    respx.get(ME_PROFILE).mock(return_value=httpx.Response(403, json={"error": {"code": "Denied"}}))
+    provider = build_provider(tmp_path)
+
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    assert snapshot.calendars[0].display_name == "outlook"
+
+
+def _fake_jwt(claims: dict[str, object]) -> str:
+    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"header.{body}.signature"
+
+
+def test_cached_id_token_claims_decodes_the_cached_jwt_by_home_account_id() -> None:
+    jwt = _fake_jwt({"name": "Sarah Shapro", "preferred_username": "sshapro@live.com"})
+
+    class Cache:
+        def search(self, credential_type, target=None, query=None, **kwargs):
+            assert credential_type == msal.TokenCache.CredentialType.ID_TOKEN
+            if query == {"home_account_id": "home-1"}:
+                return [{"secret": jwt}]
+            return []
+
+    assert _cached_id_token_claims(Cache(), {"home_account_id": "home-1"})["name"] == "Sarah Shapro"
+    assert _cached_id_token_claims(Cache(), {"home_account_id": "missing"}) == {}
+    assert _cached_id_token_claims(None, {"home_account_id": "home-1"}) == {}
+
+
+@respx.mock
+def test_display_name_survives_a_warm_token_cache_without_id_token_claims(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: after a restart MSAL serves the access token from its on-disk
+    cache and returns no ``id_token_claims``. The holder's name must still resolve
+    (from the cached ID token) instead of falling back to the account handle."""
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    respx.get(ME_PROFILE).mock(return_value=httpx.Response(403, json={"error": {"code": "Denied"}}))
+
+    account = {"username": "sshapro@live.com", "home_account_id": "home-1"}
+    jwt = _fake_jwt({"name": "Sarah Shapro"})  # personal MSA: no given_name
+
+    class WarmCache:
+        def search(self, credential_type, target=None, query=None, **kwargs):
+            if (
+                credential_type == msal.TokenCache.CredentialType.ID_TOKEN
+                and query == {"home_account_id": "home-1"}
+            ):
+                return [{"secret": jwt}]
+            return []
+
+        def serialize(self):
+            return "{}"
+
+    class WarmApp:
+        def get_accounts(self):
+            return [account]
+
+        def acquire_token_silent(self, scopes, account=None):
+            # Warm-cache hit: MSAL returns just the access token, no claims.
+            return {"access_token": "at", "token_type": "Bearer", "expires_in": 3000}
+
+    cache = WarmCache()
+    monkeypatch.setattr(
+        outlook_personal,
+        "shared_msal_app",
+        lambda settings: (WarmApp(), cache, tmp_path / "cache.json"),
+    )
+
+    provider = PersonalOutlookCalendarProvider(make_settings(tmp_path))
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    assert snapshot.calendars[0].name == "sshapro"
+    assert snapshot.calendars[0].display_name == "Sarah Shapro"
 
 
 @respx.mock

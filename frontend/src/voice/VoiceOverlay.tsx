@@ -2,6 +2,7 @@ import type { VoiceError, VoiceStatus, VoiceTranscript } from './types'
 
 const LABELS: Record<VoiceStatus, string> = {
   idle: '',
+  armed: '',
   connecting: 'Connecting…',
   listening: 'Listening…',
   thinking: 'Thinking…',
@@ -23,7 +24,7 @@ interface Props {
  * occupying permanent space; the dashboard itself carries the substantive answer.
  */
 export function VoiceOverlay({ status, transcript, error, onStop, onDismissError }: Props) {
-  if (status === 'idle' || status === 'unavailable') return null
+  if (status === 'idle' || status === 'armed' || status === 'unavailable') return null
 
   return (
     <section className={`voice-overlay voice-${status}`} role="status" aria-live="polite">

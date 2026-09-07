@@ -1,14 +1,25 @@
 import { expect, test } from '@playwright/test'
 
+// Event dates are anchored to "today" so the suite does not rot once the wall
+// clock passes a hardcoded date.
+const at = (dayOffset: number, hour: number, minute = 0) => {
+  const base = new Date()
+  base.setHours(0, 0, 0, 0)
+  base.setDate(base.getDate() + dayOffset)
+  base.setHours(hour, minute)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${base.getFullYear()}-${pad(base.getMonth() + 1)}-${pad(base.getDate())}T${pad(base.getHours())}:${pad(base.getMinutes())}:00`
+}
+
 const snapshot = {
   calendars: [
     { id: 'family', name: 'Family', color: 'coral', enabled: true },
     { id: 'jordan', name: 'Jordan', color: 'gold', enabled: true },
   ],
   events: [
-    { id: 'swim', calendar_id: 'jordan', title: 'Swim practice', starts_at: '2026-09-05T16:00:00', ends_at: '2026-09-05T17:15:00', location: 'Riverside pool', all_day: false },
-    { id: 'dinner', calendar_id: 'family', title: 'Taco night', starts_at: '2026-09-05T18:30:00', ends_at: '2026-09-05T20:00:00', location: null, all_day: false },
-    { id: 'dentist', calendar_id: 'jordan', title: 'Dentist appointment', starts_at: '2026-09-06T10:00:00', ends_at: '2026-09-06T11:00:00', location: 'Cedar Street Dental', all_day: false },
+    { id: 'swim', calendar_id: 'jordan', title: 'Swim practice', starts_at: at(0, 16), ends_at: at(0, 17, 15), location: 'Riverside pool', all_day: false },
+    { id: 'dinner', calendar_id: 'family', title: 'Taco night', starts_at: at(0, 18, 30), ends_at: at(0, 20), location: null, all_day: false },
+    { id: 'dentist', calendar_id: 'jordan', title: 'Dentist appointment', starts_at: at(1, 10), ends_at: at(1, 11), location: 'Cedar Street Dental', all_day: false },
   ],
 }
 
@@ -35,14 +46,15 @@ test('Week, Month, event detail, and filters work at 1920x1080', async ({ page }
   await page.setViewportSize({ width: 1920, height: 1080 })
   await page.goto('/')
   await page.getByRole('button', { name: 'Week' }).first().click()
-  await expect(page.getByText('Week at a glance')).toBeVisible()
+  await expect(page.locator('.week-view .week-grid')).toBeVisible()
   await assertNoDocumentOverflow(page)
 
   await page.getByRole('button', { name: /Swim practice/ }).click()
   await expect(page.getByRole('dialog', { name: 'Event details' })).toBeVisible()
   await page.getByRole('button', { name: 'Close event details' }).click()
   await page.getByRole('button', { name: 'Month' }).first().click()
-  await expect(page.getByText('Planning view')).toBeVisible()
+  await expect(page.locator('.month-grid')).toBeVisible()
+  await expect(page.locator('.header-period')).toBeVisible()
   await assertNoDocumentOverflow(page)
 
   await page.getByRole('button', { name: /People/ }).click()

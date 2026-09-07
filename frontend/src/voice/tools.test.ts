@@ -26,8 +26,8 @@ function stubCalendar(events: unknown[]) {
       ok: true,
       json: async () => ({
         calendars: [
-          { id: 'jordan', name: 'Jordan' },
-          { id: 'alex', name: 'Alex' },
+          { id: 'jordan', name: 'jordan', display_name: 'Jordan' },
+          { id: 'alex', name: 'alex@example.com', display_name: 'Alex' },
         ],
         events,
       }),
@@ -75,6 +75,14 @@ describe('voice tool dispatch', () => {
     expect(result.events).toMatchObject([{ title: 'Swim practice', who: 'Jordan', location: 'Riverside pool' }])
   })
 
+  it('names the person by their natural display name, not the account handle', async () => {
+    stubCalendar([
+      { id: 'x', calendar_id: 'alex', title: 'Standup', starts_at: iso(9), ends_at: iso(10), all_day: false },
+    ])
+    const result = await dispatchToolCall('get_agenda', { date: '2026-09-11' }, context())
+    expect((result.events as { who: string }[])[0].who).toBe('Alex')
+  })
+
   it('detects overlapping events for check_conflicts', async () => {
     stubCalendar([
       { id: 'a', calendar_id: 'jordan', title: 'Swim', starts_at: iso(16), ends_at: iso(18), all_day: false },
@@ -88,5 +96,73 @@ describe('voice tool dispatch', () => {
   it('is closed to unknown tools', async () => {
     const result = await dispatchToolCall('create_event', {}, context())
     expect(result).toEqual({ ok: false, error: 'unknown tool create_event' })
+  })
+
+  it('starts a timer from a spoken duration', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        timer: { id: 't1', label: 'pasta', fires_at: '2026-09-11T16:15:00', state: 'running' },
+        replaced: null,
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await dispatchToolCall('start_timer', { duration_minutes: 15, label: 'pasta' }, context())
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toContain('/api/timers')
+    expect(JSON.parse((init as { body: string }).body)).toEqual({ duration_seconds: 900, label: 'pasta' })
+    expect(result).toMatchObject({ ok: true, label: 'pasta' })
+  })
+
+  it('resolves an absolute target time to a duration for start_timer', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 8, 11, 14, 0, 0))
+    try {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ timer: { id: 't', label: null, fires_at: 'x', state: 'running' }, replaced: null }),
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      await dispatchToolCall('start_timer', { fires_at: '2026-09-11T15:30:00' }, context())
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ duration_seconds: 5400, label: null })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects a timer longer than six hours without calling the backend', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await dispatchToolCall('start_timer', { duration_minutes: 400 }, context())
+    expect(result).toEqual({ ok: false, error: 'Timers can be at most six hours.' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a backend 422 as a spoken six-hour error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 422, json: async () => ({}) }))
+    const result = await dispatchToolCall('start_timer', { duration_minutes: 90 }, context())
+    expect(result).toEqual({ ok: false, error: 'Timers can be at most six hours.' })
+  })
+
+  it('cancels the running timer by looking up its id first', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [{ id: 't9', label: null, fires_at: 'x', state: 'running' }] })
+      .mockResolvedValueOnce({ ok: true })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await dispatchToolCall('cancel_timer', {}, context())
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/api/timers/t9')
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'DELETE' })
+    expect(result).toEqual({ ok: true })
+  })
+
+  it('reports when there is no timer to extend', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }))
+    const result = await dispatchToolCall('extend_timer', { add_minutes: 5 }, context())
+    expect(result).toEqual({ ok: false, error: 'no timer is running' })
   })
 })

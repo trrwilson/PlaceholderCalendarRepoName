@@ -1,0 +1,7 @@
+# Wake-word model assets are provisioned per install, not committed.
+# See docs/wake-word-model-training.md for how to obtain / train them and
+# ../README.md in this directory for what belongs here.
+*.onnx
+*.tflite
+*.wasm
+*.mjs

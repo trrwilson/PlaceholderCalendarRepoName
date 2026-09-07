@@ -12,6 +12,9 @@ Graph event JSON is mapped with the shared helpers in ``app.calendar.graph``.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
@@ -27,11 +30,18 @@ from app.calendar.graph import (
     _PAGE_SIZE,
     _SELECT_FIELDS,
     CategoryColorCache,
+    ProfileNameCache,
     _local_tz_name,
     _map_event,
 )
 from app.config import Settings
-from app.models import CalendarEvent, CalendarRange, CalendarSnapshot, HouseholdCalendar
+from app.models import (
+    CalendarEvent,
+    CalendarRange,
+    CalendarSnapshot,
+    CalendarSource,
+    HouseholdCalendar,
+)
 
 GRAPH_SCOPES = ["Calendars.Read"]
 SIGN_IN_HINT = "sign in from the kiosk or run `python -m app.auth login`"
@@ -127,6 +137,47 @@ def _touch_shared_mtime(path: Path) -> None:
                 entry[3] = mtime
 
 
+def _decode_jwt_claims(token: str) -> dict[str, Any]:
+    """Best-effort decode of a JWT payload. Signature is not verified — these
+    claims came from our own MSAL cache and are only used for a display name."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except (IndexError, ValueError, binascii.Error):
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def _cached_id_token_claims(
+    cache: msal.SerializableTokenCache | None, account: dict[str, Any]
+) -> dict[str, Any]:
+    """The ID-token claims MSAL cached for ``account`` at sign-in.
+
+    ``acquire_token_silent`` only echoes ``id_token_claims`` back when it actually
+    hits the network to refresh; on the common warm-cache path (the on-disk cache
+    survives restarts) it returns just the access token, so the holder's name
+    would otherwise be unavailable until the token happened to expire. The ID
+    token itself is always in the cache from the device-code sign-in, so read it
+    straight from there.
+    """
+    home_account_id = account.get("home_account_id")
+    if cache is None or not home_account_id:
+        return {}
+    try:
+        entries = cache.search(
+            msal.TokenCache.CredentialType.ID_TOKEN,
+            query={"home_account_id": home_account_id},
+        )
+    except Exception:
+        return {}
+    for entry in entries:
+        claims = _decode_jwt_claims(entry.get("secret", ""))
+        if claims:
+            return claims
+    return {}
+
+
 class PersonalOutlookCalendarProvider:
     def __init__(
         self,
@@ -138,6 +189,11 @@ class PersonalOutlookCalendarProvider:
         self._settings = settings
         self._client = client or httpx.Client(timeout=30.0)
         self._category_colors = CategoryColorCache(self._client)
+        self._profile_names = ProfileNameCache(self._client)
+        # ID-token claims from the last silent auth, per account username. The
+        # sign-in already carries the holder's name (``given_name`` / ``name``)
+        # even though the calendar scope alone can't read ``/me``.
+        self._id_claims: dict[str, dict[str, Any]] = {}
         self._app: msal.PublicClientApplication | None = None
         if token_provider is not None:
             self._token_provider = token_provider
@@ -161,7 +217,39 @@ class PersonalOutlookCalendarProvider:
             auth_error = "sign-in expired or was revoked"
             raise RuntimeError(f"Personal Outlook sign-in expired or was revoked — {SIGN_IN_HINT}")
         auth_error = None
+        acct = account or accounts[0]
+        username = acct.get("username")
+        # `acquire_token_silent` only returns `id_token_claims` when it refreshed
+        # over the network; on a warm-cache hit it does not. Fall back to the ID
+        # token MSAL already has cached so the holder's name survives a restart.
+        claims = result.get("id_token_claims")
+        if not (isinstance(claims, dict) and claims):
+            claims = _cached_id_token_claims(getattr(self, "_cache", None), acct)
+        if isinstance(claims, dict) and claims and username:
+            self._id_claims[str(username)] = claims
         return str(result["access_token"])
+
+    def _natural_name_for(self, email: str, headers: dict[str, str]) -> str | None:
+        """Best natural name for an account, in preference order:
+
+        1. first (given) name — from the sign-in's ID-token claims, or ``/me``;
+        2. full name — from ``/me`` (``displayName``) or the ID-token ``name``;
+        3. ``None``, so the caller falls back to the raw account handle.
+
+        The ID-token claims come free with the sign-in (no extra Graph scope);
+        ``/me`` needs ``User.Read``, which the calendar token often lacks. Personal
+        Microsoft accounts usually carry only ``name`` (no ``given_name``), so the
+        common result here is the full name.
+        """
+        claims = self._id_claims.get(email, {})
+        given = str(claims.get("given_name") or "").strip()
+        if given:
+            return given
+        from_me = self._profile_names.get(f"{_GRAPH_BASE}/me", headers, email)
+        if from_me:
+            return from_me
+        full = str(claims.get("name") or "").strip()
+        return full or None
 
     def _account_email(self) -> str:
         accounts = self._app.get_accounts() if self._app is not None else []
@@ -225,11 +313,15 @@ class PersonalOutlookCalendarProvider:
             if any(raw.get("categories") for raw in raw_events):
                 colors = self._category_colors.get(f"{_GRAPH_BASE}/me", headers, email)
             events.extend(_map_event(raw, email, colors) for raw in raw_events)
+            account_name = email.split("@", 1)[0]
+            natural = self._natural_name_for(email, headers)
             calendars.append(
                 HouseholdCalendar(
                     id=email,
-                    name=email.split("@", 1)[0],
+                    name=account_name,
+                    display_name=natural or account_name,
                     color=self._settings.calendar_color_for(index),
+                    source=CalendarSource.outlook,
                 )
             )
         events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))

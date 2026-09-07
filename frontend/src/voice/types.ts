@@ -1,6 +1,10 @@
-export type ViewMode = 'home' | 'week' | 'month'
+export type ViewMode = 'home' | 'week' | 'month' | 'timer'
 export type VoiceStatus =
   | 'idle'
+  // Wake word is loaded and listening locally for the phrase. No session, no
+  // cloud audio. Behaves like `idle` for every control; only the affordance
+  // copy differs.
+  | 'armed'
   | 'connecting'
   | 'listening'
   | 'thinking'

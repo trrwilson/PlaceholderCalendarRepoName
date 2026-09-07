@@ -51,6 +51,113 @@ export class VoiceTimeline {
   summary(): string {
     return this.entries.map((e) => `${e.label}=${e.atMs}ms`).join('  ')
   }
+
+  /**
+   * Structured milestones for a {@link VoiceTurnReport}. Last occurrence wins per
+   * label (a turn may e.g. call two tools); `provider` / `model` are lifted from
+   * the `token-received` mark so the bake-off can group by contestant.
+   */
+  toReport(): Pick<VoiceTurnReport, 'provider' | 'model' | 'milestones'> {
+    const milestones: Record<string, number> = {}
+    let provider: string | undefined
+    let model: string | undefined
+    for (const entry of this.entries) {
+      milestones[entry.label] = entry.atMs
+      if (entry.label === 'token-received' && entry.detail) {
+        provider = (entry.detail.provider as string) ?? provider
+        model = (entry.detail.model as string) ?? model
+      }
+    }
+    return { provider, model, milestones }
+  }
+}
+
+/**
+ * One turn's measurements, for the provider bake-off. Describes the whole
+ * user-perceived interaction (activation → transcript → tool → first audio →
+ * done), not just model timing — the milestone seams a future local/hybrid path
+ * reuses (see AGENTS.md → "Voice assistant → Provider architecture").
+ */
+export interface VoiceTurnReport {
+  ok: boolean
+  provider?: string
+  model?: string
+  failureKind?: string
+  /** milestone label → ms from the start of the turn */
+  milestones: Record<string, number>
+  /** `AudioSink.arrivalStats()` — realtime ratio, underruns, jitter depth */
+  audio?: Record<string, number>
+  /** `MainThreadLagProbe.summary()` — was the render path starving the socket? */
+  lag?: Record<string, number>
+}
+
+const TURN_LOG: VoiceTurnReport[] = []
+
+/**
+ * Log one turn report and keep the last 20 on `window.__voiceTurns` so a
+ * bake-off session can be pulled out of the console without a datastore.
+ */
+export function recordVoiceTurn(report: VoiceTurnReport): void {
+  TURN_LOG.push(report)
+  if (TURN_LOG.length > 20) TURN_LOG.shift()
+  try {
+    ;(window as unknown as { __voiceTurns?: VoiceTurnReport[] }).__voiceTurns = TURN_LOG
+  } catch {
+    // non-browser context (tests) — the console line below is enough
+  }
+  console.info('[voice] turn-report', report)
+}
+
+/**
+ * Samples how late a fixed-interval timer actually fires — i.e. how blocked the
+ * main thread is.
+ *
+ * This exists to settle one question: response audio arriving at a fraction of
+ * real time can mean the server is generating slowly, or it can mean *we* are
+ * too busy to drain the socket, in which case TCP backpressure throttles the
+ * sender and the slowness is self-inflicted. The two look identical from the
+ * arrival timestamps alone. If `maxLagMs` stays near zero while audio crawls,
+ * the server is the bottleneck and no client change will fix the underruns; if
+ * it spikes into the hundreds, the render path is starving the socket.
+ */
+export class MainThreadLagProbe {
+  private timer: ReturnType<typeof setInterval> | null = null
+  private expected = 0
+  private readonly intervalMs: number
+  maxLagMs = 0
+  totalLagMs = 0
+  samples = 0
+
+  constructor(intervalMs = 100) {
+    this.intervalMs = intervalMs
+  }
+
+  start(): void {
+    if (this.timer) return
+    this.expected = performance.now() + this.intervalMs
+    this.timer = setInterval(() => {
+      const now = performance.now()
+      const lag = Math.max(0, now - this.expected)
+      this.expected = now + this.intervalMs
+      this.maxLagMs = Math.max(this.maxLagMs, lag)
+      this.totalLagMs += lag
+      this.samples += 1
+    }, this.intervalMs)
+  }
+
+  stop(): void {
+    if (!this.timer) return
+    clearInterval(this.timer)
+    this.timer = null
+  }
+
+  summary(): Record<string, number> {
+    return {
+      maxLagMs: Math.round(this.maxLagMs),
+      meanLagMs: this.samples ? Math.round(this.totalLagMs / this.samples) : 0,
+      samples: this.samples,
+    }
+  }
 }
 
 /**

@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { VoiceEvent } from './session'
+import type { VoiceEvent } from './providers/types'
 import { useVoiceSession } from './useVoiceSession'
 
 const h = vi.hoisted(() => {
@@ -30,19 +30,21 @@ const h = vi.hoisted(() => {
   }
 })
 
-vi.mock('./session', () => ({
+vi.mock('./providers', () => ({
   VoiceUnavailableError: h.VoiceUnavailableError,
   VoiceSessionError: h.VoiceSessionError,
-  GeminiVoiceSession: class {
-    constructor(_url: string, onEvent: (event: VoiceEvent) => void) {
-      h.state.emit = onEvent
+  createVoiceProvider: async (_url: string, onEvent: (event: VoiceEvent) => void) => {
+    h.state.emit = onEvent
+    return {
+      timeline: { mark: vi.fn() },
+      inputSampleRate: 16_000,
+      connect: () => h.state.connectBehavior(),
+      startActivity: vi.fn(),
+      endActivity: h.spies.endActivity,
+      sendAudio: vi.fn(),
+      respondTool: h.spies.respondTool,
+      close: h.spies.close,
     }
-    connect = () => h.state.connectBehavior()
-    startActivity = vi.fn()
-    endActivity = h.spies.endActivity
-    sendAudio = vi.fn()
-    respondTool = h.spies.respondTool
-    close = h.spies.close
   },
 }))
 
@@ -59,8 +61,10 @@ vi.mock('./audio', () => ({
     activate = vi.fn()
     state = vi.fn(() => 'running')
     pending = vi.fn(() => false)
-    playTestTone = vi.fn()
+    playTestTone = vi.fn(() => 450)
     enqueue = vi.fn(() => true)
+    finalizeStream = vi.fn()
+    arrivalStats = vi.fn(() => ({}))
     flush = vi.fn()
     close = vi.fn()
   },
@@ -68,12 +72,39 @@ vi.mock('./audio', () => ({
 
 vi.mock('./instrument', () => ({
   prewarmVoice: () => Promise.resolve(),
+  recordVoiceTurn: vi.fn(),
+  MainThreadLagProbe: class {
+    start = vi.fn()
+    stop = vi.fn()
+    summary = vi.fn(() => ({ maxLagMs: 0, meanLagMs: 0, samples: 0 }))
+  },
   VoiceTimeline: class {
     mark = vi.fn()
     elapsed = vi.fn(() => 0)
     summary = vi.fn(() => '')
+    toReport = vi.fn(() => ({ milestones: {} }))
     entries = []
   },
+}))
+
+// Wake word has its own dedicated state-machine suite (./wake/wakeSession.test.ts);
+// here it is inert so these tests stay about push-to-talk.
+vi.mock('./wake/useWakeWord', () => ({
+  useWakeWord: () => ({
+    diagnostics: {
+      state: 'off',
+      available: false,
+      userEnabled: true,
+      phrase: 'Mission Control',
+      detail: null,
+      lastScore: null,
+      lastDetectionAt: null,
+      activationLatencyMs: null,
+    },
+    setEnabled: vi.fn(),
+    takeRetainedAudio: () => [],
+    reportActivated: vi.fn(),
+  }),
 }))
 
 const actions = { showView: vi.fn(), focusDate: vi.fn(), highlightEvent: vi.fn(() => ({ matched: false })) }
@@ -119,11 +150,13 @@ describe('useVoiceSession', () => {
     })
 
     expect(actions.showView).toHaveBeenCalledWith('week', null)
+    // The raw dispatch result is handed to the provider, which formats it for its
+    // own wire contract.
     await waitFor(() =>
       expect(h.spies.respondTool).toHaveBeenCalledWith(
         '1',
         'show_view',
-        { output: expect.objectContaining({ ok: true }) },
+        expect.objectContaining({ ok: true }),
       ),
     )
   })
@@ -175,6 +208,94 @@ describe('useVoiceSession', () => {
 
       expect(result.current.status).toBe('thinking')
       expect(h.spies.endActivity).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not mistake the listening cue for the user speaking', async () => {
+    // The regression: the cue plays out of the speakers while the mic is already
+    // open, and the level detector heard it at 0.063 RMS — six times SPEECH_RMS.
+    // That set `spoke`, and SILENCE_HOLD_MS then ended the turn ~700 ms after the
+    // mic opened, before the person had said anything. The model got a beep,
+    // answered nothing, and the response watchdog blamed it for the silence.
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+      expect(result.current.status).toBe('listening')
+
+      act(() => h.state.level(0.063))
+
+      // Comfortably past SILENCE_HOLD_MS: had the cue counted, the turn would be
+      // over by now.
+      await act(async () => {
+        vi.advanceTimersByTime(1_500)
+        h.state.level(0.001)
+      })
+
+      expect(result.current.status).toBe('listening')
+      expect(h.spies.endActivity).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('submits the turn once real speech is followed by a pause', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+
+      // Past the cue, so this is the person.
+      await act(async () => {
+        vi.advanceTimersByTime(800)
+        h.state.level(0.05)
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(1_200)
+        h.state.level(0.001)
+      })
+
+      expect(result.current.status).toBe('thinking')
+      expect(h.spies.endActivity).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('abandons a turn where nothing was ever said instead of failing it', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+
+      await act(async () => {
+        vi.advanceTimersByTime(800)
+        h.state.level(0.001)
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(6_000)
+        h.state.level(0.001)
+      })
+
+      // Quietly back to idle — not "The assistant stopped responding", and the
+      // model is never asked to answer an empty question.
+      expect(result.current.status).toBe('idle')
+      expect(result.current.error).toBeNull()
+      expect(h.spies.endActivity).not.toHaveBeenCalled()
+
+      // And nothing is left armed to fail the turn after the fact.
+      await act(async () => {
+        vi.advanceTimersByTime(20_000)
+      })
+      expect(result.current.status).toBe('idle')
     } finally {
       vi.useRealTimers()
     }
