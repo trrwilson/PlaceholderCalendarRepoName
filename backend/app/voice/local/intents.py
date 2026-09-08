@@ -100,32 +100,74 @@ INTENTS: list[Intent] = [
         ],
         vetoes=[re.compile(r"\b(timer|alarm|list|filter|notification)\b")],
     ),
-    # -- shopping lists: recognised, not a Mission Control capability yet ------
+    # -- grocery list (supported) --------------------------------------------
     Intent(
         name="list.add",
         tier=1,
         mutating=True,
-        supported=False,
         slots=["list_query", "items"],
         triggers=[
-            _p(r"\badd\b.*\bto (?:the |my )?[\w ']+ list\b", 0.85),
+            _p(r"\badd\b.*\bto (?:the |my )?[\w ']* ?list\b", 0.85),
             _p(
                 r"\badd\b.*\bto (?:the |my )?(costco|grocery|groceries|shopping|target|walmart)\b",
                 0.8,
             ),
-            _p(r"\b(put|add)\b.*\bon the (?:shopping|grocery|costco) list\b", 0.85),
+            _p(r"\b(put|add)\b.*\bon the (?:shopping|grocery|costco|groceries) list\b", 0.85),
+            _p(r"\bwe(?:'re| are|'ve| have)?\s*(?:need|needing|out of|ran out of)\b", 0.6),
+            _p(r"\bneed to (?:buy|get|pick up|grab)\b", 0.6),
+            _p(r"\b(?:get|grab|buy|pick up) (?:some |more )\b", 0.5),
         ],
+        vetoes=[re.compile(r"\b(timer|alarm|calendar|appointment)\b")],
+    ),
+    Intent(
+        name="list.remove",
+        tier=1,
+        mutating=True,
+        slots=["list_query", "items"],
+        triggers=[
+            _p(r"\b(take|get|cross)\b.*\b(off|out of)\b.*\blist\b", 0.85),
+            _p(r"\b(remove|delete|drop)\b.*\bfrom (?:the |my )?[\w ']* ?list\b", 0.85),
+            _p(r"\b(remove|delete|drop)\b.*\bfrom (?:the |my )?(grocery|shopping|costco)\b", 0.8),
+        ],
+        vetoes=[re.compile(r"\b(timer|alarm|appointment|meeting|event)\b")],
+    ),
+    Intent(
+        name="list.check",
+        tier=1,
+        mutating=True,
+        slots=["list_query", "items"],
+        triggers=[
+            _p(r"\bcheck off\b", 0.85),
+            _p(r"\b(got|picked up|grabbed|bought)\b.*\b(the|some)\b", 0.6),
+            _p(r"\bmark\b.*\b(as )?(bought|done|got|picked up)\b", 0.85),
+            _p(r"\b(tick|check)\b.*\boff (?:the |my )?list\b", 0.8),
+        ],
+        vetoes=[re.compile(r"\b(timer|alarm|calendar|appointment)\b")],
+    ),
+    Intent(
+        name="list.clear",
+        tier=1,
+        mutating=True,
+        slots=["list_query"],
+        triggers=[
+            _p(r"\b(clear|empty|wipe|reset)\b.*\b[\w ']*\s?list\b", 0.9),
+            _p(r"\bclear (?:the |everything off )?(?:the )?list\b", 0.9),
+            _p(r"\bclear (?:the )?(ones|stuff|things) we (?:got|bought|picked up|have)\b", 0.85),
+            _p(r"\bstart (?:the |a )?(?:new |fresh )?(?:grocery |shopping )?list\b", 0.7),
+        ],
+        vetoes=[re.compile(r"\b(timer|alarm|calendar|filter|people)\b")],
     ),
     Intent(
         name="list.show",
         tier=0,
-        supported=False,
         slots=["list_query"],
         triggers=[
-            _p(r"\b(show|open|pull up|bring up)\b.*\b[\w ]*list\b", 0.7),
-            _p(r"\bopen (costco|groceries|the grocery list|shopping)\b", 0.75),
+            _p(r"\b(show|open|pull up|bring up|what's on)\b.*\b[\w ]*list\b", 0.75),
+            _p(r"\b(show|open|pull up)\b.*\b(grocery|groceries|shopping)\b", 0.75),
+            _p(r"\bwhat(?:'s| is| do we need)\b.*\b(grocery|groceries|shopping)\b", 0.7),
+            _p(r"^\s*(grocery list|shopping list|the list)\s*$", 0.8),
         ],
-        vetoes=[re.compile(r"\b(calendar|week|month|timer|schedule)\b")],
+        vetoes=[re.compile(r"\b(calendar|week|month|timer|schedule|appointment)\b")],
     ),
     # -- display power: recognised, no DisplayController yet ------------------
     Intent(

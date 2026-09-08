@@ -12,11 +12,18 @@ are locked into every session grant, and the kiosk mirrors these names in
   from ``GET /api/calendar`` — the agent never reaches a calendar provider directly.
 * ``start_timer`` / ``cancel_timer`` / ``extend_timer`` / ``pause_timer`` /
   ``resume_timer`` / ``restart_timer`` / ``get_timer`` drive the kitchen timer
-  through ``/api/timers`` — the **only** state-mutating voice tools
-  (a narrow, documented exception to the read-only rule: ephemeral, local,
-  single-appliance state with no external side effect; calendar writes stay out).
+  through ``/api/timers``.
+* ``add_to_list`` / ``remove_from_list`` / ``check_off_item`` / ``clear_list`` /
+  ``get_list`` manage the household grocery list through ``/api/lists``.
+* ``enter_privacy_mode`` / ``request_privacy_unlock`` turn on the houseguest
+  privacy mode and summon the on-screen unlock keypad (``/api/privacy``). The
+  assistant can only *enter* privacy mode and *ask* for the keypad — it can never
+  turn privacy mode off (that needs the PIN typed on screen).
 
-Read-only for the calendar. Event creation/editing is deliberately not here.
+The timer and list tools are the state-mutating voice tools — a narrow,
+documented exception to the read-only rule: local, single-household appliance
+state with no external side effect. **Calendar writes stay out.** While privacy
+mode is on, the kiosk refuses every tool except ``request_privacy_unlock``.
 """
 
 from __future__ import annotations
@@ -207,6 +214,111 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
     {
         "name": "get_timer",
         "description": "Check whether a timer is running and how much time is left.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "add_to_list",
+        "description": (
+            "Add one or more items to the household grocery list ('add milk', "
+            "'put eggs, bread and butter on the list'). Split a spoken list of "
+            "things into separate items. Adding something already on the list is "
+            "fine — say it was already there; if it was checked off, this puts it "
+            "back. There is one list (grocery); 'list' defaults to it."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "items": {
+                    "type": "ARRAY",
+                    "items": {"type": "STRING"},
+                    "description": "Item names, one per entry.",
+                },
+                "list": {"type": "STRING", "description": "List name; defaults to 'grocery'."},
+            },
+            "required": ["items"],
+        },
+    },
+    {
+        "name": "remove_from_list",
+        "description": (
+            "Take a single item off the grocery list entirely ('take milk off "
+            "the list', 'remove the bread'). This deletes it — use check_off_item "
+            "for 'I got the milk'. If nothing matches, say so."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "item": {"type": "STRING", "description": "A few words of the item name."},
+                "list": {"type": "STRING", "description": "List name; defaults to 'grocery'."},
+            },
+            "required": ["item"],
+        },
+    },
+    {
+        "name": "check_off_item",
+        "description": (
+            "Mark one grocery item as bought ('check off the milk', 'I got the "
+            "eggs') — it stays on the list, struck through, until the list is "
+            "cleared. If nothing matches, say so."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "item": {"type": "STRING", "description": "A few words of the item name."},
+                "list": {"type": "STRING", "description": "List name; defaults to 'grocery'."},
+            },
+            "required": ["item"],
+        },
+    },
+    {
+        "name": "clear_list",
+        "description": (
+            "Clear the grocery list. scope 'all' removes everything ('clear the "
+            "grocery list' — the default), scope 'checked' removes only the "
+            "items already checked off ('clear the ones we got'). Tell the "
+            "household they can say nothing to undo it — the screen shows an "
+            "Undo for a few seconds."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "scope": {"type": "STRING", "enum": ["all", "checked"]},
+                "list": {"type": "STRING", "description": "List name; defaults to 'grocery'."},
+            },
+        },
+    },
+    {
+        "name": "get_list",
+        "description": (
+            "Read what is on the grocery list right now (item names and whether "
+            "each is checked off)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "list": {"type": "STRING", "description": "List name; defaults to 'grocery'."},
+            },
+        },
+    },
+    {
+        "name": "enter_privacy_mode",
+        "description": (
+            "Turn on privacy mode: the display hides event and list details for a "
+            "visitor and goes read-only. Use when asked to 'hide the calendar', "
+            "'someone's coming over', 'privacy mode on'. It takes the PIN on the "
+            "screen to turn off again — say so."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "request_privacy_unlock",
+        "description": (
+            "Bring up the PIN keypad so someone can turn OFF privacy mode ('turn "
+            "off privacy mode', 'exit privacy mode', 'unlock the display'). You "
+            "cannot turn it off yourself — they must enter the PIN on screen. "
+            "While privacy mode is on this is the only thing you can do; decline "
+            "everything else politely."
+        ),
         "parameters": {"type": "OBJECT", "properties": {}},
     },
 ]

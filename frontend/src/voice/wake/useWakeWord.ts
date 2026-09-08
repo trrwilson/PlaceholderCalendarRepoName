@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { micSource } from '../audio'
-import { createWakeDetector, WakeUnavailableError, type WakeDetector, type WakeEvent } from './detector'
+import {
+  createWakeDetector,
+  WakeUnavailableError,
+  type WakeDetector,
+  type WakeEvent,
+  type WakeProviderId,
+  type WakeProviderInfo,
+} from './detector'
 
 /** Mirrors the backend `WakeWordConfig` (GET /api/voice/wake-config). */
 interface WakeConfigResponse {
@@ -9,6 +16,8 @@ interface WakeConfigResponse {
   phrase: string
   threshold: number
   cooldown_ms: number
+  provider: WakeProviderId
+  providers: WakeProviderInfo[]
   model_path: string
   models_base_url: string
 }
@@ -27,6 +36,12 @@ export interface WakeDiagnostics {
   /** The user's on/off choice (persisted); only meaningful when `available`. */
   userEnabled: boolean
   phrase: string
+  /** The active detection back end. */
+  provider: WakeProviderId
+  /** Every selectable detection back end, for the Settings picker. */
+  providers: WakeProviderInfo[]
+  /** A provider switch is in flight. */
+  busy: boolean
   detail: string | null
   lastScore: number | null
   lastDetectionAt: number | null
@@ -64,6 +79,7 @@ function readUserPref(): boolean {
 export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
   const [config, setConfig] = useState<WakeConfigResponse | null>(null)
   const [configFailed, setConfigFailed] = useState(false)
+  const [providerBusy, setProviderBusy] = useState(false)
   const [userEnabled, setUserEnabled] = useState(readUserPref)
   const [state, setState] = useState<WakeState>('off')
   const [detail, setDetail] = useState<string | null>(null)
@@ -109,6 +125,8 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
     setDetail(null)
     const detector = createWakeDetector(
       {
+        provider: config.provider,
+        apiBaseUrl,
         modelPath: config.model_path,
         modelsBaseUrl: config.models_base_url,
         threshold: config.threshold,
@@ -156,7 +174,7 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
       detector.dispose()
       if (detectorRef.current === detector) detectorRef.current = null
     }
-  }, [shouldRun, config])
+  }, [shouldRun, config, apiBaseUrl])
 
   // Suspend during a turn / assistant speech; resume (arm) when idle again.
   useEffect(() => {
@@ -188,6 +206,32 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
     setUserEnabled(next)
   }, [])
 
+  /**
+   * Switch the detection back end (the wake-word bake-off A/B control). PUTs the
+   * choice — a process-memory override on the backend — and applies the fresh
+   * config, which re-runs the detector effect and swaps the detector.
+   */
+  const setProvider = useCallback(
+    async (provider: WakeProviderId) => {
+      setProviderBusy(true)
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/voice/wake-config`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ provider }),
+        })
+        if (response.ok) {
+          setConfig((await response.json()) as WakeConfigResponse)
+        }
+      } catch {
+        // leave the current config in place; the switch simply didn't take
+      } finally {
+        setProviderBusy(false)
+      }
+    },
+    [apiBaseUrl],
+  )
+
   /** Everything heard since the wake phrase, as base64 PCM16 chunks to flush into the session. */
   const takeRetainedAudio = useCallback((targetRate?: number): string[] => {
     return detectorRef.current?.takeRetainedAudio(targetRate) ?? []
@@ -205,11 +249,14 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
     available,
     userEnabled,
     phrase: config?.phrase ?? 'Mission Control',
+    provider: config?.provider ?? 'openwakeword',
+    providers: config?.providers ?? [],
+    busy: providerBusy,
     detail,
     lastScore,
     lastDetectionAt,
     activationLatencyMs,
   }
 
-  return { diagnostics, setEnabled, takeRetainedAudio, reportActivated }
+  return { diagnostics, setEnabled, setProvider, takeRetainedAudio, reportActivated }
 }

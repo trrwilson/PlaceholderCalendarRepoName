@@ -138,6 +138,11 @@ const WAKE_CONFIG = {
   phrase: 'Mission Control',
   threshold: 0.5,
   cooldown_ms: 2_000,
+  provider: 'openwakeword',
+  providers: [
+    { id: 'openwakeword', label: 'openWakeWord (in-browser)', implemented: true, configured: true },
+    { id: 'azure', label: 'Azure custom keyword (backend)', implemented: true, configured: false },
+  ],
   model_path: '/models/wake/mission_control.onnx',
   models_base_url: '/models/wake',
 }
@@ -147,6 +152,7 @@ const actions = {
   focusDate: vi.fn(),
   highlightEvent: vi.fn(() => ({ matched: false })),
   setPeopleFilter: vi.fn(() => ({ matched: [], unmatched: [] })),
+  requestPrivacyUnlock: vi.fn(),
 }
 const options = { apiBaseUrl: 'http://api.test', actions }
 
@@ -329,6 +335,25 @@ describe('wake-word / voice state machine', () => {
     await waitFor(() => expect(h.detector.disposed).toBe(true))
     await waitFor(() => expect(result.current.status).toBe('idle'))
     expect(result.current.wake.state).toBe('off')
+  })
+
+  it('exposes the wake-word bake-off: provider + selectable back ends, and switches via PUT', async () => {
+    const put = vi.fn(async () => ({ ok: true, json: async () => ({ ...WAKE_CONFIG, provider: 'azure' }) }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) =>
+        init?.method === 'PUT' ? put() : { ok: true, json: async () => WAKE_CONFIG },
+      ) as unknown as typeof fetch,
+    )
+    const { result } = await renderArmed()
+    expect(result.current.wake.provider).toBe('openwakeword')
+    expect(result.current.wake.providers.map((p) => p.id)).toEqual(['openwakeword', 'azure'])
+
+    await act(async () => {
+      await result.current.setWakeProvider('azure')
+    })
+    expect(put).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(result.current.wake.provider).toBe('azure'))
   })
 
   it('does not arm when the backend reports wake word disabled', async () => {

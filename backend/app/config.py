@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from app.models import CalendarColor, Endpointing, VoiceProviderId
+from app.models import CalendarColor, Endpointing, VoiceProviderId, WakeProviderId
 
 
 def _split_csv(value: object) -> object:
@@ -72,9 +72,10 @@ class Settings(BaseSettings):
     # to captured PCM once, before wake-word detection and before the audio is
     # streamed to the conversational provider. Expressed in decibels and
     # converted to a linear multiplier as ``10 ** (db / 20)``; 0 dB is unity and
-    # disables the stage. Kiosk microphones are typically far-field and quiet, so
-    # the default lifts the level. Tune it empirically against the throttled
-    # ``[voice] mic input level`` console line (peak / RMS / clip%).
+    # disables the stage. Defaults to 0: the kiosk now captures through a
+    # hardware microphone path with adequate level, so no software boost is
+    # applied unless an install needs one. Tune it empirically against the
+    # throttled ``[voice] mic input level`` console line (peak / RMS / clip%).
     #
     # Deliberately the *only* level control: browser auto-gain-control is off so
     # it cannot fight this, and the kiosk's end-of-speech thresholds are
@@ -82,7 +83,7 @@ class Settings(BaseSettings):
     # Independent of the microphone hardware and of the ``getUserMedia``
     # constraints — it only touches samples. Mirrored as the fallback default in
     # ``frontend/src/voice/gain.ts`` (``DEFAULT_INPUT_GAIN_DB``); keep in step.
-    mic_input_gain_db: float = 20.0
+    mic_input_gain_db: float = 0.0
 
     @field_validator("mic_input_gain_db")
     @classmethod
@@ -141,6 +142,13 @@ class Settings(BaseSettings):
     # event boundary times) is reused before another provider fetch. Bounds the
     # blocking Graph request that otherwise lands on every token mint.
     voice_prompt_cache_ttl_seconds: int = 120
+    # How many days of the household schedule (title / time / location, one line
+    # per day) are baked into the voice system instruction, so a loose reference
+    # like "that doctor appointment in Bellevue later this month" resolves
+    # without a tool call. Also the window the Local / Hybrid pipeline resolves
+    # entities against per turn. Widening it grows the prompt (~a line per busy
+    # day) and the snapshot fetch; the token cache still amortises both.
+    voice_context_days: int = 30
     # Uses allowed per minted token. 0 = unlimited within the ttl window, which is
     # what lets one cached token back many kiosk turns. The token still carries
     # the full locked constraints (model, prompt, tools, voice) and the endpoint
@@ -272,6 +280,23 @@ class Settings(BaseSettings):
     wake_word_model_path: str = "/models/wake/mission_control.onnx"
     wake_word_models_base_url: str = "/models/wake"
 
+    # Which wake-word detector spots the phrase. Orthogonal to
+    # ``voice_provider`` — a bake-off in its own right (AGENTS.md -> "Wake
+    # word"). ``openwakeword`` (default) runs entirely in the kiosk browser;
+    # ``azure`` streams mic audio to the backend, which spots the phrase offline
+    # with the native Speech SDK. Switchable at runtime from Settings
+    # (``PUT /api/voice/wake-config``, process-memory, reverts on restart).
+    wake_word_provider: WakeProviderId = "openwakeword"
+    # Backend filesystem path to the Azure custom-keyword ``.table`` (Speech
+    # Studio export). Resolved relative to the backend working directory; the
+    # default points at the single copy under the frontend's public assets.
+    # Only read by the ``azure`` provider, and only when the ``azure-wake``
+    # optional dependency (``pip install -e '.[azure-wake]'``) is installed —
+    # keyword spotting itself is on-device and needs no Azure credentials.
+    wake_word_azure_model_path: str = (
+        "../frontend/public/models/wake/azure_mission_control_basic_med.table"
+    )
+
     # -- Voice debug audio capture ----------------------------------------
     # The kiosk keeps the last N activations' provider-input audio in the
     # browser; when this is on it also POSTs each finished capture to
@@ -350,6 +375,49 @@ class Settings(BaseSettings):
     # How long the expiry chime loops before it stops on its own. The visual
     # "Timer finished" state persists until a person dismisses it regardless.
     timer_alarm_max_ring_seconds: int = 300
+
+    # -- Lists (grocery, for now) ----------------------------------------
+    # Unlike timers, a household list is durable — it is persisted to this one
+    # JSON file (relative -> the backend working dir, alongside the MSAL cache;
+    # an absolute path works too) and reloaded at startup. Same "one file, no
+    # datastore" class as the token cache. Blank disables persistence (the list
+    # is then in-memory only, like a timer). See docs/lists-plan.md.
+    lists_file: str = "lists.json"
+    # How many distinct past item names the touch quick-add grid remembers.
+    lists_recent_items_max: int = 20
+
+    # -- Privacy mode ---------------------------------------------------------
+    # A houseguest-facing "redact the specifics + read-only" state. Entered from
+    # the kiosk (long-press the logo, Settings, or ask the assistant) with no
+    # secret; left only by entering this PIN on the on-screen 0-9 keypad. This is
+    # backend config only — there is deliberately no in-app way to set it
+    # (docs/privacy-mode-plan.md). The feature is inert until a PIN is set: with
+    # none, the entry affordances are hidden and POST /api/privacy/lock 409s, so
+    # nobody can be locked out.
+    #
+    # MVP is a four-digit PIN on a fixed keypad (7-8-9 / 4-5-6 / 1-2-3 / 0). The
+    # default 8426 traces up-left-down-right on that layout (8 top, 4 left, 2
+    # bottom, 6 right). Blank disables the whole feature.
+    privacy_mode_pin: str = "8426"
+    # Persisted so a power-cycle does not defeat the lock — relative -> backend
+    # working dir, alongside lists.json / the MSAL cache. Blank -> in-memory only.
+    privacy_state_file: str = "privacy.json"
+    # Wrong-PIN attempts before the keypad is disabled for a cooldown, and the
+    # base cooldown (it doubles on each further lockout, capped at an hour). The
+    # counters are process memory only — a restart clears them.
+    privacy_unlock_max_attempts: int = 5
+    privacy_unlock_cooldown_seconds: int = 60
+    # A just-entered privacy mode can be turned off with no PIN for this long —
+    # covers an accidental or prank entry without weakening the real barrier.
+    privacy_undo_grace_seconds: int = 8
+
+    @field_validator("privacy_mode_pin")
+    @classmethod
+    def _check_privacy_mode_pin(cls, value: str) -> str:
+        pin = value.strip()
+        if pin and (not pin.isdigit() or len(pin) != 4):
+            raise ValueError("privacy_mode_pin must be exactly four digits (or blank to disable)")
+        return pin
 
     def calendar_color_for(self, index: int) -> CalendarColor:
         """Assign a stable CalendarColor to the configured user at ``index``.

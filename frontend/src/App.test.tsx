@@ -1,11 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { appSocket } from './realtime/appSocket'
 
 describe('Mission Control dashboard', () => {
   afterEach(() => cleanup())
 
   beforeEach(() => {
+    appSocket.__resetForTests()
     window.localStorage.clear()
     const today = new Date()
     const startsAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 16).toISOString()
@@ -244,13 +246,58 @@ describe('Mission Control dashboard', () => {
     expect(document.querySelector('.dock-timer-remaining')?.textContent).toMatch(/^\d+:\d{2}$/)
   })
 
-  it('keeps the Home/Week/Month/Timer group stable and shows Today only as a contextual action', async () => {
+  it('shows the grocery list, checks an item off, and carries the count in the dock', async () => {
+    const grocery = {
+      id: 'grocery',
+      title: 'Grocery',
+      updated_at: new Date().toISOString(),
+      recent_names: ['Paper towels'],
+      items: [
+        { id: 'i1', name: 'Milk', note: null, checked: false, added_at: new Date().toISOString(), checked_at: null, source: 'voice' },
+        { id: 'i2', name: 'Eggs', note: null, checked: false, added_at: new Date().toISOString(), checked_at: null, source: 'touch' },
+      ],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string | URL, opts?: { method?: string }) => {
+        const target = String(url)
+        if (target.includes('/api/lists/grocery/items/i1') && opts?.method === 'PATCH') {
+          const next = { ...grocery, items: [{ ...grocery.items[0], checked: true }, grocery.items[1]] }
+          return Promise.resolve({ ok: true, json: async () => ({ list: next, removed: [], added: [], already_present: [] }) })
+        }
+        if (target.includes('/api/lists/grocery')) {
+          return Promise.resolve({ ok: true, json: async () => grocery })
+        }
+        return Promise.resolve({
+          json: async () => ({
+            calendars: [{ id: 'home', name: 'Home', color: 'fern', enabled: true }],
+            events: [],
+          }),
+        })
+      }),
+    )
+
+    render(<App />)
+    // The dock carries the "to get" count while another view is on screen.
+    await waitFor(() => expect(document.querySelector('.dock-lists-count')?.textContent).toBe('2'))
+
+    fireEvent.click(screen.getByRole('button', { name: /^Lists/ }))
+    expect(await screen.findByRole('button', { name: 'Check off Milk' })).toBeInTheDocument()
+    expect(screen.getByText('2 to get')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check off Milk' }))
+    await waitFor(() => expect(screen.getByText('1 to get')).toBeInTheDocument())
+    // Checked items move to the "Got it" strip.
+    expect(screen.getByRole('button', { name: 'Put Milk back on the list' })).toBeInTheDocument()
+  })
+
+  it('keeps the Home/Week/Month/Timer/Lists group stable and shows Today only as a contextual action', async () => {
     render(<App />)
     await waitFor(() => expect(document.querySelector('.large-event')).toBeInTheDocument())
     const nav = document.querySelector('.mode-nav') as HTMLElement
     const modeLabels = () => Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)
     const baseline = modeLabels()
-    expect(baseline).toEqual(['Home', 'Week', 'Month', 'Timer'])
+    expect(baseline).toEqual(['Home', 'Week', 'Month', 'Timer', 'Lists'])
     // Today is not a peer mode and is absent while the current period is in view.
     expect(document.querySelector('.dock-today')).not.toBeInTheDocument()
 
@@ -359,6 +406,9 @@ describe('Mission Control dashboard', () => {
 
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    // The bake-off pickers live under Voice & sound → Advanced (collapsed by default).
+    fireEvent.click(await screen.findByRole('button', { name: 'Voice & sound' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced (bake-off)' }))
     const gemini = await screen.findByRole('button', { name: /Gemini Live/ })
     expect(gemini).toHaveClass('selected')
     // An unimplemented contestant is listed but not selectable.
@@ -366,6 +416,83 @@ describe('Mission Control dashboard', () => {
 
     fireEvent.click(gemini)
     await waitFor(() => expect(put).toHaveBeenCalledWith({ provider: 'gemini' }))
+  })
+
+  it('remembers the Advanced (bake-off) disclosure across sessions so the pickers stay reachable', async () => {
+    const config = {
+      enabled: true,
+      provider: 'gemini',
+      providers: [{ id: 'gemini', label: 'Gemini Live', implemented: true, configured: true }],
+    }
+    vi.stubGlobal('fetch', vi.fn((url: string | URL) => {
+      const target = String(url)
+      if (target.includes('/api/voice/config')) return Promise.resolve({ ok: true, json: async () => config })
+      if (target.includes('/api/timers')) return Promise.resolve({ ok: true, json: async () => [] })
+      return Promise.resolve({ json: async () => ({ calendars: [], events: [] }) })
+    }))
+
+    const first = render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Voice & sound' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced (bake-off)' }))
+    expect(await screen.findByRole('button', { name: /Gemini Live/ })).toBeInTheDocument()
+    expect(window.localStorage.getItem('mission-control.settings-advanced-open')).toBe('open')
+    first.unmount()
+
+    // A fresh mount (new kiosk session) reopens Settings with Advanced already expanded.
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Voice & sound' }))
+    expect(await screen.findByRole('button', { name: /Gemini Live/ })).toBeInTheDocument()
+  })
+
+  it('shows a US holiday as a non-interactive label beside the date, not a calendar entry', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 8, 7, 9)) // Labor Day — first Monday of September 2026
+    const at = (hour: number) => new Date(2026, 8, 7, hour).toISOString()
+    const midnight = (day: number) => new Date(2026, 8, day).toISOString()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+      calendars: [{ id: 'home', name: 'Home', color: 'fern', enabled: true }],
+      events: [
+        { id: 'cookout', calendar_id: 'home', title: 'Cookout', starts_at: at(12), ends_at: at(14), location: null, all_day: false, categories: [] },
+        { id: 'trip', calendar_id: 'home', title: 'Road trip', starts_at: midnight(6), ends_at: midnight(9), location: null, all_day: true, categories: [] },
+        { id: 'fair', calendar_id: 'home', title: 'Book fair', starts_at: midnight(10), ends_at: midnight(12), location: null, all_day: true, categories: [] },
+      ],
+    }) }))
+    try {
+      render(<App />)
+      // Home surfaces today's holiday under the headline; it is a plain label, never a button.
+      const homeNote = await screen.findByText('Labor Day')
+      expect(homeNote.closest('button')).toBeNull()
+      expect(homeNote).toHaveClass('holiday-note-name')
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
+      await waitFor(() => expect(document.querySelector('.month-grid')).toBeInTheDocument())
+      const grid = document.querySelector('.month-grid') as HTMLElement
+      const monthNote = within(grid).getByText('Labor Day')
+      expect(monthNote.closest('button')).toBeNull()
+      // It lives in the day heading, so the day's real events still render as chips.
+      expect(monthNote.closest('.day-heading')).not.toBeNull()
+      expect(grid.querySelector('.day-events .event-chip')).toBeInTheDocument()
+
+      // Week puts the holiday on the always-present all-day lane as a plain centred label,
+      // sharing its row with events that don't touch that day and sitting ahead of one that does.
+      fireEvent.click(screen.getAllByRole('button', { name: 'Week' })[0])
+      await waitFor(() => expect(document.querySelector('.week-grid')).toBeInTheDocument())
+      const lane = document.querySelector('.allday-lane') as HTMLElement
+      const laneHoliday = lane.querySelector('.allday-holiday') as HTMLElement
+      expect(laneHoliday).toHaveTextContent('Labor Day')
+      expect(laneHoliday.tagName).toBe('SPAN')
+      expect(laneHoliday.closest('button')).toBeNull()
+      expect(laneHoliday.style.gridRow).toBe('1')
+      const barRow = (title: string) => (Array.from(lane.querySelectorAll('.span-bar')).find((b) => b.textContent?.includes(title)) as HTMLElement).style.gridRow
+      // "Book fair" (Thu–Fri) never touches Labor Day → same top row as the holiday.
+      expect(barRow('Book fair')).toBe('1')
+      // "Road trip" covers the holiday's day → it stacks onto the next row, never over the label.
+      expect(barRow('Road trip')).toBe('2')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('dismisses Settings outside and with Escape', async () => {
@@ -379,5 +506,49 @@ describe('Mission Control dashboard', () => {
     await waitFor(() => expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.keyDown(screen.getByRole('dialog', { name: 'Settings' }), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument())
+  })
+
+  it('redacts event titles and goes read-only in privacy mode', async () => {
+    const today = new Date()
+    const startsAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 16).toISOString()
+    const endsAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 17).toISOString()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string | URL) => {
+        const target = String(url)
+        if (target.includes('/api/privacy')) {
+          return Promise.resolve({ ok: true, json: async () => ({ locked: true, since: 't', available: true }) })
+        }
+        if (target.includes('/api/calendar')) {
+          return Promise.resolve({ json: async () => ({
+            calendars: [{ id: 'jordan', name: 'Jordan', color: 'gold', enabled: true }],
+            events: [{ id: 'swim', calendar_id: 'jordan', title: 'Therapy', starts_at: startsAt, ends_at: endsAt, location: 'Downtown', all_day: false, categories: [] }],
+          }) })
+        }
+        return Promise.resolve({ ok: true, json: async () => ({}) })
+      }),
+    )
+
+    render(<App />)
+
+    // The event is still there (when / whose), but the title is gone.
+    await waitFor(() => expect(document.querySelector('.large-event')).toBeInTheDocument())
+    expect(screen.queryByText('Therapy')).not.toBeInTheDocument()
+    expect(screen.queryByText('Downtown')).not.toBeInTheDocument()
+    expect(document.querySelector('.large-event-main strong')?.textContent).toBe('•••')
+
+    // The interactive chrome is gone; the way back (padlock) is present.
+    expect(screen.queryByRole('button', { name: 'Add an event' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open settings' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Turn off privacy mode' })).toBeInTheDocument()
+    expect(document.querySelector('.kiosk-shell')).toHaveClass('is-private')
+
+    // Tapping an event opens nothing.
+    fireEvent.click(document.querySelector('.large-event') as HTMLElement)
+    expect(screen.queryByRole('dialog', { name: 'Event details' })).not.toBeInTheDocument()
+
+    // The padlock opens the PIN keypad.
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off privacy mode' }))
+    expect(await screen.findByRole('dialog', { name: 'Turn off privacy mode' })).toBeInTheDocument()
   })
 })

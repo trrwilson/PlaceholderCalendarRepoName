@@ -72,14 +72,18 @@ def _realtime_input_config(settings: Settings) -> dict:
 
 
 def _live_config(
-    settings: Settings, calendar_names: list[str], now: datetime, tz_label: str | None
+    settings: Settings,
+    calendar_names: list[str],
+    now: datetime,
+    tz_label: str | None,
+    schedule: str = "",
 ) -> dict:
     """The LiveConnectConfig locked into the token (browser cannot override these)."""
     from google.genai import types
 
     config: dict = {
         "response_modalities": [types.Modality.AUDIO],
-        "system_instruction": build_system_instruction(now, calendar_names, tz_label),
+        "system_instruction": build_system_instruction(now, calendar_names, tz_label, schedule),
         "tools": as_gemini_tools(),
         "speech_config": {
             "voice_config": {"prebuilt_voice_config": {"voice_name": settings.gemini_voice}},
@@ -127,6 +131,7 @@ class GeminiAdapter:
         surface: str | None,
         now_local: datetime,
         timezone: str | None,
+        schedule: str = "",
     ) -> VoiceToken:
         if not settings.gemini_api_key:
             raise VoiceUnavailable("GEMINI_API_KEY_MISSION_CONTROL is not configured")
@@ -150,7 +155,7 @@ class GeminiAdapter:
                 new_session_expire_time=expires_at,
                 live_connect_constraints=types.LiveConnectConstraints(
                     model=settings.gemini_live_model,
-                    config=_live_config(settings, calendar_names, now_local, timezone),
+                    config=_live_config(settings, calendar_names, now_local, timezone, schedule),
                 ),
             )
         )

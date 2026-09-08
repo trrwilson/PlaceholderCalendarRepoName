@@ -77,6 +77,30 @@ describe('RelayVoiceProvider', () => {
     ])
   })
 
+  it('assembles the user transcript: deltas accumulate, the final frame replaces', async () => {
+    const { provider, events, ws } = setup()
+    const connected = provider.connect()
+    ws().open()
+    await connected
+
+    ws().emit({ type: 'user-transcript', text: "when's", final: false })
+    ws().emit({ type: 'user-transcript', text: ' the', final: false })
+    ws().emit({ type: 'user-transcript', text: ' dentist', final: false })
+    ws().emit({ type: 'user-transcript', text: "when's the dentist appointment", final: true })
+
+    expect(events.map((e) => (e as { text: string }).text)).toEqual([
+      "when's",
+      "when's the",
+      "when's the dentist",
+      "when's the dentist appointment",
+    ])
+    expect(events.at(-1)).toEqual({
+      type: 'user-transcript',
+      text: "when's the dentist appointment",
+      final: true,
+    })
+  })
+
   it('translates an error frame to a session error', async () => {
     const { provider, events, ws } = setup()
     const connected = provider.connect()

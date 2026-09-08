@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AudioSink, MicSource } from './audio'
 import { DEFAULT_INPUT_GAIN_DB, dbToLinear } from './gain'
@@ -198,5 +198,87 @@ describe('MicSource input gain', () => {
     const stats = mic.inputGainStats()
     expect(stats).toMatchObject({ db: 9, frames: 0, samples: 0, peak: 0, rms: 0, clipped: 0 })
     expect(stats.linear).toBeCloseTo(dbToLinear(9), 6)
+  })
+})
+
+describe('MicSource input device', () => {
+  let getUserMedia: ReturnType<typeof vi.fn>
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  beforeEach(() => {
+    getUserMedia = vi.fn(async () => ({
+      getAudioTracks: () => [
+        {
+          label: 'CABLE Output (VB-Audio Virtual Cable)',
+          getSettings: () => ({ deviceId: 'cable-1' }),
+          stop: vi.fn(),
+        },
+      ],
+      getTracks: () => [{ stop: vi.fn() }],
+    }))
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    vi.stubGlobal(
+      'AudioContext',
+      vi.fn(() => ({
+        state: 'running',
+        sampleRate: 48_000,
+        destination: {},
+        audioWorklet: { addModule: vi.fn().mockResolvedValue(undefined) },
+        createMediaStreamSource: () => ({ connect: vi.fn(), disconnect: vi.fn() }),
+        resume: () => Promise.resolve(),
+        close: vi.fn(),
+      })),
+    )
+    vi.stubGlobal(
+      'AudioWorkletNode',
+      vi.fn(() => ({ port: { onmessage: null, close: vi.fn() }, connect: vi.fn(), disconnect: vi.fn() })),
+    )
+  })
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('requests the OS default until a device is chosen', async () => {
+    const mic = new MicSource()
+    const sub = await mic.subscribe(() => {})
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(getUserMedia.mock.calls[0][0].audio).not.toHaveProperty('deviceId')
+    sub.unsubscribe()
+  })
+
+  it('uses an ideal deviceId constraint for a best-effort (auto) choice', async () => {
+    const mic = new MicSource()
+    mic.setInputDeviceId('cable-1', false)
+    const sub = await mic.subscribe(() => {})
+    expect(getUserMedia.mock.calls[0][0].audio.deviceId).toEqual({ ideal: 'cable-1' })
+    sub.unsubscribe()
+  })
+
+  it('uses an exact constraint for an explicit choice and rebuilds a live stream', async () => {
+    const mic = new MicSource()
+    const sub = await mic.subscribe(() => {})
+    mic.setInputDeviceId('cable-1', true)
+    await settle()
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(getUserMedia.mock.calls[1][0].audio.deviceId).toEqual({ exact: 'cable-1' })
+    expect(mic.boundInputLabel()).toBe('CABLE Output (VB-Audio Virtual Cable)')
+    sub.unsubscribe()
+  })
+
+  it('does not touch getUserMedia when the device changes while idle', () => {
+    const mic = new MicSource()
+    mic.setInputDeviceId('cable-1', true)
+    expect(getUserMedia).not.toHaveBeenCalled()
+  })
+
+  it('notifies stream-change listeners on acquire and on teardown', async () => {
+    const mic = new MicSource()
+    const onChange = vi.fn()
+    mic.onStreamChange(onChange)
+    const sub = await mic.subscribe(() => {})
+    expect(onChange).toHaveBeenCalled()
+    onChange.mockClear()
+    sub.unsubscribe()
+    expect(onChange).toHaveBeenCalled()
   })
 })

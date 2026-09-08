@@ -56,6 +56,7 @@ class AzureVoiceLiveAdapter:
         surface: str | None,
         now_local: datetime,
         timezone: str | None,
+        schedule: str = "",
     ) -> VoiceToken:
         if reason := self.missing_config(settings):
             raise VoiceUnavailable(reason)
@@ -67,7 +68,7 @@ class AzureVoiceLiveAdapter:
             f"?api-version={settings.azure_voice_live_api_version}&model={model}"
         )
         session = build_voice_live_session(
-            instructions=build_system_instruction(now_local, calendar_names, timezone),
+            instructions=build_system_instruction(now_local, calendar_names, timezone, schedule),
             tools=as_openai_tools(),
             voice=settings.azure_voice_live_voice,
             voice_type=settings.azure_voice_live_voice_type,

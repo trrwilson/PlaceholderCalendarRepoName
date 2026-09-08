@@ -886,6 +886,43 @@ up. It is now a first-class design property:
 - The contract lives in `AGENTS.md` → "Voice assistant" and
   `docs/voice-provider-bakeoff-plan.md` → "End-of-speech ownership".
 
+### Context, single-turn, and transcript display (2026-09-08)
+
+Three behaviour changes, no new run — they address standing gaps in what the agent is
+given and what the overlay shows.
+
+- **The prompt now carries the schedule, not just the calendar names.**
+  `prompt.build_schedule_digest` renders the next `MISSION_CONTROL_VOICE_CONTEXT_DAYS`
+  (default 30) of events as one line per day — `who — title, time, @ location` — from the
+  same snapshot the token cache already fetches; `cache.py` widened its range from
+  `[today, tomorrow]` to `[today, +N]` and passes the digest to `create_grant`
+  (`schedule=` on the adapter protocol; the Local / Hybrid adapter ignores it).
+  `build_system_instruction` embeds it and tells the model to resolve a loose reference
+  ("that doctor appointment in Bellevue later this month") by matching the spoken words
+  against **both** title and location, calling `get_events` only past the window or for a
+  missing detail. Cost is ~a line per busy day, amortised by the token cache;
+  event-boundary freshness is unchanged because `freshness_horizon` still picks the
+  *next* boundary. `_local_snapshot` widened to the same window and
+  `entities.resolve_event` now scores `location` alongside title/category, so the local
+  path resolves the same references. Escalation payloads carry `location` too.
+- **Single-turn is now an explicit prompt rule.** The instruction forbids follow-up
+  offers ("Do you want me to…", "Should I…", "Would you like…", "Let me know if…") — the
+  s2s models otherwise drift into assistant-chat. Each activation answers what was asked
+  and stops.
+- **Transcript assembly moved into the providers.** Every `user-transcript` `VoiceEvent`
+  now carries the whole best-so-far string, and `useVoiceSession` just shows the latest —
+  a revised final hypothesis **replaces** the earlier one instead of being appended, so
+  an inaccurate early partial no longer lingers through the model's thinking time. Gemini
+  concatenates its `inputTranscription` fragments; the relay accumulates
+  `input_audio_transcription` deltas and the `completed` frame replaces (that path was
+  previously showing only the last delta word). The overlay renders a listening-time
+  transcript in a tentative style (`.voice-said[data-tentative]`). Tests:
+  `test_voice_prompt.py` (new), `test_voice.py` (+2), `useVoiceSession.test.ts` (updated),
+  `relay.test.ts` (+1).
+
+Still open here: true word-by-word live text still needs a second recogniser
+(`gemini-3.5-transcribe-live`), unchanged from the seventh-run note.
+
 ## Follow-ups / not done
 
 - Confirm the exact native-audio Live model id and region availability against current

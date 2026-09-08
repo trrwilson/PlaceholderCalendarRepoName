@@ -164,6 +164,135 @@ class TimerMutationResult(BaseModel):
     replaced: Timer | None = None
 
 
+# -- Lists (grocery, for now) ------------------------------------------------
+# One household list, server-created on first run with this id. The store keys
+# lists by id so named lists later are config + a picker, not a rewrite. See
+# docs/lists-plan.md.
+GROCERY_LIST_ID = "grocery"
+LIST_ITEM_NAME_MAX = 200
+
+
+class ListItemSource(StrEnum):
+    voice = "voice"
+    touch = "touch"
+
+
+class ListItem(BaseModel):
+    """One line on a household list. ``checked`` is "we got it" — a distinct
+    state from removal; a checked item stays on the list, struck through."""
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=LIST_ITEM_NAME_MAX)
+    note: str | None = None
+    checked: bool = False
+    added_at: datetime
+    checked_at: datetime | None = None
+    source: ListItemSource = ListItemSource.touch
+
+    @model_validator(mode="after")
+    def _checked_consistency(self) -> "ListItem":
+        if self.checked and self.checked_at is None:
+            raise ValueError("a checked item must carry checked_at")
+        if not self.checked and self.checked_at is not None:
+            raise ValueError("an unchecked item must not carry checked_at")
+        return self
+
+
+class GroceryList(BaseModel):
+    id: str = Field(min_length=1)
+    title: str = Field(min_length=1, default="Grocery")
+    items: list[ListItem] = Field(default_factory=list)
+    updated_at: datetime
+    # Distinct item names added in the past (most-recent first, capped) — powers
+    # the touch quick-add grid so common items need no keyboard. Persisted with
+    # the list; survives a clear.
+    recent_names: list[str] = Field(default_factory=list)
+
+
+class ListItemCreateRequest(BaseModel):
+    """Add one item (``name``) or several at once (``names``, from "eggs, bread
+    and butter"). At least one non-blank name is required."""
+
+    name: str | None = None
+    names: list[str] | None = None
+    note: str | None = None
+    source: ListItemSource = ListItemSource.touch
+
+    @model_validator(mode="after")
+    def _has_a_name(self) -> "ListItemCreateRequest":
+        if not self.resolved_names():
+            raise ValueError("provide a non-blank name or names")
+        return self
+
+    def resolved_names(self) -> list[str]:
+        raw = list(self.names) if self.names else ([self.name] if self.name else [])
+        return [n.strip() for n in raw if n and n.strip()]
+
+
+class ListItemUpdateRequest(BaseModel):
+    checked: bool | None = None
+    name: str | None = None
+    note: str | None = None
+
+
+class ListClearScope(StrEnum):
+    checked = "checked"
+    all = "all"
+
+
+class ListClearRequest(BaseModel):
+    scope: ListClearScope = ListClearScope.checked
+
+
+class ListRestoreRequest(BaseModel):
+    """Re-insert items removed by a clear / remove — the Undo path."""
+
+    items: list[ListItem]
+
+
+class ListReorderRequest(BaseModel):
+    """A household member dragged the list into a custom order. ``item_ids`` is
+    the desired order; ids not listed keep their current relative position after
+    the listed ones (so the kiosk can send just the reordered 'to get' section)."""
+
+    item_ids: list[str]
+
+
+class ListMutationResult(BaseModel):
+    """Returned by every mutating list endpoint. ``removed`` powers an on-screen
+    "Cleared N · Undo"; ``added`` / ``already_present`` let a voice reply say
+    exactly what happened."""
+
+    list: GroceryList
+    removed: list[ListItem] = Field(default_factory=list)
+    added: list[str] = Field(default_factory=list)
+    already_present: list[str] = Field(default_factory=list)
+
+
+# -- Privacy mode ----------------------------------------------------------
+# One household-global flag that does two things at once: it tells the kiosk to
+# redact schedule / list specifics for a houseguest, and it is a hard read-only
+# gate over every mutating endpoint. Entered from the kiosk with no secret; left
+# only by entering the configured PIN on the on-screen keypad. Backed by
+# ``app/privacy.py``, persisted, broadcast over ``/api/ws``. Social/glance
+# barrier, not a security control. See ``docs/privacy-mode-plan.md``.
+
+
+class PrivacyState(BaseModel):
+    locked: bool = False
+    # naive local, per the time-handling rule; ``None`` while unlocked. Advisory —
+    # the kiosk uses it for a quiet "Privacy since 7:12pm" note.
+    since: datetime | None = None
+    # True only when an unlock PIN is configured. With none, the kiosk hides the
+    # entry affordances and ``POST /api/privacy/lock`` 409s — you must be able to
+    # get out of a state you can get into.
+    available: bool = False
+
+
+class PrivacyUnlockRequest(BaseModel):
+    pin: str = Field(min_length=1, max_length=16)
+
+
 class ApplicationMessage(BaseModel):
     type: str
     message: str
@@ -174,6 +303,18 @@ class ApplicationMessage(BaseModel):
     timers: list[Timer] | None = None
     timer: Timer | None = None
     replaced: Timer | None = None
+    # List pushes reuse it too (docs/lists-plan.md O3 — keep the type, don't add a
+    # bus): ``lists`` is the full current set for reconciliation, ``list`` is the
+    # one that changed, ``removed`` carries the items a clear / remove took off so
+    # every screen can offer the same on-screen Undo.
+    lists: list[GroceryList] | None = None
+    removed: list[ListItem] | None = None
+    # Privacy mode reuses it too: ``privacy`` is the current PrivacyState, pushed
+    # on every lock / unlock and sent on connect for reconciliation.
+    privacy: PrivacyState | None = None
+    # Keep ``list`` last: ``list: … = None`` binds the name in the class body, which
+    # would shadow the ``list`` builtin for any annotation evaluated after it.
+    list: GroceryList | None = None
 
 
 class VoiceTokenRequest(BaseModel):
@@ -226,6 +367,15 @@ VoiceProviderId = Literal[
     # app/voice/local/ and docs/local-voice-plan.md.
     "local",
 ]
+
+
+# Wake-word ("Mission Control") detection back end. Deliberately orthogonal to
+# ``VoiceProviderId`` — the wake phrase and the conversational turn it opens are
+# chosen independently (AGENTS.md -> "Wake word"). ``openwakeword`` is the local
+# ONNX detector that runs entirely in the kiosk browser (the default);
+# ``azure`` streams 16 kHz mic audio to the backend, which spots the phrase
+# offline with the native Speech SDK against an Azure custom-keyword ``.table``.
+WakeProviderId = Literal["openwakeword", "azure"]
 
 
 class VoiceToken(BaseModel):
@@ -289,22 +439,45 @@ class VoiceConfigUpdate(BaseModel):
     provider: VoiceProviderId
 
 
-class WakeWordConfig(BaseModel):
-    """Runtime configuration for the kiosk's local wake-word detector.
+class WakeProviderInfo(BaseModel):
+    """One wake-word detection back end, for the Settings picker (parallels
+    :class:`VoiceProviderInfo`)."""
 
-    Served by ``GET /api/voice/wake-config`` (LAN-gated). All detection runs in
-    the browser against a local model; this only carries thresholds and where
-    the model assets are served from. ``enabled`` is true only when both
-    ``MISSION_CONTROL_WAKE_WORD_ENABLED`` and ``MISSION_CONTROL_VOICE_ENABLED``
-    are set — wake word with no voice turn to open would do nothing.
+    id: WakeProviderId
+    label: str
+    implemented: bool
+    configured: bool
+
+
+class WakeWordConfig(BaseModel):
+    """Runtime configuration for the kiosk's wake-word detector.
+
+    Served by ``GET /api/voice/wake-config`` (LAN-gated); ``PUT`` swaps the
+    effective ``provider`` for the bake-off (process-memory, reverts on
+    restart). ``openwakeword`` detection runs in the browser against local ONNX
+    assets served from ``models_base_url``; ``azure`` detection runs on the
+    backend (see :mod:`app.voice.wake_azure`). ``enabled`` is true only when
+    both ``MISSION_CONTROL_WAKE_WORD_ENABLED`` and
+    ``MISSION_CONTROL_VOICE_ENABLED`` are set — wake word with no voice turn to
+    open would do nothing.
     """
 
     enabled: bool
     phrase: str
     threshold: float
     cooldown_ms: int
+    provider: WakeProviderId
+    providers: list[WakeProviderInfo]
+    # openWakeWord (browser) assets. Unused by the ``azure`` provider, which
+    # loads its ``.table`` on the backend and never hands a model to the kiosk.
     model_path: str
     models_base_url: str
+
+
+class WakeConfigUpdate(BaseModel):
+    """``PUT /api/voice/wake-config`` body (parallels :class:`VoiceConfigUpdate`)."""
+
+    provider: WakeProviderId
 
 
 class VoiceDebugCapture(BaseModel):

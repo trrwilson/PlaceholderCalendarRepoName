@@ -44,7 +44,7 @@ export function VoiceOverlay({ status, transcript, error, onStop, onDismissError
       </div>
       {status === 'error' && error && <p className="voice-error-text">{error.message}</p>}
       {transcript.user && (
-        <p className="voice-said">
+        <p className="voice-said" data-tentative={status === 'listening'}>
           <span>You</span>
           {transcript.user}
         </p>

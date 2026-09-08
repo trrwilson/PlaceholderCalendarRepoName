@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 import app.voice.providers.gemini as gemini_provider
 from app.api import _build_provider
@@ -138,6 +139,13 @@ def test_token_minted_with_locked_constraints(
         "resume_timer",
         "restart_timer",
         "get_timer",
+        "add_to_list",
+        "remove_from_list",
+        "check_off_item",
+        "clear_list",
+        "get_list",
+        "enter_privacy_mode",
+        "request_privacy_unlock",
     }
     # The six-hour cap is carried in the timer tool descriptions so the agent can
     # speak the rejection rather than silently failing.
@@ -219,6 +227,45 @@ def test_token_stamps_the_kiosk_clock_not_the_server_clock(
     assert "Saturday, September 5, 2026 at 11:30 PM" in instruction
     assert "America/Los_Angeles" in instruction
     assert "never shift it to UTC" in instruction
+
+
+def test_token_bakes_the_schedule_digest_into_the_instruction(
+    client: TestClient, voice_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loose reference ("that dentist appointment") must be resolvable without a
+    tool call, so ~a month of events — title, time, and location — is in the
+    prompt. The mock calendar seeds the dentist at Cedar Street Dental tomorrow."""
+    recorder: dict = {}
+    monkeypatch.setattr(gemini_provider, "_build_client", _fake_client_factory(recorder))
+
+    response = client.post("/api/voice/token", json={"client_time": _iso_at("08:00:00")})
+    assert response.status_code == 200
+
+    instruction = str(
+        recorder["create"]
+        .await_args.kwargs["config"]
+        .live_connect_constraints.config.system_instruction
+    )
+    assert "Household schedule" in instruction
+    assert "Dentist appointment" in instruction
+    assert "Cedar Street Dental" in instruction
+    # And the guidance to use it: match the words against title AND location.
+    assert "against BOTH the title and the location" in instruction
+
+
+def test_token_instruction_bars_follow_up_offers(
+    client: TestClient, voice_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder: dict = {}
+    monkeypatch.setattr(gemini_provider, "_build_client", _fake_client_factory(recorder))
+    client.post("/api/voice/token")
+    instruction = str(
+        recorder["create"]
+        .await_args.kwargs["config"]
+        .live_connect_constraints.config.system_instruction
+    )
+    assert "one self-contained exchange" in instruction
+    assert "Do NOT tack on a follow-up" in instruction
 
 
 # -- token / snapshot caching ------------------------------------------------
@@ -373,11 +420,12 @@ def test_voice_config_reports_the_mic_input_gain(
     default_db = Settings(_env_file=None).mic_input_gain_db
     assert client.get("/api/voice/config").json()["mic_input_gain_db"] == default_db
 
-    # 0 disables the stage; a negative trim is allowed.
-    monkeypatch.setenv("MISSION_CONTROL_MIC_INPUT_GAIN_DB", "0")
+    # The stage is off by default; an install can opt into a boost.
+    monkeypatch.setenv("MISSION_CONTROL_MIC_INPUT_GAIN_DB", "18")
     get_settings.cache_clear()
-    assert client.get("/api/voice/config").json()["mic_input_gain_db"] == 0.0
+    assert client.get("/api/voice/config").json()["mic_input_gain_db"] == 18.0
 
+    # A negative trim is allowed too.
     monkeypatch.setenv("MISSION_CONTROL_MIC_INPUT_GAIN_DB", "-3.5")
     get_settings.cache_clear()
     assert client.get("/api/voice/config").json()["mic_input_gain_db"] == -3.5
@@ -431,6 +479,48 @@ def test_wake_config_defaults_to_disabled(
     # detections, so track the setting rather than pinning a number here.
     assert body["threshold"] == Settings(_env_file=None).wake_word_threshold
     assert body["model_path"].endswith("mission_control.onnx")
+    # The wake-word bake-off: openWakeWord is the default back end, and both
+    # contestants are advertised for the Settings picker.
+    assert body["provider"] == "openwakeword"
+    ids = {p["id"] for p in body["providers"]}
+    assert ids == {"openwakeword", "azure"}
+    oww = next(p for p in body["providers"] if p["id"] == "openwakeword")
+    assert oww["implemented"] is True and oww["configured"] is True
+
+
+def test_wake_config_put_switches_provider(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    get_settings.cache_clear()
+    switched = client.put("/api/voice/wake-config", json={"provider": "azure"})
+    assert switched.status_code == 200
+    assert switched.json()["provider"] == "azure"
+    # Process-memory override — a fresh GET sees it too.
+    assert client.get("/api/voice/wake-config").json()["provider"] == "azure"
+    assert client.put("/api/voice/wake-config", json={"provider": "nonsense"}).status_code == 422
+
+
+def test_wake_config_put_gated_to_local_network(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", raising=False)
+    get_settings.cache_clear()
+    assert client.put("/api/voice/wake-config", json={"provider": "azure"}).status_code == 403
+
+
+def test_wake_azure_ws_refused_when_not_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Voice + wake on, but the .table is missing (and the native SDK is absent
+    # in CI) — the socket is refused rather than accepted and left hanging.
+    monkeypatch.setenv("MISSION_CONTROL_WAKE_WORD_ENABLED", "true")
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_ENABLED", "true")
+    monkeypatch.setenv("MISSION_CONTROL_WAKE_WORD_AZURE_MODEL_PATH", "/no/such/keyword.table")
+    get_settings.cache_clear()
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/voice/wake/azure"):
+            pass
 
 
 def test_wake_config_enabled_only_with_voice_and_wake_flags(

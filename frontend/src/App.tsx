@@ -2,14 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import './App.css'
 import { addDays, DAY_MS, isSameDay, resolveMonthView, sameMonth, startOfDay, startOfWeek, toIsoDate, type WeekStart } from './dates'
+import { holidayOn } from './holidays'
 import type { DashboardActions } from './voice/types'
 import type { WakeState } from './voice/wake/useWakeWord'
 import { useVoiceSession } from './voice/useVoiceSession'
 import { useVoiceConfig } from './voice/useVoiceConfig'
+import { useAudioInput } from './voice/useAudioInput'
 import { VoiceOverlay } from './voice/VoiceOverlay'
 import { VoiceToast } from './voice/VoiceToast'
 import { TimerView } from './timers/TimerView'
 import { useTimers } from './timers/useTimers'
+import { ListsView } from './lists/ListsView'
+import { useLists } from './lists/useLists'
+import type { ListItem } from './lists/types'
+import { usePrivacy } from './privacy/usePrivacy'
+import { PrivacyPad } from './privacy/PrivacyPad'
 
 type CalendarSource = 'mock' | 'outlook' | 'google'
 // `name` is the raw account handle; `display_name` is the natural personal name the
@@ -20,7 +27,7 @@ type EventCategory = { id: string; name: string; color: string } // color: a con
 type CalendarEvent = { id: string; calendar_id: string; title: string; starts_at: string; ends_at: string; location: string | null; all_day: boolean; categories?: EventCategory[] }
 type Snapshot = { calendars: Calendar[]; events: CalendarEvent[] }
 type ConnectionState = 'connecting' | 'live' | 'offline'
-type ViewMode = 'home' | 'week' | 'month' | 'timer'
+type ViewMode = 'home' | 'week' | 'month' | 'timer' | 'lists'
 type SemanticColorMode = 'category-first' | 'people-first'
 type CalendarAuthState = 'connected' | 'connecting' | 'disconnected' | 'not_applicable'
 type CalendarAuth = { provider: string; state: CalendarAuthState; account: string | null; accounts?: string[]; user_code: string | null; verification_uri: string | null; verification_uri_complete: string | null; verification_qr: string | null; expires_in: number | null; error: string | null }
@@ -33,6 +40,18 @@ const WAKE_HOURS = Array.from({ length: 14 }, (_, index) => index + 7)
 const MOCK_EXCEPTION: HouseholdException = { title: 'Garage door open', detail: 'Open for 43 minutes', action: 'Check garage' }
 const colorClass = (color: string) => `calendar-${color}`
 const personName = (calendar?: Calendar) => calendar?.display_name || calendar?.name || ''
+// Privacy mode: obscure the *what* (title, location, category) while keeping the
+// *when / how many / whose* — see docs/privacy-mode-plan.md. A deterministic
+// placeholder, never the real string transformed, so nothing about the title
+// (length, shape) leaks. Category treatment drops entirely (identity colour
+// only, which is the "whose" the household keeps).
+const REDACTED_TITLE = '•••'
+const redactEvent = (event: CalendarEvent): CalendarEvent => ({
+  ...event,
+  title: REDACTED_TITLE,
+  location: null,
+  categories: [],
+})
 // A small provider mark shown after a person's name (e.g. "Travis ⧉"). Inline SVG so it
 // scales with the surrounding type and needs no asset. `mock` has no badge.
 function ProviderBadge({ source }: { source?: CalendarSource }) {
@@ -61,6 +80,12 @@ const COLOR_MODE_KEY = 'mission-control.semantic-color-mode'
 const readColorMode = (): SemanticColorMode => window.localStorage.getItem(COLOR_MODE_KEY) === 'people-first' ? 'people-first' : 'category-first'
 const WEEK_START_KEY = 'mission-control.week-start'
 const readWeekStart = (): WeekStart => window.localStorage.getItem(WEEK_START_KEY) === 'sunday' ? 'sunday' : 'monday'
+// Once someone opens the bake-off disclosure they usually keep switching providers, so
+// remember it across sessions — the engineering knobs stay one tap closer.
+const ADVANCED_OPEN_KEY = 'mission-control.settings-advanced-open'
+const readAdvancedOpen = (): boolean => {
+  try { return window.localStorage.getItem(ADVANCED_OPEN_KEY) === 'open' } catch { return false }
+}
 const CALENDAR_PALETTE = ['coral', 'ocean', 'gold', 'fern', 'violet'] as const
 // Stacked all-day/multi-day bars shown in Week and Month before the rest collapse to a "+N" count.
 const SPAN_MAX_LANES = 3
@@ -118,6 +143,9 @@ function App() {
   const [addingCalendar, setAddingCalendar] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const [timerNotice, setTimerNotice] = useState<string | null>(null)
+  const [listNotice, setListNotice] = useState<{ text: string; restore?: ListItem[] } | null>(null)
+  const [privacyPadOpen, setPrivacyPadOpen] = useState(false)
+  const [privacyNotice, setPrivacyNotice] = useState(false)
   const filterRef = useRef<HTMLDivElement>(null)
   const settingsRef = useRef<HTMLDivElement>(null)
   const linkedAccountsRef = useRef(0)
@@ -256,6 +284,56 @@ function App() {
     return () => window.clearTimeout(clear)
   }, [timerNotice])
 
+  // The grocery list. Backend-owned + persisted; a voice add / remove / clear on
+  // any screen lands here through the shared `/api/ws` push. See docs/lists-plan.md.
+  const lists = useLists({
+    apiBaseUrl: API_URL,
+    onRemoved: (removed: ListItem[], kind) => {
+      if (kind !== 'cleared' || removed.length === 0) return
+      const noun = removed.length === 1 ? 'item' : 'items'
+      setListNotice({ text: `Cleared ${removed.length} ${noun}`, restore: removed })
+    },
+  })
+
+  useEffect(() => {
+    if (!listNotice) return
+    const clear = window.setTimeout(() => setListNotice(null), 8_000)
+    return () => window.clearTimeout(clear)
+  }, [listNotice])
+
+  // Privacy mode. Household-global + persisted: a long-press on the logo, a
+  // Settings row, or a voice command locks it here; only the on-screen PIN
+  // unlocks it. Backed by usePrivacy → GET /api/privacy + the shared ws push.
+  const privacy = usePrivacy(API_URL)
+
+  function enterPrivacyMode() {
+    if (!privacy.available || privacy.locked) return
+    void privacy.lock().then((ok) => {
+      if (ok) setPrivacyNotice(true)
+    })
+  }
+
+  // Whatever locked it (this screen, another screen, or voice), collapse the
+  // interactive chrome and any open sheet.
+  useEffect(() => {
+    if (!privacy.locked) {
+      setPrivacyPadOpen(false)
+      setPrivacyNotice(false)
+      return
+    }
+    setFilterOpen(false)
+    setSettingsOpen(false)
+    setSelectedEvent(null)
+    setConnectOpen(false)
+  }, [privacy.locked])
+
+  // The no-PIN undo window closes on its own after a few seconds.
+  useEffect(() => {
+    if (!privacyNotice) return
+    const clear = window.setTimeout(() => setPrivacyNotice(false), 8_000)
+    return () => window.clearTimeout(clear)
+  }, [privacyNotice])
+
   const providerCalendars = snapshot?.calendars ?? []
   const calendars = providerCalendars.map((calendar) => {
     const override = calendarColors[calendar.id]
@@ -270,6 +348,17 @@ function App() {
   const upcoming = visibleEvents.filter((event) => new Date(event.ends_at) >= now).sort(sortEvents)
   const pinnedIds = new Set([...todayEvents, ...todaySpans].map((event) => event.id))
   const nextEvents = upcoming.filter((event) => !pinnedIds.has(event.id))
+
+  // Privacy mode redacts at the render boundary — the snapshot the backend sent
+  // is untouched, the kiosk just chooses not to show the specifics, so unlock is
+  // instant. Category treatment collapses to identity colour (people-first).
+  const redacting = privacy.locked
+  const displayColorMode: SemanticColorMode = redacting ? 'people-first' : colorMode
+  const selectEvent = redacting ? () => undefined : setSelectedEvent
+  const shownTodayEvents = redacting ? todayEvents.map(redactEvent) : todayEvents
+  const shownTodaySpans = redacting ? todaySpans.map(redactEvent) : todaySpans
+  const shownNextEvents = redacting ? nextEvents.map(redactEvent) : nextEvents
+  const shownVisibleEvents = redacting ? visibleEvents.map(redactEvent) : visibleEvents
 
   // The viewed period now lives in the global header (Week/Month dropped their own heading
   // band); the dock offers a "Today" jump only while you've paged away from the current one.
@@ -335,10 +424,17 @@ function App() {
       setSettingsOpen(false)
       return { matched: ids, unmatched }
     },
+    requestPrivacyUnlock: () => setPrivacyPadOpen(true),
   }), [snapshot])
 
-  const voice = useVoiceSession({ apiBaseUrl: API_URL, actions: voiceActions, surface: 'kiosk' })
+  const voice = useVoiceSession({
+    apiBaseUrl: API_URL,
+    actions: voiceActions,
+    surface: 'kiosk',
+    privacyLocked: privacy.locked,
+  })
   const voiceConfig = useVoiceConfig(API_URL)
+  const audioInput = useAudioInput()
 
   function navigate(amount: number) {
     setViewDate((current) => amount === 0 ? (mode === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1) : new Date(now)) : mode === 'month' ? new Date(current.getFullYear(), current.getMonth() + amount, 1) : addDays(current, amount * (mode === 'week' ? 7 : 1)))
@@ -393,33 +489,238 @@ function App() {
   }
 
   return (
-    <main className="kiosk-shell">
+    <main className={`kiosk-shell${redacting ? ' is-private' : ''}`}>
+      {redacting && <span className="privacy-watermark" aria-hidden>Privacy mode</span>}
       <header className="global-header">
-        <button className="brand-lockup" onClick={goHome} aria-label="Go to Home"><span className="brand-icon">M</span><strong>Mission Control</strong></button>
+        <BrandLockup onHome={goHome} onLongPress={privacy.available && !redacting ? enterPrivacyMode : undefined} />
         <div className="header-center"><span className="header-period">{viewedPeriod ?? formatDate(now)}</span><span className="header-now">{viewedPeriod && <small>{formatShortDate(now)}</small>}<strong>{formatTime(now)}</strong></span></div>
-        <div className="header-actions">{authNeedsSetup ? <button className="calendar-alert" onClick={() => { goHome(); setAddingCalendar(false); setConnectOpen(true) }}><i />Calendar sign-in</button> : <SyncStatus connection={connection} />}<button className={`ask-button voice-${voice.status}`} aria-label={voice.status === 'listening' ? 'Stop voice input' : 'Ask Mission Control'} aria-pressed={voice.status === 'listening'} disabled={voice.status === 'unavailable' && voice.error?.kind === 'disabled'} onClick={() => (voice.status === 'listening' ? voice.stopTurn() : voice.startTurn())}><span className="mic-symbol">◉</span><b>{voice.status === 'unavailable' ? 'Voice off' : voice.status === 'listening' ? 'Listening' : 'Ask'}</b></button>{voice.micActive && <span className="mic-live" role="status" aria-label="Microphone is on"><i />Mic on</span>}{voice.status === 'armed' && !voice.micActive && <span className="wake-armed" role="status" aria-label={`Listening for ${voice.wake.phrase}`}><i />“{voice.wake.phrase}”</span>}<button className="add-button" aria-label="Add an event"><span>+</span><b>Add</b></button></div>
+        <div className="header-actions">{redacting && <button className="privacy-lock" aria-label="Turn off privacy mode" onClick={() => setPrivacyPadOpen(true)}><span aria-hidden>🔒</span></button>}{!redacting && (authNeedsSetup ? <button className="calendar-alert" onClick={() => { goHome(); setAddingCalendar(false); setConnectOpen(true) }}><i />Calendar sign-in</button> : <SyncStatus connection={connection} />)}<button className={`ask-button voice-${voice.status}`} aria-label={voice.status === 'listening' ? 'Stop voice input' : 'Ask Mission Control'} aria-pressed={voice.status === 'listening'} disabled={voice.status === 'unavailable' && voice.error?.kind === 'disabled'} onClick={() => (voice.status === 'listening' ? voice.stopTurn() : voice.startTurn())}><span className="mic-symbol">◉</span><b>{voice.status === 'unavailable' ? 'Voice off' : voice.status === 'listening' ? 'Listening' : 'Ask'}</b></button>{voice.micActive && <span className="mic-live" role="status" aria-label="Microphone is on"><i />Mic on</span>}{voice.status === 'armed' && !voice.micActive && <span className="wake-armed" role="status" aria-label={`Listening for ${voice.wake.phrase}`}><i />“{voice.wake.phrase}”</span>}{!redacting && <button className="add-button" aria-label="Add an event"><span>+</span><b>Add</b></button>}</div>
       </header>
 
       <section className="view-frame">
-        {mode === 'home' && <HomeView now={now} todayEvents={todayEvents} todaySpans={todaySpans} upcoming={nextEvents} calendarById={calendarById} onSelect={setSelectedEvent} colorMode={colorMode} calendarAlert={authNeedsSetup ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} />}
-        {mode === 'week' && <WeekView viewDate={viewDate} now={now} events={visibleEvents} calendarById={calendarById} onSelect={setSelectedEvent} onNavigate={navigate} colorMode={colorMode} weekStart={weekStart} />}
-        {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={visibleEvents} calendarById={calendarById} onSelect={setSelectedEvent} onNavigate={navigate} colorMode={colorMode} weekStart={weekStart} />}
+        {mode === 'home' && <HomeView now={now} todayEvents={shownTodayEvents} todaySpans={shownTodaySpans} upcoming={shownNextEvents} calendarById={calendarById} onSelect={selectEvent} colorMode={displayColorMode} calendarAlert={authNeedsSetup && !redacting ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} />}
+        {mode === 'week' && <WeekView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
+        {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'timer' && <TimerView timer={timers.timer} remainingMs={timers.remainingMs} alarm={timers.alarm} onStart={startTimerFromTouch} onExtend={extendTimer} onPause={() => timerAction('pause')} onResume={() => timerAction('resume')} onRestart={() => timerAction('restart')} onCancel={() => { void timers.cancel() }} onDismiss={() => { void timers.dismiss() }} />}
+        {mode === 'lists' && <ListsView list={lists.list} recentItems={lists.recentItems} redacted={redacting} onAdd={(name) => { if (!redacting) void lists.add(name) }} onToggle={(id, checked) => { if (!redacting) void lists.toggle(id, checked) }} onRemove={(id) => { if (!redacting) void lists.remove(id) }} onClear={(scope) => { if (!redacting) void lists.clear(scope) }} onReorder={(ids) => { if (!redacting) void lists.reorder(ids) }} />}
       </section>
 
-      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span>{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings">⚙<span>Settings</span></button>{settingsOpen && <div className="settings-popover" role="dialog" aria-label="Settings" onKeyDown={(event) => { if (event.key === 'Escape') setSettingsOpen(false) }}>{auth?.provider === 'outlook_personal' && auth.state === 'connected' && <><strong>Calendars</strong><button className="add-calendar-button" onClick={addCalendar}>Add another Outlook calendar</button></>}<strong>Event colors</strong><button className={colorMode === 'category-first' ? 'selected' : ''} onClick={() => setColorMode('category-first')}>Color events by category</button><button className={colorMode === 'people-first' ? 'selected' : ''} onClick={() => setColorMode('people-first')}>Color events by person/calendar</button><strong>Week starts on</strong><button className={weekStart === 'monday' ? 'selected' : ''} onClick={() => setWeekStart('monday')}>Monday</button><button className={weekStart === 'sunday' ? 'selected' : ''} onClick={() => setWeekStart('sunday')}>Sunday</button>{voiceConfig.config.enabled && voiceConfig.config.providers.length > 0 && <><strong>Voice provider</strong>{voiceConfig.config.providers.map((provider) => <button key={provider.id} className={voiceConfig.config.provider === provider.id ? 'selected' : ''} aria-pressed={voiceConfig.config.provider === provider.id} disabled={voiceConfig.busy || !provider.implemented || (!provider.configured && voiceConfig.config.provider !== provider.id)} onClick={() => { void voiceConfig.setProvider(provider.id) }}>{provider.label}{!provider.implemented ? ' — soon' : !provider.configured ? ' — needs config' : ''}</button>)}<span className="settings-note">Bake-off switch — applies to the next turn.</span></>}{voice.wake.available && <><strong>Wake word</strong><button className={voice.wake.userEnabled ? 'selected' : ''} aria-pressed={voice.wake.userEnabled} onClick={() => voice.setWakeEnabled(!voice.wake.userEnabled)}>Say “{voice.wake.phrase}” to start talking</button><span className="settings-note">{WAKE_STATUS_TEXT[voice.wake.state]}{voice.wake.detail ? ` — ${voice.wake.detail}` : ''}{voice.wake.activationLatencyMs != null ? ` · last wake→listening ${voice.wake.activationLatencyMs} ms` : ''}</span></>}{calendars.length > 0 && <><strong>Calendar colors</strong>{calendars.map((calendar) => <div className="calendar-color-row" key={calendar.id}><span className="calendar-color-name"><span className={`calendar-swatch ${colorClass(calendar.color)}`} />{personName(calendar)}<ProviderBadge source={calendar.source} /></span><span className="calendar-color-options" role="group" aria-label={`${personName(calendar)} color`}>{CALENDAR_PALETTE.map((color) => <button type="button" key={color} className={`color-dot ${colorClass(color)} ${calendar.color === color ? 'selected' : ''}`} aria-label={`${personName(calendar)}: ${color}`} aria-pressed={calendar.color === color} onClick={() => chooseCalendarColor(calendar.id, color)} />)}</span></div>)}</>}</div>}</div></footer>
-      {selectedEvent && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
-      {connectOpen && auth && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}
+      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={calendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} voiceConfig={voiceConfig} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
+      {selectedEvent && !redacting && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
+      {connectOpen && auth && !redacting && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}
+      {privacyPadOpen && <PrivacyPad onClose={() => setPrivacyPadOpen(false)} onUnlock={privacy.unlock} onUndo={privacyNotice ? () => { void privacy.undo(); setPrivacyPadOpen(false); setPrivacyNotice(false) } : undefined} cooldownMs={privacy.cooldownMs} />}
       <VoiceOverlay status={voice.status} transcript={voice.transcript} error={voice.error} onStop={voice.stopTurn} onDismissError={voice.dismissError} />
       {voice.status === 'unavailable' && voice.error && <VoiceToast error={voice.error} onRetry={voice.startTurn} onDismiss={voice.dismissError} />}
       {timerNotice && <div className="timer-notice" role="status">{timerNotice}<button aria-label="Dismiss" onClick={() => setTimerNotice(null)}>×</button></div>}
+      {listNotice && <div className="timer-notice list-notice" role="status">{listNotice.text}{listNotice.restore && <button className="list-notice-undo" onClick={() => { void lists.restore(listNotice.restore!); setListNotice(null) }}>Undo</button>}<button aria-label="Dismiss" onClick={() => setListNotice(null)}>×</button></div>}
+      {privacyNotice && <div className="timer-notice list-notice" role="status">Privacy mode on<button className="list-notice-undo" onClick={() => { void privacy.undo(); setPrivacyNotice(false) }}>Undo</button><button aria-label="Dismiss" onClick={() => setPrivacyNotice(false)}>×</button></div>}
     </main>
+  )
+}
+
+// Settings is the densest surface in the app, so it lives in the centred sheet
+// family (not a corner popover): a category rail + a scrolling panel. Everyday
+// display preferences (event colour, week start, per-calendar colour) are front
+// and centre; the voice bake-off and mic-routing knobs sit behind an "Advanced"
+// disclosure under "Voice & sound". See docs/controls-layout-design.md.
+type SettingsCategory = 'display' | 'calendars' | 'voice'
+function SettingsSheet({
+  auth, onAddCalendar, colorMode, onColorMode, weekStart, onWeekStart, calendars, onCalendarColor,
+  audioInput, voiceConfig, wake, onSetWakeEnabled, onSetWakeProvider, onClose,
+}: {
+  auth: CalendarAuth | null
+  onAddCalendar: () => void
+  colorMode: SemanticColorMode
+  onColorMode: (mode: SemanticColorMode) => void
+  weekStart: WeekStart
+  onWeekStart: (start: WeekStart) => void
+  calendars: Calendar[]
+  onCalendarColor: (calendarId: string, color: string) => void
+  audioInput: ReturnType<typeof useAudioInput>
+  voiceConfig: ReturnType<typeof useVoiceConfig>
+  wake: ReturnType<typeof useVoiceSession>['wake']
+  onSetWakeEnabled: ReturnType<typeof useVoiceSession>['setWakeEnabled']
+  onSetWakeProvider: ReturnType<typeof useVoiceSession>['setWakeProvider']
+  onClose: () => void
+}) {
+  const diagnostics = audioInput.diagnostics
+  const linkedAccounts = auth?.accounts ?? (auth?.account ? [auth.account] : [])
+  const hasCalendars = auth?.provider === 'outlook_personal' && auth.state === 'connected'
+  const hasProviders = voiceConfig.config.enabled && voiceConfig.config.providers.length > 0
+  const hasMic = diagnostics.available && (voiceConfig.config.enabled || wake.available)
+  const hasAdvanced = hasProviders || wake.providers.length > 1 || hasMic
+  const hasVoice = wake.available || hasAdvanced
+  const categories: { id: SettingsCategory; label: string }[] = [
+    { id: 'display', label: 'Display' },
+    ...(hasCalendars ? [{ id: 'calendars' as const, label: 'Calendars' }] : []),
+    ...(hasVoice ? [{ id: 'voice' as const, label: 'Voice & sound' }] : []),
+  ]
+  const [category, setCategory] = useState<SettingsCategory>('display')
+  const [advancedOpen, setAdvancedOpen] = useState(readAdvancedOpen)
+  useEffect(() => {
+    try { window.localStorage.setItem(ADVANCED_OPEN_KEY, advancedOpen ? 'open' : 'closed') } catch { /* private mode */ }
+  }, [advancedOpen])
+  const active = categories.some((entry) => entry.id === category) ? category : 'display'
+  return (
+    <div className="detail-scrim" role="presentation" onClick={onClose}>
+      <section className="detail-sheet settings-sheet" role="dialog" aria-label="Settings" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
+        <button className="close-detail" onClick={onClose} aria-label="Close settings">×</button>
+        <div className="settings-layout">
+          <nav className="settings-rail" aria-label="Settings categories">
+            <p className="settings-rail-title">Settings</p>
+            {categories.map((entry) => (
+              <button key={entry.id} className={active === entry.id ? 'active' : ''} aria-pressed={active === entry.id} onClick={() => setCategory(entry.id)}>{entry.label}</button>
+            ))}
+          </nav>
+          <div className="settings-panel">
+            {active === 'display' && <>
+              <div className="settings-group">
+                <h3>Event colours</h3>
+                <div className="seg">
+                  <button className={colorMode === 'category-first' ? 'selected' : ''} aria-pressed={colorMode === 'category-first'} onClick={() => onColorMode('category-first')}>Color events by category</button>
+                  <button className={colorMode === 'people-first' ? 'selected' : ''} aria-pressed={colorMode === 'people-first'} onClick={() => onColorMode('people-first')}>Color events by person/calendar</button>
+                </div>
+              </div>
+              <div className="settings-group">
+                <h3>Week starts on</h3>
+                <div className="seg seg-block">
+                  <button className={weekStart === 'monday' ? 'selected' : ''} aria-pressed={weekStart === 'monday'} onClick={() => onWeekStart('monday')}>Monday</button>
+                  <button className={weekStart === 'sunday' ? 'selected' : ''} aria-pressed={weekStart === 'sunday'} onClick={() => onWeekStart('sunday')}>Sunday</button>
+                </div>
+              </div>
+              {calendars.length > 0 && <div className="settings-group">
+                <h3>Calendar colours</h3>
+                {calendars.map((calendar) => (
+                  <div className="calendar-color-row" key={calendar.id}>
+                    <span className="calendar-color-name"><span className={`calendar-swatch ${colorClass(calendar.color)}`} />{personName(calendar)}<ProviderBadge source={calendar.source} /></span>
+                    <span className="calendar-color-options" role="group" aria-label={`${personName(calendar)} color`}>
+                      {CALENDAR_PALETTE.map((color) => (
+                        <button type="button" key={color} className={`color-dot ${colorClass(color)} ${calendar.color === color ? 'selected' : ''}`} aria-label={`${personName(calendar)}: ${color}`} aria-pressed={calendar.color === color} onClick={() => onCalendarColor(calendar.id, color)} />
+                      ))}
+                    </span>
+                  </div>
+                ))}
+              </div>}
+            </>}
+
+            {active === 'calendars' && <div className="settings-group">
+              <h3>Linked calendars</h3>
+              {linkedAccounts.length > 0
+                ? linkedAccounts.map((account) => <p className="settings-note" key={account}>{account}</p>)
+                : <p className="settings-note">No calendars linked yet.</p>}
+              <button className="settings-add-calendar" onClick={onAddCalendar}>Add another Outlook calendar</button>
+            </div>}
+
+            {active === 'voice' && <>
+              {wake.available && <div className="settings-group">
+                <h3>Wake word</h3>
+                <button className="switch-row" role="switch" aria-checked={wake.userEnabled} onClick={() => onSetWakeEnabled(!wake.userEnabled)}>
+                  <span>Say “{wake.phrase}” to start talking</span>
+                  <span className="switch-track" aria-hidden />
+                </button>
+                <p className="settings-note">{WAKE_STATUS_TEXT[wake.state]}</p>
+              </div>}
+              {hasAdvanced && <div className="settings-advanced">
+                <button type="button" className="settings-advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>Advanced (bake-off)</button>
+                {advancedOpen && <div className="settings-advanced-body">
+                  {hasProviders && <div className="settings-group">
+                    <h3>Voice provider</h3>
+                    <div className="settings-provider-list">
+                      {voiceConfig.config.providers.map((provider) => (
+                        <button key={provider.id} className={voiceConfig.config.provider === provider.id ? 'selected' : ''} aria-pressed={voiceConfig.config.provider === provider.id} disabled={voiceConfig.busy || !provider.implemented || (!provider.configured && voiceConfig.config.provider !== provider.id)} onClick={() => { void voiceConfig.setProvider(provider.id) }}>{provider.label}{!provider.implemented ? ' — soon' : !provider.configured ? ' — needs config' : ''}</button>
+                      ))}
+                    </div>
+                    <p className="settings-note">Bake-off switch — applies to the next turn.</p>
+                  </div>}
+                  {wake.providers.length > 1 && <div className="settings-group">
+                    <h3>Keyword provider</h3>
+                    <div className="settings-provider-list">
+                      {wake.providers.map((keyword) => (
+                        <button key={keyword.id} className={wake.provider === keyword.id ? 'selected' : ''} aria-pressed={wake.provider === keyword.id} disabled={wake.busy || !keyword.implemented || (!keyword.configured && wake.provider !== keyword.id)} onClick={() => { void onSetWakeProvider(keyword.id) }}>{keyword.label}{!keyword.implemented ? ' — soon' : !keyword.configured ? ' — needs backend package' : ''}</button>
+                      ))}
+                    </div>
+                    <p className="settings-note">openWakeWord runs in the browser; Azure runs on the backend.</p>
+                  </div>}
+                  {(wake.detail || wake.activationLatencyMs != null) && <p className="settings-note">Wake status: {WAKE_STATUS_TEXT[wake.state]}{wake.detail ? ` — ${wake.detail}` : ''}{wake.activationLatencyMs != null ? ` · last wake→listening ${wake.activationLatencyMs} ms` : ''}</p>}
+                  {hasMic && <div className="settings-group">
+                    <h3>Microphone</h3>
+                    <div className="settings-provider-list">
+                      <button className={diagnostics.selection.mode === 'auto' ? 'selected' : ''} aria-pressed={diagnostics.selection.mode === 'auto'} onClick={() => audioInput.choose({ mode: 'auto' })}>Automatic{diagnostics.vbCablePresent ? ' — using VB-CABLE' : ''}</button>
+                      {diagnostics.devices.map((device) => (
+                        <button key={device.deviceId} className={diagnostics.selection.mode === 'device' && diagnostics.selection.deviceId === device.deviceId ? 'selected' : ''} aria-pressed={diagnostics.selection.mode === 'device' && diagnostics.selection.deviceId === device.deviceId} onClick={() => audioInput.choose({ mode: 'device', deviceId: device.deviceId, label: device.label })}>{device.label || 'Unnamed input'}{device.isVbCable ? ' — VB-CABLE' : ''}</button>
+                      ))}
+                    </div>
+                    <p className="settings-note">{diagnostics.boundLabel ? `Capturing from “${diagnostics.boundLabel}”. ` : ''}Automatic prefers a VB-CABLE input when present.</p>
+                  </div>}
+                </div>}
+              </div>}
+            </>}
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+// The brand lockup is the Home control; a press-and-hold on it is the
+// understated way into privacy mode (only when a PIN is configured). Short press
+// still goes Home. The gesture-vs-tap disambiguation mirrors ViewPager's swipe:
+// if the long-press fired, the trailing click is suppressed. See
+// docs/privacy-mode-plan.md.
+const LONG_PRESS_MS = 600
+function BrandLockup({ onHome, onLongPress }: { onHome: () => void; onLongPress?: () => void }) {
+  const held = useRef<{ timer: number | null; fired: boolean }>({ timer: null, fired: false })
+  const cancel = () => {
+    if (held.current.timer != null) window.clearTimeout(held.current.timer)
+    held.current.timer = null
+  }
+  return (
+    <button
+      className="brand-lockup"
+      aria-label="Go to Home"
+      onPointerDown={(event) => {
+        if (!event.isPrimary || !onLongPress) return
+        held.current.fired = false
+        held.current.timer = window.setTimeout(() => {
+          held.current.fired = true
+          onLongPress()
+        }, LONG_PRESS_MS)
+      }}
+      onPointerUp={cancel}
+      onPointerLeave={cancel}
+      onPointerCancel={() => { cancel(); held.current.fired = false }}
+      onClickCapture={(event) => {
+        if (held.current.fired) {
+          held.current.fired = false
+          event.stopPropagation()
+          event.preventDefault()
+        }
+      }}
+      onClick={onHome}
+    >
+      <span className="brand-icon">M</span>
+      <strong>Mission Control</strong>
+    </button>
+  )
+}
+
+// A holiday is ambient context, not an event: it renders as a small, non-interactive label
+// in the empty space beside the date (never a chip, never a lane), one step smaller than the
+// surrounding type. See `holidays.ts` and AGENTS.md → "Holidays".
+function HolidayNote({ date, className }: { date: Date; className: string }) {
+  const holiday = holidayOn(date)
+  if (!holiday) return null
+  return (
+    <span className={`holiday-note ${className}`}>
+      <span className="holiday-note-icon" aria-hidden>{holiday.icon}</span>
+      <span className="holiday-note-name">{holiday.name}</span>
+    </span>
   )
 }
 
 function HomeView({ now, todayEvents, todaySpans, upcoming, calendarById, onSelect, colorMode, calendarAlert }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; upcoming: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null }) {
   const tomorrow = upcoming.filter((event) => !isSpanningEvent(event) && isSameDay(new Date(event.starts_at), addDays(now, 1))).slice(0, 3)
-  return <div className="home-view"><div className="home-grid"><section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><h2>{todayEvents.length} things on the rhythm</h2></div><span className="date-pill">{formatShortDate(now)}</span></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section><aside className="home-rail"><section className="next-card"><div className="view-heading"><div><p className="section-kicker">Coming up</p><h2>Next</h2></div><span className="arrow-mark">→</span></div><div className="next-list">{upcoming.slice(0, 4).map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div></section><section className="tomorrow-card"><p className="section-kicker">Tomorrow</p><h2>{formatWeekday(addDays(now, 1))}</h2>{tomorrow.length ? tomorrow.map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />) : <p>No events planned yet.</p>}</section>{calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>{MOCK_EXCEPTION.title}</strong><span>{MOCK_EXCEPTION.detail}</span></div><button onClick={() => undefined}>{MOCK_EXCEPTION.action}</button></section>}</aside></div></div>
+  return <div className="home-view"><div className="home-grid"><section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><h2>{todayEvents.length} things on the rhythm</h2><HolidayNote date={now} className="holiday-note-home" /></div><span className="date-pill">{formatShortDate(now)}</span></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section><aside className="home-rail"><section className="next-card"><div className="view-heading"><div><p className="section-kicker">Coming up</p><h2>Next</h2></div><span className="arrow-mark">→</span></div><div className="next-list">{upcoming.slice(0, 4).map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div></section><section className="tomorrow-card"><p className="section-kicker">Tomorrow</p><h2>{formatWeekday(addDays(now, 1))}</h2><HolidayNote date={addDays(now, 1)} className="holiday-note-home" />{tomorrow.length ? tomorrow.map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />) : <p>No events planned yet.</p>}</section>{calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>{MOCK_EXCEPTION.title}</strong><span>{MOCK_EXCEPTION.detail}</span></div><button onClick={() => undefined}>{MOCK_EXCEPTION.action}</button></section>}</aside></div></div>
 }
 
 // Wraps a Week/Month grid with the navigation that used to sit in the heading: a quiet ‹ ›
@@ -457,9 +758,13 @@ function ViewPager({ unit, onNavigate, children }: { unit: 'week' | 'month'; onN
 function WeekView({ viewDate, now, events, calendarById, onSelect, onNavigate, colorMode, weekStart }: { viewDate: Date; now: Date; events: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; onNavigate: (amount: number) => void; colorMode: SemanticColorMode; weekStart: WeekStart }) {
   const start = startOfWeek(viewDate, weekStart)
   const weekDays = Array.from({ length: 7 }, (_, index) => addDays(start, index))
-  const { bars, overflow } = layoutSpans(events, weekDays, SPAN_MAX_LANES)
+  // Holidays sit on the top lane of the always-present all-day row, centred under their date.
+  // Their columns are reserved so any event covering that day stacks below, never over, them.
+  const weekHolidays = weekDays.map((day) => holidayOn(day))
+  const holidayCols = new Set(weekHolidays.flatMap((holiday, index) => (holiday ? [index + 1] : [])))
+  const { bars, overflow } = layoutSpans(events, weekDays, SPAN_MAX_LANES, holidayCols)
   const laneCount = bars.reduce((max, bar) => Math.max(max, bar.lane + 1), 0)
-  return <div className="week-view"><ViewPager unit="week" onNavigate={onNavigate}><div className="week-grid"><div className="time-gutter week-corner" />{weekDays.map((day) => <div className={`week-day-head ${isSameDay(day, now) ? 'today' : ''}`} key={toIsoDate(day)}><span>{WEEKDAYS[day.getDay()]}</span><strong>{day.getDate()}</strong></div>)}<div className="time-gutter allday-label"><span>{laneCount ? 'all-day' : ''}</span></div><div className="allday-lane">{bars.map((bar) => <SpanBar bar={bar} calendar={calendarById.get(bar.event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={bar.event.id} />)}{weekDays.map((day, index) => { const extra = overflow.get(toIsoDate(day)) ?? 0; return extra ? <span className="span-overflow" style={{ gridColumn: index + 1, gridRow: SPAN_MAX_LANES + 1 }} key={toIsoDate(day)}>+{extra}</span> : null })}</div><div className="time-gutter hours">{WAKE_HOURS.map((hour) => <span key={hour}>{formatHour(hour)}</span>)}</div>{weekDays.map((day) => { const dayEvents = events.filter((event) => !isSpanningEvent(event) && isSameDay(new Date(event.starts_at), day)); return <div className={`week-column ${isSameDay(day, now) ? 'today-column' : ''}`} key={toIsoDate(day)}>{WAKE_HOURS.map((hour) => <div className="hour-line" key={hour} />)}{dayEvents.map((event) => <WeekEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div> })}</div></ViewPager></div>
+  return <div className="week-view"><ViewPager unit="week" onNavigate={onNavigate}><div className="week-grid"><div className="time-gutter week-corner" />{weekDays.map((day) => <div className={`week-day-head ${isSameDay(day, now) ? 'today' : ''}`} key={toIsoDate(day)}><span>{WEEKDAYS[day.getDay()]}</span><strong>{day.getDate()}</strong></div>)}<div className="time-gutter allday-label"><span>{laneCount ? 'all-day' : ''}</span></div><div className="allday-lane">{weekHolidays.map((holiday, index) => holiday ? <span className="allday-holiday" style={{ gridColumn: index + 1, gridRow: 1 }} key={`holiday-${toIsoDate(weekDays[index])}`}><i aria-hidden>{holiday.icon}</i><span>{holiday.name}</span></span> : null)}{bars.map((bar) => <SpanBar bar={bar} calendar={calendarById.get(bar.event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={bar.event.id} />)}{weekDays.map((day, index) => { const extra = overflow.get(toIsoDate(day)) ?? 0; return extra ? <span className="span-overflow" style={{ gridColumn: index + 1, gridRow: SPAN_MAX_LANES + 1 }} key={toIsoDate(day)}>+{extra}</span> : null })}</div><div className="time-gutter hours">{WAKE_HOURS.map((hour) => <span key={hour}>{formatHour(hour)}</span>)}</div>{weekDays.map((day) => { const dayEvents = events.filter((event) => !isSpanningEvent(event) && isSameDay(new Date(event.starts_at), day)); return <div className={`week-column ${isSameDay(day, now) ? 'today-column' : ''}`} key={toIsoDate(day)}>{WAKE_HOURS.map((hour) => <div className="hour-line" key={hour} />)}{dayEvents.map((event) => <WeekEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div> })}</div></ViewPager></div>
 }
 
 function MonthView({ viewDate, now, events, calendarById, onSelect, onNavigate, colorMode, weekStart }: { viewDate: Date; now: Date; events: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; onNavigate: (amount: number) => void; colorMode: SemanticColorMode; weekStart: WeekStart }) {
@@ -469,7 +774,7 @@ function MonthView({ viewDate, now, events, calendarById, onSelect, onNavigate, 
   // Which day's full list is expanded in the contextual sheet (opened from a "+N more" chip).
   const [openDay, setOpenDay] = useState<Date | null>(null)
   const rowCap = useMonthRowCap()
-  return <div className="month-view"><ViewPager unit="month" onNavigate={onNavigate}><div className="month-grid">{weeks.map((week, weekIndex) => { const { bars, overflow } = layoutSpans(events, week, SPAN_MAX_LANES); const laneCount = bars.reduce((max, bar) => Math.max(max, bar.lane + 1), 0); return <div className="month-week" style={{ '--span-lanes': String(laneCount) } as CSSProperties} key={toIsoDate(week[0])}>{week.map((day) => { const dayEvents = eventsByDay.get(toIsoDate(day)) ?? []; const chipBudget = dayEvents.length > rowCap ? rowCap - 1 : rowCap; const shownEvents = dayEvents.slice(0, chipBudget); const hiddenCount = dayEvents.length - shownEvents.length; const today = isSameDay(day, now); const extra = overflow.get(toIsoDate(day)) ?? 0; return <div className={`day-cell ${sameMonth(day, refMonth) ? '' : 'muted-day'} ${today ? 'today' : ''}`} key={toIsoDate(day)}><div className="day-heading">{weekIndex === 0 && <span className="weekday-tag">{WEEKDAYS[day.getDay()]}</span>}<span className="day-number">{day.getDate()}</span>{today && <span className="today-label">Today</span>}</div><div className="day-events">{shownEvents.map((event) => <EventChip event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}{hiddenCount > 0 && <button className="day-more" onClick={() => setOpenDay(day)} aria-label={`Show ${hiddenCount} more ${hiddenCount === 1 ? 'event' : 'events'} on ${formatSpanDate(day)}`}>+{hiddenCount} more</button>}{extra > 0 && <span className="more-events">+{extra} spanning</span>}</div></div> })}{bars.length > 0 && <div className="month-week-spans">{bars.map((bar) => <SpanBar bar={bar} calendar={calendarById.get(bar.event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={bar.event.id} />)}</div>}</div> })}</div></ViewPager>{openDay && <DayEventsSheet day={openDay} events={events} calendarById={calendarById} colorMode={colorMode} onSelect={(event) => { setOpenDay(null); onSelect(event) }} onClose={() => setOpenDay(null)} />}</div>
+  return <div className="month-view"><ViewPager unit="month" onNavigate={onNavigate}><div className="month-grid">{weeks.map((week, weekIndex) => { const { bars, overflow } = layoutSpans(events, week, SPAN_MAX_LANES); const laneCount = bars.reduce((max, bar) => Math.max(max, bar.lane + 1), 0); return <div className="month-week" style={{ '--span-lanes': String(laneCount) } as CSSProperties} key={toIsoDate(week[0])}>{week.map((day) => { const dayEvents = eventsByDay.get(toIsoDate(day)) ?? []; const chipBudget = dayEvents.length > rowCap ? rowCap - 1 : rowCap; const shownEvents = dayEvents.slice(0, chipBudget); const hiddenCount = dayEvents.length - shownEvents.length; const today = isSameDay(day, now); const extra = overflow.get(toIsoDate(day)) ?? 0; return <div className={`day-cell ${sameMonth(day, refMonth) ? '' : 'muted-day'} ${today ? 'today' : ''}`} key={toIsoDate(day)}><div className="day-heading">{weekIndex === 0 && <span className="weekday-tag">{WEEKDAYS[day.getDay()]}</span>}<span className="day-number">{day.getDate()}</span>{today && <span className="today-label">Today</span>}<HolidayNote date={day} className="holiday-note-month" /></div><div className="day-events">{shownEvents.map((event) => <EventChip event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}{hiddenCount > 0 && <button className="day-more" onClick={() => setOpenDay(day)} aria-label={`Show ${hiddenCount} more ${hiddenCount === 1 ? 'event' : 'events'} on ${formatSpanDate(day)}`}>+{hiddenCount} more</button>}{extra > 0 && <span className="more-events">+{extra} spanning</span>}</div></div> })}{bars.length > 0 && <div className="month-week-spans">{bars.map((bar) => <SpanBar bar={bar} calendar={calendarById.get(bar.event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={bar.event.id} />)}</div>}</div> })}</div></ViewPager>{openDay && <DayEventsSheet day={openDay} events={events} calendarById={calendarById} colorMode={colorMode} onSelect={(event) => { setOpenDay(null); onSelect(event) }} onClose={() => setOpenDay(null)} />}</div>
 }
 
 const categoryVar = (color?: string): CSSProperties | undefined => color ? ({ '--category-color': color } as CSSProperties) : undefined
@@ -580,8 +885,10 @@ function dayIndexOf(event: CalendarEvent, day: Date) { return Math.round((startO
 type SpanBarLayout = { event: CalendarEvent; startCol: number; endCol: number; lane: number; continuesBefore: boolean; continuesAfter: boolean }
 // Place spanning events into horizontal lanes across an ordered run of days (a week row, or the
 // 7-day week grid). Longest events claim a lane first; anything past SPAN_MAX_LANES collapses to a
-// per-day "+N" count so the lane block stays bounded.
-function layoutSpans(events: CalendarEvent[], days: Date[], maxLanes: number): { bars: SpanBarLayout[]; overflow: Map<string, number> } {
+// per-day "+N" count so the lane block stays bounded. `reservedFirstLaneCols` are day columns
+// already spoken for on the top lane (the Week view's non-interactive holiday labels) — an event
+// covering one of those days can't take lane 0, so the holiday always sits ahead of it.
+function layoutSpans(events: CalendarEvent[], days: Date[], maxLanes: number, reservedFirstLaneCols: Set<number> = new Set()): { bars: SpanBarLayout[]; overflow: Map<string, number> } {
   const first = startOfDay(days[0]).getTime()
   const last = startOfDay(days[days.length - 1]).getTime()
   const spanning = events
@@ -595,8 +902,13 @@ function layoutSpans(events: CalendarEvent[], days: Date[], maxLanes: number): {
     const endStamp = eventEndDay(event).getTime()
     const startCol = startStamp <= first ? 1 : Math.round((startStamp - first) / DAY_MS) + 1
     const endCol = endStamp >= last ? days.length : Math.round((endStamp - first) / DAY_MS) + 1
-    let lane = laneEnd.findIndex((end) => end < startCol)
-    if (lane === -1) { lane = laneEnd.length; laneEnd.push(0) }
+    let lane = 0
+    while (lane < maxLanes) {
+      if (lane >= laneEnd.length) laneEnd.push(0)
+      const clashesHoliday = lane === 0 && [...reservedFirstLaneCols].some((col) => col >= startCol && col <= endCol)
+      if (laneEnd[lane] < startCol && !clashesHoliday) break
+      lane += 1
+    }
     if (lane >= maxLanes) {
       for (let col = startCol; col <= endCol; col += 1) { const key = toIsoDate(days[col - 1]); overflow.set(key, (overflow.get(key) ?? 0) + 1) }
       continue

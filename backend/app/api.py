@@ -8,15 +8,26 @@ from pydantic import ValidationError
 import app.calendar.personal_auth as personal_auth
 from app.calendar.provider import CalendarProvider, MockCalendarProvider
 from app.config import get_settings
+from app.lists import get_list_store
 from app.models import (
     ApplicationMessage,
     CalendarAuthStatus,
     CalendarRange,
     CalendarSnapshot,
+    GroceryList,
+    ListClearRequest,
+    ListItemCreateRequest,
+    ListItemUpdateRequest,
+    ListMutationResult,
+    ListReorderRequest,
+    ListRestoreRequest,
+    PrivacyState,
+    PrivacyUnlockRequest,
     Timer,
     TimerCreateRequest,
     TimerExtendRequest,
     TimerMutationResult,
+    TimerState,
     VoiceConfig,
     VoiceConfigUpdate,
     VoiceDebugCapture,
@@ -24,8 +35,11 @@ from app.models import (
     VoiceProviderInfo,
     VoiceToken,
     VoiceTokenRequest,
+    WakeConfigUpdate,
+    WakeProviderInfo,
     WakeWordConfig,
 )
+from app.privacy import get_privacy_store
 from app.realtime import connections
 from app.timers import TimerError, get_timer_store
 from app.voice import VoiceUnavailable, get_voice_token, reset_voice_token_cache
@@ -39,6 +53,13 @@ from app.voice.providers import (
     set_provider_override,
 )
 from app.voice.relay import redeem_ticket, run_relay
+from app.voice.wake import (
+    WAKE_PROVIDER_LABELS,
+    effective_wake_provider,
+    implemented_wake_providers,
+    set_wake_provider_override,
+    wake_provider_configured,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -81,6 +102,22 @@ def _require_local(request: Request) -> None:
         )
 
 
+def _require_unlocked() -> None:
+    """The single read-only gate for privacy mode.
+
+    Every endpoint that changes household data or configuration calls this after
+    ``_require_local``. While privacy mode is locked it returns **423 Locked** —
+    so a new mutating endpoint inherits the gate simply by adding this line (see
+    ``docs/privacy-mode-plan.md`` and the Definition of Done). Voice *sessions*
+    are deliberately not gated here: the assistant stays reachable and refuses
+    individual commands instead (``frontend/src/voice/tools.ts``).
+    """
+    if get_privacy_store().locked:
+        raise HTTPException(
+            status_code=423, detail="privacy mode is on — unlock the display to make changes"
+        )
+
+
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -119,6 +156,7 @@ def calendar_auth_status(request: Request) -> CalendarAuthStatus:
 @router.post("/calendar/auth/device", response_model=CalendarAuthStatus)
 def calendar_auth_begin(request: Request) -> CalendarAuthStatus:
     _require_local(request)
+    _require_unlocked()
     settings = get_settings()
     if settings.calendar_provider != "outlook_personal":
         raise HTTPException(status_code=409, detail="calendar provider is not 'outlook_personal'")
@@ -128,12 +166,14 @@ def calendar_auth_begin(request: Request) -> CalendarAuthStatus:
 @router.delete("/calendar/auth/device", response_model=CalendarAuthStatus)
 def calendar_auth_cancel(request: Request) -> CalendarAuthStatus:
     _require_local(request)
+    _require_unlocked()
     return personal_auth.cancel_sign_in(get_settings())
 
 
 @router.delete("/calendar/auth", response_model=CalendarAuthStatus)
 def calendar_auth_signout(request: Request) -> CalendarAuthStatus:
     _require_local(request)
+    _require_unlocked()
     settings = get_settings()
     if settings.calendar_provider != "outlook_personal":
         raise HTTPException(status_code=409, detail="calendar provider is not 'outlook_personal'")
@@ -200,6 +240,7 @@ def set_voice_config(request: Request, body: VoiceConfigUpdate) -> VoiceConfig:
     re-served.
     """
     _require_local(request)
+    _require_unlocked()
     try:
         set_provider_override(body.provider)
     except VoiceUnavailable as exc:
@@ -230,25 +271,84 @@ async def voice_live_relay(websocket: WebSocket) -> None:
         return
 
 
-@router.get("/voice/wake-config", response_model=WakeWordConfig)
-def voice_wake_config(request: Request) -> WakeWordConfig:
-    """Local wake-word settings for the kiosk.
-
-    Detection is entirely browser-side (see ``docs/wake-word-plan.md``); this
-    endpoint only hands over thresholds and asset locations. It is always safe
-    to call — ``enabled`` is false until both voice and wake word are switched
-    on and a model is provisioned.
-    """
-    _require_local(request)
+def _wake_config() -> WakeWordConfig:
     settings = get_settings()
+    implemented = set(implemented_wake_providers())
     return WakeWordConfig(
         enabled=settings.wake_word_enabled and settings.voice_enabled,
         phrase=settings.wake_word_phrase,
         threshold=settings.wake_word_threshold,
         cooldown_ms=settings.wake_word_cooldown_ms,
+        provider=effective_wake_provider(settings),
+        providers=[
+            WakeProviderInfo(
+                id=pid,
+                label=label,
+                implemented=pid in implemented,
+                configured=wake_provider_configured(settings, pid),
+            )
+            for pid, label in WAKE_PROVIDER_LABELS.items()
+        ],
         model_path=settings.wake_word_model_path,
         models_base_url=settings.wake_word_models_base_url,
     )
+
+
+@router.get("/voice/wake-config", response_model=WakeWordConfig)
+def voice_wake_config(request: Request) -> WakeWordConfig:
+    """Wake-word settings for the kiosk: the active detection back end, the ones
+    it could switch to, and the thresholds / asset locations the in-browser
+    detector needs.
+
+    ``openwakeword`` detection is entirely browser-side; ``azure`` detection
+    runs on the backend (``WS /api/voice/wake/azure``). Always safe to call —
+    ``enabled`` is false until both voice and wake word are switched on.
+    """
+    _require_local(request)
+    return _wake_config()
+
+
+@router.put("/voice/wake-config", response_model=WakeWordConfig)
+def set_voice_wake_config(request: Request, body: WakeConfigUpdate) -> WakeWordConfig:
+    """Point every subsequent activation at ``body.provider`` (bake-off A/B
+    control, orthogonal to the conversational-provider switch).
+
+    Process-memory only — a restart reverts to ``MISSION_CONTROL_WAKE_WORD_PROVIDER``.
+    """
+    _require_local(request)
+    _require_unlocked()
+    try:
+        set_wake_provider_override(body.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _wake_config()
+
+
+@router.websocket("/voice/wake/azure")
+async def voice_wake_azure(websocket: WebSocket) -> None:
+    """Backend keyword spotting for the ``azure`` wake provider: the kiosk
+    streams 16 kHz mic PCM here and the backend spots the phrase offline with
+    the native Speech SDK (``app/voice/wake_azure.py``). Loopback / LAN only,
+    like every other voice route.
+    """
+    host = websocket.client.host if websocket.client else ""
+    if not _is_local_client(host):
+        await websocket.close(code=4403)
+        return
+    settings = get_settings()
+    if not (settings.wake_word_enabled and settings.voice_enabled):
+        await websocket.close(code=4404)
+        return
+    if not wake_provider_configured(settings, "azure"):
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    from app.voice.wake_azure import run_wake_relay
+
+    try:
+        await run_wake_relay(websocket)
+    except WebSocketDisconnect:
+        return
 
 
 @router.post("/voice/debug/capture", response_model=VoiceDebugCaptureStored)
@@ -280,9 +380,12 @@ def voice_debug_capture(request: Request, body: VoiceDebugCapture) -> VoiceDebug
 
 
 def _local_snapshot(provider: CalendarProvider):
-    """A fresh [today, +14d] snapshot for the interpreter — called per turn."""
+    """A fresh [today, +voice_context_days] snapshot for the interpreter — called
+    per turn. Matches the window the cloud prompt digest covers so a loose
+    reference resolves the same way on either path."""
     today = date.today()
-    return provider.snapshot(CalendarRange(starts_on=today, ends_on=today + timedelta(days=14)))
+    days = max(get_settings().voice_context_days, 1)
+    return provider.snapshot(CalendarRange(starts_on=today, ends_on=today + timedelta(days=days)))
 
 
 @router.websocket("/voice/local")
@@ -395,6 +498,7 @@ async def list_timers(request: Request) -> list[Timer]:
 @router.post("/timers", response_model=TimerMutationResult)
 async def create_timer(request: Request, body: TimerCreateRequest) -> TimerMutationResult:
     _require_local(request)
+    _require_unlocked()
     try:
         return await get_timer_store().create(body)
     except TimerError as exc:
@@ -404,6 +508,7 @@ async def create_timer(request: Request, body: TimerCreateRequest) -> TimerMutat
 @router.patch("/timers/{timer_id}", response_model=Timer)
 async def extend_timer(request: Request, timer_id: str, body: TimerExtendRequest) -> Timer:
     _require_local(request)
+    _require_unlocked()
     try:
         return await get_timer_store().extend(timer_id, body)
     except KeyError as exc:
@@ -416,6 +521,15 @@ async def extend_timer(request: Request, timer_id: str, body: TimerExtendRequest
 async def delete_timer(request: Request, timer_id: str) -> None:
     """Cancel a running timer or dismiss a fired one — same call for both."""
     _require_local(request)
+    # Privacy mode blocks every mutation *except* silencing a timer that is
+    # already going off — that is quieting an appliance, not touching household
+    # data (docs/privacy-mode-plan.md, resolution 2).
+    if get_privacy_store().locked:
+        current = next((t for t in get_timer_store().list_timers() if t.id == timer_id), None)
+        if current is None or current.state is not TimerState.fired:
+            raise HTTPException(
+                status_code=423, detail="privacy mode is on — unlock the display to make changes"
+            )
     try:
         await get_timer_store().cancel(timer_id)
     except KeyError as exc:
@@ -426,6 +540,7 @@ async def delete_timer(request: Request, timer_id: str) -> None:
 async def pause_timer(request: Request, timer_id: str) -> Timer:
     """Hold the countdown, freezing the time that is left until a resume."""
     _require_local(request)
+    _require_unlocked()
     try:
         return await get_timer_store().pause(timer_id)
     except KeyError as exc:
@@ -438,6 +553,7 @@ async def pause_timer(request: Request, timer_id: str) -> Timer:
 async def resume_timer(request: Request, timer_id: str) -> Timer:
     """Continue a paused timer from where it stopped."""
     _require_local(request)
+    _require_unlocked()
     try:
         return await get_timer_store().resume(timer_id)
     except KeyError as exc:
@@ -450,10 +566,164 @@ async def resume_timer(request: Request, timer_id: str) -> Timer:
 async def restart_timer(request: Request, timer_id: str) -> Timer:
     """Reset the timer to its full duration and start counting again."""
     _require_local(request)
+    _require_unlocked()
     try:
         return await get_timer_store().restart(timer_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="no such timer") from exc
+
+
+# -- lists ------------------------------------------------------------------
+# Backend-owned, persisted to one JSON file (unlike timers — a wall appliance
+# that forgets the grocery list on reboot is broken UX). One list for now
+# (`grocery`), keyed by id. Gated to loopback / LAN. Every mutation returns the
+# resulting state (with `removed` for an on-screen Undo) *and* broadcasts, so
+# every screen converges. See docs/lists-plan.md.
+
+
+@router.get("/lists", response_model=list[GroceryList])
+async def list_lists(request: Request) -> list[GroceryList]:
+    _require_local(request)
+    return get_list_store().list_all()
+
+
+@router.get("/lists/{list_id}", response_model=GroceryList)
+async def get_list(request: Request, list_id: str) -> GroceryList:
+    _require_local(request)
+    current = get_list_store().get(list_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="no such list")
+    return current
+
+
+@router.post("/lists/{list_id}/items", response_model=ListMutationResult)
+async def add_list_items(
+    request: Request, list_id: str, body: ListItemCreateRequest
+) -> ListMutationResult:
+    _require_local(request)
+    _require_unlocked()
+    try:
+        return await get_list_store().add_items(
+            list_id, body.resolved_names(), note=body.note, source=body.source
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such list") from exc
+
+
+@router.patch("/lists/{list_id}/items/{item_id}", response_model=ListMutationResult)
+async def update_list_item(
+    request: Request, list_id: str, item_id: str, body: ListItemUpdateRequest
+) -> ListMutationResult:
+    _require_local(request)
+    _require_unlocked()
+    try:
+        return await get_list_store().update_item(list_id, item_id, body)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such list or item") from exc
+
+
+@router.delete("/lists/{list_id}/items/{item_id}", response_model=ListMutationResult)
+async def remove_list_item(request: Request, list_id: str, item_id: str) -> ListMutationResult:
+    _require_local(request)
+    _require_unlocked()
+    try:
+        return await get_list_store().remove_item(list_id, item_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such list or item") from exc
+
+
+@router.post("/lists/{list_id}/clear", response_model=ListMutationResult)
+async def clear_list(request: Request, list_id: str, body: ListClearRequest) -> ListMutationResult:
+    """Clear the checked items (default) or everything. `removed` powers Undo."""
+    _require_local(request)
+    _require_unlocked()
+    try:
+        return await get_list_store().clear(list_id, body.scope)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such list") from exc
+
+
+@router.post("/lists/{list_id}/restore", response_model=ListMutationResult)
+async def restore_list(
+    request: Request, list_id: str, body: ListRestoreRequest
+) -> ListMutationResult:
+    """Re-insert items a clear / remove took off — the Undo path."""
+    _require_local(request)
+    _require_unlocked()
+    try:
+        return await get_list_store().restore(list_id, body.items)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such list") from exc
+
+
+@router.post("/lists/{list_id}/reorder", response_model=ListMutationResult)
+async def reorder_list(
+    request: Request, list_id: str, body: ListReorderRequest
+) -> ListMutationResult:
+    """Apply a custom drag-reorder of the list; the new order is persisted."""
+    _require_local(request)
+    _require_unlocked()
+    try:
+        return await get_list_store().reorder(list_id, body.item_ids)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such list") from exc
+
+
+# -- privacy mode ----------------------------------------------------------
+# A household-global "redact the specifics + read-only" state for a houseguest.
+# Entered with no secret (the safe direction); left only by the configured PIN on
+# the on-screen keypad. Persisted, broadcast over /api/ws. Every mutating
+# endpoint above calls _require_unlocked(); voice stays reachable but refuses
+# individual commands. Social barrier, not a security control. See
+# docs/privacy-mode-plan.md.
+
+
+@router.get("/privacy", response_model=PrivacyState)
+async def get_privacy(request: Request) -> PrivacyState:
+    _require_local(request)
+    return get_privacy_store().state()
+
+
+@router.post("/privacy/lock", response_model=PrivacyState)
+async def privacy_lock(request: Request) -> PrivacyState:
+    """Enter privacy mode. No secret — this is the safe direction. Idempotent."""
+    _require_local(request)
+    store = get_privacy_store()
+    if not store.available:
+        raise HTTPException(
+            status_code=409, detail="privacy mode has no unlock PIN configured on this display"
+        )
+    return await store.lock()
+
+
+@router.post("/privacy/unlock", response_model=PrivacyState)
+async def privacy_unlock(request: Request, body: PrivacyUnlockRequest) -> PrivacyState:
+    """Leave privacy mode by entering the configured PIN."""
+    _require_local(request)
+    store = get_privacy_store()
+    outcome = await store.unlock(body.pin)
+    if outcome == "ok":
+        return store.state()
+    if outcome == "disabled":
+        raise HTTPException(status_code=409, detail="privacy mode is not configured")
+    if outcome == "locked-out":
+        raise HTTPException(
+            status_code=429,
+            detail="too many attempts — wait before trying again",
+            headers={"Retry-After": str(store.cooldown_remaining())},
+        )
+    raise HTTPException(status_code=401, detail="that PIN is not right")
+
+
+@router.post("/privacy/unlock/grace", response_model=PrivacyState)
+async def privacy_unlock_grace(request: Request) -> PrivacyState:
+    """The no-PIN undo, valid only for a few seconds after privacy mode is
+    entered — covers an accidental or prank toggle."""
+    _require_local(request)
+    store = get_privacy_store()
+    if not await store.undo():
+        raise HTTPException(status_code=410, detail="the undo window has passed — enter the PIN")
+    return store.state()
 
 
 @router.websocket("/ws")
@@ -471,6 +741,22 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 type="timers",
                 message="current timers",
                 timers=get_timer_store().list_timers(),
+            ).model_dump(mode="json", exclude_none=True)
+        )
+        # ...and the current lists (these persist across a restart).
+        await websocket.send_json(
+            ApplicationMessage(
+                type="lists",
+                message="current lists",
+                lists=get_list_store().list_all(),
+            ).model_dump(mode="json", exclude_none=True)
+        )
+        # ...and whether privacy mode is on (also persisted).
+        await websocket.send_json(
+            ApplicationMessage(
+                type="privacy",
+                message="current privacy state",
+                privacy=get_privacy_store().state(),
             ).model_dump(mode="json", exclude_none=True)
         )
         while True:

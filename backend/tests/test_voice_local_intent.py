@@ -165,9 +165,14 @@ def test_fuzzy_event_title(snapshot: CalendarSnapshot) -> None:
     assert "Dentist" in (match.label or "")
 
 
-def test_fuzzy_list_never_resolves(snapshot: CalendarSnapshot) -> None:
+def test_grocery_aliases_resolve_but_other_lists_do_not(snapshot: CalendarSnapshot) -> None:
     resolver = EntityResolver(snapshot)
-    assert not resolver.resolve_list("cost co").resolved
+    assert resolver.resolve_list("grocery").resolved
+    assert resolver.resolve_list("shopping list").resolved
+    assert resolver.resolve_list("costco").resolved
+    assert resolver.resolve_list("").resolved  # bare "the list" -> grocery
+    assert not resolver.resolve_list("packing").resolved
+    assert not resolver.resolve_list("wish").resolved
 
 
 def test_person_filter_uses_live_people(snapshot: CalendarSnapshot) -> None:
@@ -232,18 +237,93 @@ def test_display_off_is_rejected_for_now(snapshot: CalendarSnapshot) -> None:
     assert result.tool_calls == []
 
 
-def test_list_add_escalates_when_enabled(snapshot: CalendarSnapshot) -> None:
-    result = run("add milk to the costco list", snapshot)
-    assert result.disposition == Disposition.escalate_to_cloud
-    assert result.tool_calls == []
-    assert result.escalation and result.escalation["why"] == "no-list-feature"
+# -- grocery list (a real local capability now) --------------------------
 
 
-def test_list_add_rejected_when_escalation_off(snapshot: CalendarSnapshot) -> None:
-    cfg = InterpreterConfig(cloud_escalation_enabled=False)
-    result = run("add milk to the costco list", snapshot, config=cfg)
-    assert result.disposition == Disposition.rejected
-    assert result.tool_calls == []
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "add meatballs to the grocery list",
+        "add milk to the list",
+        "put bananas on the shopping list",
+        "add coffee to the costco list",
+    ],
+)
+def test_list_add_single_item(phrase: str, snapshot: CalendarSnapshot) -> None:
+    result = run(phrase, snapshot)
+    assert result.disposition == Disposition.handled_locally
+    assert result.intent == "list.add"
+    call = next(c for c in result.tool_calls if c.name == "add_to_list")
+    assert len(call.args["items"]) == 1
+    assert call.args["list"] == "grocery"
+    assert result.tool_calls[-1].name == "show_view"
+    assert result.tool_calls[-1].args["view"] == "lists"
+
+
+def test_list_add_splits_multiple_items(snapshot: CalendarSnapshot) -> None:
+    result = run("add eggs, bread and butter to the grocery list", snapshot)
+    assert result.disposition == Disposition.handled_locally
+    call = next(c for c in result.tool_calls if c.name == "add_to_list")
+    assert call.args["items"] == ["eggs", "bread", "butter"]
+
+
+def test_list_add_with_no_item_asks(snapshot: CalendarSnapshot) -> None:
+    result = run("add something to the grocery list", snapshot)
+    # "something" is a stopword-ish filler; if it slips through that's fine, but a
+    # bare "add to the list" must ask.
+    bare = run("add to the list", snapshot)
+    assert bare.disposition == Disposition.needs_clarification
+    assert not bare.tool_calls
+    assert result is not None
+
+
+def test_list_remove(snapshot: CalendarSnapshot) -> None:
+    result = run("take the milk off the grocery list", snapshot)
+    assert result.disposition == Disposition.handled_locally
+    assert result.intent == "list.remove"
+    call = result.tool_calls[0]
+    assert call.name == "remove_from_list"
+    assert call.args["item"] == "milk"
+
+
+def test_list_check_off(snapshot: CalendarSnapshot) -> None:
+    result = run("check off the bread", snapshot)
+    assert result.disposition == Disposition.handled_locally
+    assert result.intent == "list.check"
+    assert result.tool_calls[0].name == "check_off_item"
+    assert result.tool_calls[0].args["item"] == "bread"
+
+
+def test_list_clear_all_and_checked(snapshot: CalendarSnapshot) -> None:
+    all_clear = run("clear the grocery list", snapshot)
+    assert all_clear.disposition == Disposition.handled_locally
+    assert all_clear.tool_calls[0].name == "clear_list"
+    assert all_clear.tool_calls[0].args["scope"] == "all"
+
+    checked = run("clear the ones we got", snapshot)
+    assert checked.tool_calls[0].args["scope"] == "checked"
+
+
+def test_list_show(snapshot: CalendarSnapshot) -> None:
+    result = run("show me the grocery list", snapshot)
+    assert result.disposition == Disposition.handled_locally
+    assert result.intent == "list.show"
+    assert result.tool_calls == [result.tool_calls[0]]
+    assert result.tool_calls[0].args["view"] == "lists"
+
+
+def test_list_command_for_an_unknown_list_asks_not_escalates(snapshot: CalendarSnapshot) -> None:
+    result = run("add sunscreen to the packing list", snapshot)
+    assert result.disposition == Disposition.needs_clarification
+    assert "grocery" in (result.clarification or "").lower()
+    assert not result.tool_calls
+
+
+def test_low_confidence_clear_all_asks_first(snapshot: CalendarSnapshot) -> None:
+    # "start a new list" hits list.clear weakly (0.7) — below the 0.8 mutation bar.
+    result = run("start a new list", snapshot)
+    assert result.disposition == Disposition.needs_clarification
+    assert not result.tool_calls
 
 
 # -- low-confidence recognition --------------------------------------

@@ -4,9 +4,11 @@ The kiosk's push-to-talk cold start pays for two things on every mint: a blockin
 calendar-provider snapshot (a Graph request for the Outlook providers) and
 Google's ``auth_tokens.create``. Two caches sit in front of the endpoint:
 
-1. **Prompt snapshot cache.** The system prompt only needs the household calendar
-   names, and the freshness logic below needs event boundary *times*. Both come
-   from one ``[today, tomorrow]`` snapshot, reused for
+1. **Prompt snapshot cache.** The system prompt needs the household calendar
+   names *and* a compact digest of the next ``voice_context_days`` of events
+   (title / time / location — so a loose reference resolves without a tool
+   call), and the freshness logic below needs event boundary *times*. All come
+   from one ``[today, today + voice_context_days]`` snapshot, reused for
    ``voice_prompt_cache_ttl_seconds`` so a burst of mints shares one fetch.
 
 2. **Ephemeral token cache.** A minted token freezes a system instruction that is
@@ -42,6 +44,7 @@ from app.calendar.provider import CalendarProvider
 from app.config import Settings
 from app.models import CalendarRange, CalendarSnapshot, VoiceToken, VoiceTokenRequest
 from app.voice.base import VoiceUnavailable, local_now
+from app.voice.prompt import build_schedule_digest
 from app.voice.providers import get_adapter
 from app.voice.trace import note, timed
 
@@ -102,6 +105,7 @@ class _CachedToken:
 class _SnapshotEntry:
     snapshot: CalendarSnapshot
     day: date
+    context_days: int
     at_monotonic: float
 
 
@@ -118,21 +122,28 @@ class VoiceTokenCache:
         self._snapshot = None
 
     async def _prompt_snapshot(
-        self, provider: CalendarProvider, day: date, ttl_seconds: int
+        self, provider: CalendarProvider, day: date, ttl_seconds: int, context_days: int
     ) -> CalendarSnapshot:
         entry = self._snapshot
         now = time.monotonic()
-        if entry and entry.day == day and now - entry.at_monotonic < ttl_seconds:
+        if (
+            entry
+            and entry.day == day
+            and entry.context_days == context_days
+            and now - entry.at_monotonic < ttl_seconds
+        ):
             note("voice prompt snapshot: cache hit")
             return entry.snapshot
-        with timed("calendar snapshot (voice prompt names + event boundaries)"):
+        with timed("calendar snapshot (voice prompt names + schedule digest + boundaries)"):
             # Sync provider call (blocking Graph request for Outlook) — keep it
             # off the event loop.
             snapshot = await run_in_threadpool(
                 provider.snapshot,
-                CalendarRange(starts_on=day, ends_on=day + timedelta(days=1)),
+                CalendarRange(starts_on=day, ends_on=day + timedelta(days=max(context_days, 1))),
             )
-        self._snapshot = _SnapshotEntry(snapshot=snapshot, day=day, at_monotonic=now)
+        self._snapshot = _SnapshotEntry(
+            snapshot=snapshot, day=day, context_days=context_days, at_monotonic=now
+        )
         return snapshot
 
     async def get(
@@ -171,10 +182,14 @@ class VoiceTokenCache:
                 return cached.token.model_copy(update={"surface": surface})
 
             snapshot = await self._prompt_snapshot(
-                provider, now_local.date(), settings.voice_prompt_cache_ttl_seconds
+                provider,
+                now_local.date(),
+                settings.voice_prompt_cache_ttl_seconds,
+                settings.voice_context_days,
             )
             calendar_names = [calendar.display_name for calendar in snapshot.calendars]
             boundaries = _event_boundaries(snapshot, now_local)
+            schedule = build_schedule_digest(snapshot, now_local)
 
             with timed(f"create voice grant ({adapter.id})"):
                 token = await adapter.create_grant(
@@ -183,6 +198,7 @@ class VoiceTokenCache:
                     surface=surface,
                     now_local=now_local,
                     timezone=timezone,
+                    schedule=schedule,
                 )
 
             max_stale = min(

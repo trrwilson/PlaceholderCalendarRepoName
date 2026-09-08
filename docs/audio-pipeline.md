@@ -16,7 +16,8 @@ the *shape*: one device, one gain, one output bus, and which knob owns what.
    owns it and reference-counts subscribers. Wake-word detection and the voice
    turn are both just listeners on the same frames. A second capture stack on one
    device is the classic source of "the mic works until the other feature uses
-   it".
+   it". *Which* device that one stream opens is a separate, single decision — see
+   **Input device selection**.
 2. **One software gain, applied once, as early as possible.** `InputGain`
    (`voice/gain.ts`), inside `MicSource`, upstream of the fan-out. Every consumer
    sees the same gained, ±1-saturated audio and none of them knows it happened.
@@ -37,9 +38,10 @@ the *shape*: one device, one gain, one output bus, and which knob owns what.
 ## The capture chain
 
 ```
-USB microphone
+USB microphone / VB-CABLE virtual input   <- chosen by useAudioInput (see below)
   -> getUserMedia({ channelCount: 1, echoCancellation: true,
-                    noiseSuppression: false, autoGainControl: false })
+                    noiseSuppression: false, autoGainControl: false,
+                    deviceId?: { exact | ideal } })
   -> AudioContext (native rate, typically 48 kHz)
   -> pcm-capture-worklet.js         4800-sample (~100 ms) Float32 batches
   -> InputGain.apply()              <- THE gain stage; +-1 saturation; peak/RMS/clip
@@ -61,12 +63,48 @@ The `getUserMedia` constraints are deliberate and each has a reason:
 | `noiseSuppression` | `false` | It dug the quiet tail of a sentence below the endpointer's gate and truncated commands (`voice-support-plan.md`, tenth run). |
 | `autoGainControl` | `false` | It is a *second, automatic* gain. It would fight the fixed one and flatten the dynamic range the endpointer reads. |
 
+## Input device selection
+
+The kiosk box has more than one audio input — the physical far-field mic, and,
+when a recovered HK Invoke speaker is bridged in, a **VB-CABLE** virtual "CABLE
+Output" device carrying that feed. `useAudioInput`
+(`frontend/src/voice/useAudioInput.ts`) owns the choice of which one the single
+`MicSource` stream opens; `voice/audioInput.ts` holds the pure logic.
+
+- **The choice is per-browser**, stored in `localStorage['mission-control.audio-input']`
+  as `"auto"` or `{deviceId,label}` — a property of the machine, exactly like the
+  wake-word on/off switch. There is no backend setting.
+- **`auto` (the default) prefers a VB-CABLE input** when `enumerateDevices()`
+  reports one, matched by label (`isVbCableLabel`), and otherwise lets the OS
+  pick. Because the match is on the label, and labels are only readable once the
+  page has held a mic grant, a cold boot opens the OS default for the first
+  stream and then re-acquires onto VB-CABLE within that first stream cycle. On a
+  kiosk that runs continuously this settles in the first minute.
+- **An explicit pick is requested strictly** (`deviceId: { exact }`): if that
+  device is absent the capture fails with a mic error rather than silently
+  recording a different microphone. `auto`'s VB-CABLE preference is best-effort
+  (`{ ideal }`). Selection resolves by id first, then by remembered label
+  (deviceIds rotate when the mic permission is reset or the device is replugged).
+- **`MicSource.setInputDeviceId()` is the only path** from the choice to
+  `getUserMedia`, mirroring how `setInputGainDb()` is the only path for gain.
+  Changing it while a stream is live tears the stream down and rebuilds it under
+  the same listeners; `[voice] mic stream acquired` logs the requested vs. bound
+  device so a kiosk operator can confirm what is actually being captured.
+- **Settings → Microphone** lists the inputs and the Automatic option (shown when
+  voice or wake word is available). No UI when `enumerateDevices` is unavailable.
+
 ## Gain: the one knob, and what must not compete with it
 
 `MISSION_CONTROL_MIC_INPUT_GAIN_DB` -> `VoiceConfig.mic_input_gain_db` on
 `GET /api/voice/config` -> `useVoiceConfig` -> `micSource.setInputGainDb()` ->
 `InputGain`. That is the whole path, and it is the only one. Decibels, converted
 as `10^(dB/20)`; `0` disables the stage; validated to −30…+40 dB.
+
+The default is `0` — the stage is off. The kiosk captures through a hardware
+microphone path that delivers adequate level on its own, so a software boost is
+opt-in per install rather than something every deployment carries. The stage,
+its diagnostics, and the threshold decoupling below all stay in place for the
+installs that do need it.
 
 Four mechanisms could plausibly change capture level. Only the first is allowed
 to, and the other three are held off explicitly:
@@ -158,7 +196,7 @@ and `GET /api/voice/wake-config`.
 
 | Setting | Default | Owns |
 | --- | --- | --- |
-| `MIC_INPUT_GAIN_DB` | `20` | Capture gain, whole pipeline. |
+| `MIC_INPUT_GAIN_DB` | `0` | Software capture gain, whole pipeline. `0` = off (default); the hardware mic path carries the level. |
 | `WAKE_WORD_THRESHOLD` | `0.3` | Wake score to fire at. Level-dependent. |
 | `WAKE_WORD_COOLDOWN_MS` | `2000` | Suppression after a fire. |
 | `WAKE_WORD_ENABLED` / `_PHRASE` / `_MODEL_PATH` / `_MODELS_BASE_URL` | off | Wake activation and its model assets. |
@@ -196,12 +234,15 @@ kiosk UI, by design.
 | `voice.debug.count` | In-browser capture ring size (default 10). |
 | `wake.debug` = `off` | Silences the wake peak-score line. |
 | `mission-control.wake-word` | The user's wake-word on/off choice. |
+| `mission-control.audio-input` | The microphone device choice: `"auto"` (default, prefers VB-CABLE) or `{deviceId,label}`. See **Input device selection**. |
 
 ## Module map
 
 | File | Responsibility |
 | --- | --- |
 | `voice/audio.ts` | `MicSource` (the one device + the one gain stage), `MicCapture` (per-turn adapter), `AudioSink` (the output bus) |
+| `voice/audioInput.ts` | Pure microphone-choice logic: VB-CABLE detection, the persisted selection, resolve-to-`getUserMedia` |
+| `voice/useAudioInput.ts` | Enumerates inputs, keeps the list fresh, pushes the resolved device to `MicSource` |
 | `voice/gain.ts` | `InputGain`, `dbToLinear`, `atReferenceGain`, the reference gain |
 | `voice/pcm.ts` | Format and rate conversion only — PCM16 to/from Float32, downsample, resample, WAV. No gain, no device, no rate assumptions |
 | `voice/aecPlayback.ts` | The echo-cancelled output bus |
@@ -214,6 +255,8 @@ kiosk UI, by design.
 
 - Adding a consumer of microphone audio means subscribing to `micSource`. Never
   a second `getUserMedia`.
+- Changing which device is captured means `micSource.setInputDeviceId()` (driven
+  by `useAudioInput`). Never a `deviceId` constraint anywhere else.
 - Anything that scales samples belongs in `gain.ts`, or it does not belong.
 - Anything that converts format or rate belongs in `pcm.ts`, or it is a duplicate.
 - Anything that makes sound connects to the echo-cancelled output.

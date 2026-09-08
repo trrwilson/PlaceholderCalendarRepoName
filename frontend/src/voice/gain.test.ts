@@ -28,7 +28,8 @@ describe('InputGain', () => {
     const gain = new InputGain()
     expect(gain.db).toBe(DEFAULT_INPUT_GAIN_DB)
     expect(gain.linear).toBeCloseTo(dbToLinear(DEFAULT_INPUT_GAIN_DB), 6)
-    expect(gain.active).toBe(true)
+    // The shipped default is 0 dB (stage disabled); an install can still opt in.
+    expect(gain.active).toBe(DEFAULT_INPUT_GAIN_DB !== 0)
   })
 
   it('amplifies samples by the linear multiplier', () => {

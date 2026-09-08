@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { appSocket } from '../realtime/appSocket'
 import type { Timer } from './types'
 import { useTimers } from './useTimers'
 
@@ -41,6 +42,8 @@ const runningTimer = (firesInMs: number, overrides: Partial<Timer> = {}): Timer 
 const options = { apiBaseUrl: 'http://api.test' }
 
 beforeEach(() => {
+  appSocket.__resetForTests()
+  FakeWebSocket.last = null
   vi.stubGlobal('WebSocket', FakeWebSocket as unknown as typeof WebSocket)
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }))
 })

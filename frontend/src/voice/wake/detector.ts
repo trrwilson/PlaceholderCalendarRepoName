@@ -12,10 +12,26 @@
 // same way `./session` and `./audio` are.
 
 import type { MicSource } from '../audio'
+import { AzureKeywordDetector } from './azureKeyword'
 import { OpenWakeWordDetector } from './openWakeWord'
 import { FakeWakeDetector } from './fakeDetector'
 
+/** Which detection back end spots the phrase (backend `WakeProviderId`). */
+export type WakeProviderId = 'openwakeword' | 'azure'
+
+/** One selectable detection back end, mirrors the backend `WakeProviderInfo`. */
+export interface WakeProviderInfo {
+  id: WakeProviderId
+  label: string
+  implemented: boolean
+  configured: boolean
+}
+
 export interface WakeDetectorConfig {
+  /** Which detection back end to build. */
+  provider: WakeProviderId
+  /** API base URL — the `azure` detector needs it to open its backend socket. */
+  apiBaseUrl: string
   /** Frontend-served URL of the trained wake model (e.g. `/models/wake/mission_control.onnx`). */
   modelPath: string
   /** Base URL for the shared openWakeWord feature models (melspectrogram, embedding). */
@@ -71,9 +87,14 @@ export class WakeUnavailableError extends Error {
 }
 
 /**
- * Build the configured detector. `VITE_WAKE_FAKE=1` swaps in a mic-free fake that
- * exposes `window.__missionControlWake.fireWake()` — used by the Playwright wake
- * test and handy for manual UI work without a trained model.
+ * Build the detector for the selected provider. `VITE_WAKE_FAKE=1` swaps in a
+ * mic-free fake that exposes `window.__missionControlWake.fireWake()` — used by
+ * the Playwright wake test and handy for manual UI work without a trained model.
+ *
+ * `openwakeword` runs local ONNX keyword spotting entirely in this browser;
+ * `azure` streams mic audio to `WS /api/voice/wake/azure`, where the backend
+ * spots an Azure custom-keyword `.table` offline (see `azureKeyword.ts` and
+ * `backend/app/voice/wake_azure.py`).
  */
 export function createWakeDetector(
   config: WakeDetectorConfig,
@@ -81,6 +102,9 @@ export function createWakeDetector(
 ): WakeDetector {
   if (import.meta.env.VITE_WAKE_FAKE === '1') {
     return new FakeWakeDetector(config)
+  }
+  if (config.provider === 'azure') {
+    return new AzureKeywordDetector(config, micSource)
   }
   return new OpenWakeWordDetector(config, micSource)
 }

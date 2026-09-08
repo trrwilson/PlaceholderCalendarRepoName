@@ -295,6 +295,13 @@ async def test_azure_openai_realtime_grant_and_ticket(azure_openai_env) -> None:
         "resume_timer",
         "restart_timer",
         "get_timer",
+        "add_to_list",
+        "remove_from_list",
+        "check_off_item",
+        "clear_list",
+        "get_list",
+        "enter_privacy_mode",
+        "request_privacy_unlock",
     }
     assert "Travis, Sam" in session["instructions"]
     assert "September 6, 2026 at 6:30 PM" in session["instructions"]

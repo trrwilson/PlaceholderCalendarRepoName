@@ -118,6 +118,14 @@ should be well below this. All variants export the same `[1,16,96]→[1,1]` inte
 Shipped **b** (best recall without fp/hr running away). `dist_big/mc_{a,b,c}.onnx`
 kept for comparison. `mc_big/mission_control.yaml` holds the 100k config.
 
+> **Real-audio check (2026-09-07).** `backend/scripts/benchmark_wake.py` ran the
+> shipped **b** model over 10 real kiosk activations + 35 real no-wake commands:
+> recall **9/10**, **0** false accepts, peak-score margin 0.98 vs 0.001. Real
+> in-domain recall is far above the 0.62 synthetic-holdout figure here (deliberate,
+> close-mic, single speaker). The same run scored the Azure custom-keyword `.table`
+> identically (9/10, same missed clip). Full write-up + caveats (n is small; no
+> FA/hr):  `docs/wake-word-provider-bakeoff.md` → "Measured comparison".
+
 ### Further improvement, in order
 - **On-device threshold tuning first** — with recall 0.62 there's headroom to *raise*
   `MISSION_CONTROL_WAKE_WORD_THRESHOLD` (0.5 default) toward 0.6–0.7 to cut fp once

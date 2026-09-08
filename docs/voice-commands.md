@@ -21,7 +21,14 @@ in `docs/voice-support-plan.md`.
   answer; the speech is the summary.
 - **One question per tap.** Each turn is its own session — there is no running
   conversation, so follow-ups need to be self-contained ("what about Saturday?"
-  will usually work because the date is explicit; "and then?" will not).
+  will usually work because the date is explicit; "and then?" will not). It
+  answers what you asked and stops — it will not ask "do you want me to…" or
+  offer a next step back.
+- **It knows roughly the next month of the calendar** without looking anything
+  up, so you can be vague: "when's that dentist thing?", "what's the appointment
+  in Bellevue later this month?", "which day is Sarah's dinner?" all work — it
+  matches what you said against the event titles *and* their locations. Ask about
+  something further out and it will look it up.
 - **English only.**
 - Nothing you say is saved. The on-screen transcript shows the current turn and is
   cleared at the start of the next one.
@@ -225,18 +232,105 @@ time remains.
 
 ---
 
+## Grocery list
+
+Mission Control keeps **one** household grocery list. Voice can add to it, take
+things off, check items off as you buy them, clear it, and read it back — it
+cannot touch the calendar. Any list command also switches the display to the
+**Lists** view so you can see the change.
+
+### "Add <item> to the grocery list"
+
+**Say:** "Add meatballs to the grocery list." · "Add milk." · "Put eggs, bread
+and butter on the list." · "We're out of coffee." · "We need paper towels."
+
+**Does:** Adds the item(s) — a spoken list of things ("eggs, bread and butter")
+becomes separate entries. Adding something already on the list is fine: it says
+it was already there, and if you'd checked it off it goes back on.
+
+### "Take <item> off the list"
+
+**Say:** "Take the milk off the grocery list." · "Remove the bread." · "Drop
+the onions."
+
+**Does:** Deletes that one item. If nothing on the list matches, it says so
+rather than guessing.
+
+### "Check off the <item>" / "I got the <item>"
+
+**Say:** "Check off the milk." · "I got the eggs." · "Mark the bread as bought."
+
+**Does:** Marks the item bought — it stays on the list, struck through, in the
+"Got it" strip, until the list is cleared. "Put milk back on the list" un-checks
+it.
+
+### "Clear the grocery list"
+
+**Say:** "Clear the grocery list." (everything) · "Clear the ones we got." /
+"Clear what we bought." (only the checked-off items)
+
+**Does:** Empties the list (or just the checked items). The screen shows a
+**"Cleared N · Undo"** for a few seconds — tap Undo to put everything back.
+
+### "What's on the grocery list?"
+
+**Say:** "Show me the grocery list." · "What's on the shopping list?"
+
+**Does:** Opens the Lists view. The screen is the answer.
+
+### Grocery-list limits
+
+- **One list.** "Add sunscreen to the packing list" is understood as naming a
+  different list — it says it only has the grocery list, and does nothing.
+- **Adding new items is voice-first.** The Lists view has a quick-add grid of
+  recent items for touch, but there is no on-screen keyboard — a brand-new item
+  is added by voice.
+- **The list is saved.** It survives a kiosk reboot and a backend restart (unlike
+  the timer).
+
+---
+
+## Privacy mode
+
+Privacy mode redacts the *what* of the schedule and the grocery list — titles,
+locations, categories — while keeping the *when*, *how many*, and *whose*, and
+locks the display so a visitor cannot change anything. It is a social / glance
+barrier for a houseguest, not real security. See `docs/privacy-mode-plan.md`.
+
+### "Privacy mode" / "Hide the calendar"
+
+**Say:** "Mission Control, privacy mode." · "Someone's coming over, hide the
+calendar." · "Turn on privacy mode."
+
+**Does:** Turns privacy mode on. The screen keeps its layout but every event and
+list item shows `•••` instead of its name; **Add**, **People**, and **Settings**
+disappear. The assistant confirms and reminds you it takes the on-screen PIN to
+turn back off.
+
+**Limits:** You **cannot turn privacy mode off by voice** — speaking a PIN aloud
+in front of the visitor would defeat it. Ask and the assistant brings up the
+keypad on screen; you enter the four-digit PIN there. (Requires a PIN to be
+configured on the backend; with none, this does nothing.)
+
+### While privacy mode is on
+
+Voice still works, but **every command except "turn off privacy mode" is politely
+declined** — including schedule questions, so nothing sensitive is read aloud.
+"Turn off privacy mode" / "unlock the display" brings up the PIN keypad.
+
+---
+
 ## What voice cannot do
 
 - **No calendar changes.** It cannot add, move, edit, or delete an event. Ask it
-  to and it will say it can't yet. (The kitchen timer is the single exception.)
+  to and it will say it can't yet. (The kitchen timer and the grocery list are
+  the two exceptions; it can also turn *on* privacy mode.)
 - **No account or settings changes** — sign-in, calendar colours, week start,
   people filters, wake word, etc. are all touch-only.
-- **No general questions.** It is wired to the household calendars and the timer,
-  not the open web, weather, or maths.
-- **No shopping lists.** "Add milk to the Costco list" is understood but Mission
-  Control has no lists yet. On the cloud providers it just says it can't; on
-  Local / Hybrid it is flagged for cloud escalation (which is itself still a stub
-  — see `docs/local-voice-plan.md`).
+- **No general questions.** It is wired to the household calendars, the timer, and
+  the grocery list — not the open web, weather, or maths.
+- **One list only.** A grocery list, not multiple named lists, and no aisle
+  grouping or meal planning (`docs/lists-plan.md`).
 - **No follow-up memory.** Each tap is a fresh turn.
 - **Latency.** A cold turn is a few seconds from "stop talking" to spoken answer.
 
@@ -257,3 +351,5 @@ time remains.
 | Local intent / entity tests | `backend/tests/test_voice_local_intent.py` |
 | Wake word (dormant) | `docs/wake-word-plan.md` |
 | Timer behaviour | `docs/timer-plan.md` |
+| Grocery list behaviour | `docs/lists-plan.md` |
+| Privacy mode | `docs/privacy-mode-plan.md`, `backend/app/privacy.py`, `frontend/src/privacy/` |

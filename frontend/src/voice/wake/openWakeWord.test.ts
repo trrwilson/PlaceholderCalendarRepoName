@@ -17,7 +17,14 @@ interface Internals {
 
 function makeDetector(): { detector: OpenWakeWordDetector; internals: Internals } {
   const detector = new OpenWakeWordDetector(
-    { modelPath: '/wake.onnx', modelsBaseUrl: '/models', threshold: 0.5, cooldownMs: 2_000 },
+    {
+      provider: 'openwakeword',
+      apiBaseUrl: 'http://api.test',
+      modelPath: '/wake.onnx',
+      modelsBaseUrl: '/models',
+      threshold: 0.5,
+      cooldownMs: 2_000,
+    },
     {} as never,
   )
   const internals = detector as unknown as Internals

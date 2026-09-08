@@ -63,6 +63,7 @@ describe('calendar sign-in', () => {
     render(<App />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Calendars' }))
     fireEvent.click(screen.getByRole('button', { name: 'Add another Outlook calendar' }))
 
     expect(await screen.findByText('ABCD-EFGH')).toBeInTheDocument()
@@ -96,6 +97,7 @@ describe('calendar sign-in', () => {
     render(<App />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Calendars' }))
     fireEvent.click(screen.getByRole('button', { name: 'Add another Outlook calendar' }))
     expect(await screen.findByText('ABCD-EFGH')).toBeInTheDocument()
 
@@ -122,6 +124,7 @@ describe('calendar sign-in', () => {
     render(<App />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Calendars' }))
     fireEvent.click(screen.getByRole('button', { name: 'Add another Outlook calendar' }))
 
     expect(await screen.findByText('sign-in is temporarily unavailable')).toBeInTheDocument()

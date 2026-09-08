@@ -81,6 +81,9 @@ test('Settings shows the voice provider picker with the active provider selected
   await page.goto('/')
   await page.getByRole('button', { name: 'Open settings' }).click()
   const dialog = page.getByRole('dialog', { name: 'Settings' })
+  // The bake-off pickers live under Voice & sound → Advanced (collapsed by default).
+  await dialog.getByRole('button', { name: 'Voice & sound' }).click()
+  await dialog.getByRole('button', { name: 'Advanced (bake-off)' }).click()
   await expect(dialog.getByText('Voice provider')).toBeVisible()
   await expect(dialog.getByRole('button', { name: 'Gemini Live' })).toHaveAttribute('aria-pressed', 'true')
   // An unimplemented contestant is listed but disabled.
@@ -110,12 +113,13 @@ test('wake word shows a Settings control and degrades safely without a model', a
   await page.goto('/')
   await page.getByRole('button', { name: 'Open settings' }).click()
   const dialog = page.getByRole('dialog', { name: 'Settings' })
+  await dialog.getByRole('button', { name: 'Voice & sound' }).click()
   await expect(dialog.getByText('Wake word')).toBeVisible()
   // No onnxruntime-web / model asset in the test build: the detector reports
   // unavailable and the note says push-to-talk still works.
   await expect(dialog.getByText(/push-to-talk still works/)).toBeVisible()
   // And push-to-talk genuinely still works.
-  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: 'Close settings' }).click()
   await page.getByRole('button', { name: 'Ask Mission Control' }).click()
   await expect(page.locator('.voice-overlay')).toBeVisible()
 })

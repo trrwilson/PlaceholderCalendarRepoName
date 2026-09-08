@@ -27,9 +27,19 @@
 {"text": "Remind me twenty minutes before soccer.", "intent": "timer.start", "disposition": "handled_locally", "tier": 1}
 {"text": "Add five minutes.", "intent": "timer.extend", "disposition": "handled_locally", "tier": 0}
 {"text": "How long is left on the timer?", "intent": "timer.query", "disposition": "handled_locally", "tier": 0}
-{"text": "Add milk to the Costco list.", "intent": "list.add", "disposition": "escalate_to_cloud", "tier": 1}
-{"text": "Add paper towels and dishwasher detergent to Costco.", "intent": "list.add", "disposition": "escalate_to_cloud", "tier": 1}
+{"text": "Add milk to the Costco list.", "intent": "list.add", "disposition": "handled_locally", "tier": 1}
+{"text": "Add paper towels and dishwasher detergent to Costco.", "intent": "list.add", "disposition": "handled_locally", "tier": 1}
 {"text": "Move the dentist appointment to Friday.", "intent": "calendar.move_event", "disposition": "rejected", "tier": 1}
 {"text": "Turn the display off.", "intent": "display.off", "disposition": "rejected", "tier": 0}
 {"text": "When can I have dinner with Alex this week without any conflicts?", "intent": "calendar.plan", "disposition": "escalate_to_cloud", "tier": 2}
 {"text": "Which day this weekend looks least busy?", "intent": "calendar.plan", "disposition": "escalate_to_cloud", "tier": 2}
+{"text": "Add meatballs to the grocery list.", "intent": "list.add", "disposition": "handled_locally", "tier": 1}
+{"text": "Put eggs, bread and butter on the shopping list.", "intent": "list.add", "disposition": "handled_locally", "tier": 1}
+{"text": "We're out of coffee.", "intent": "list.add", "disposition": "handled_locally", "tier": 1}
+{"text": "Take the milk off the grocery list.", "intent": "list.remove", "disposition": "handled_locally", "tier": 1}
+{"text": "Check off the bread.", "intent": "list.check", "disposition": "handled_locally", "tier": 1}
+{"text": "I got the eggs.", "intent": "list.check", "disposition": "handled_locally", "tier": 1}
+{"text": "Clear the grocery list.", "intent": "list.clear", "disposition": "handled_locally", "tier": 1}
+{"text": "Clear the ones we got.", "intent": "list.clear", "disposition": "handled_locally", "tier": 1}
+{"text": "Show me the grocery list.", "intent": "list.show", "disposition": "handled_locally", "tier": 0}
+{"text": "What's on the shopping list?", "intent": "list.show", "disposition": "handled_locally", "tier": 0}

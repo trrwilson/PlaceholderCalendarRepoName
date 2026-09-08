@@ -26,6 +26,15 @@ export class GeminiVoiceProvider implements ConversationalVoiceProvider {
   private firstInterim = true
   private firstFinalInput = true
   private firstOutputTranscript = true
+  // The user transcript is assembled here, not in `useVoiceSession`, so the
+  // consumer only ever sees the whole best-so-far string (each `user-transcript`
+  // event carries the full text, not a fragment). Gemini Live streams
+  // `inputTranscription` as ordered VERBATIM fragments that already carry their
+  // own whitespace, so settled text is a plain concatenation; the unstable
+  // `interimInputTranscription` preview (rare on the conversational models) is
+  // shown appended until the first settled fragment lands, then dropped.
+  private userFinal = ''
+  private userInterim = ''
   private audioChunks = 0
   private audioBytes = 0
   private readonly grant: VoiceGrant
@@ -175,14 +184,20 @@ export class GeminiVoiceProvider implements ConversationalVoiceProvider {
         this.firstInterim = false
         this.timeline.mark('interim-transcript-first')
       }
-      this.onEvent({ type: 'user-transcript', text: content.interimInputTranscription.text, final: false })
+      // Preview only, and only until settled text starts arriving.
+      if (!this.userFinal) {
+        this.userInterim += content.interimInputTranscription.text
+        this.onEvent({ type: 'user-transcript', text: this.userInterim, final: false })
+      }
     }
     if (content?.inputTranscription?.text) {
       if (this.firstFinalInput) {
         this.firstFinalInput = false
         this.timeline.mark('input-transcript-first')
       }
-      this.onEvent({ type: 'user-transcript', text: content.inputTranscription.text, final: true })
+      this.userFinal += content.inputTranscription.text
+      this.userInterim = ''
+      this.onEvent({ type: 'user-transcript', text: this.userFinal, final: true })
     }
     if (content?.outputTranscription?.text) {
       if (this.firstOutputTranscript) {

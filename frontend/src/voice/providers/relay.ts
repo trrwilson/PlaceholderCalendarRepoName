@@ -23,6 +23,11 @@ export class RelayVoiceProvider implements ConversationalVoiceProvider {
   private firstAudioSent = true
   private firstUserTranscript = true
   private firstAudioChunk = true
+  // The relay forwards the upstream transcription as incremental `final: false`
+  // deltas and then one `final: true` frame with the whole utterance. Assemble
+  // it here so the consumer always gets the full best-so-far string (deltas
+  // accumulate; the final frame replaces).
+  private userTranscript = ''
   private readonly url: string
   private readonly onEvent: (event: VoiceEvent) => void
   readonly timeline: VoiceTimeline
@@ -104,9 +109,16 @@ export class RelayVoiceProvider implements ConversationalVoiceProvider {
       return
     }
     if (type === 'open') this.timeline.mark('setup-complete')
-    if (type === 'user-transcript' && this.firstUserTranscript) {
-      this.firstUserTranscript = false
-      this.timeline.mark('input-transcript-first')
+    if (type === 'user-transcript') {
+      if (this.firstUserTranscript) {
+        this.firstUserTranscript = false
+        this.timeline.mark('input-transcript-first')
+      }
+      const text = String(frame.text ?? '')
+      if (frame.final) this.userTranscript = text
+      else this.userTranscript += text
+      this.onEvent({ type: 'user-transcript', text: this.userTranscript, final: frame.final === true })
+      return
     }
     if (type === 'audio' && this.firstAudioChunk) {
       this.firstAudioChunk = false

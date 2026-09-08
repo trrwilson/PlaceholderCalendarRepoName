@@ -66,7 +66,10 @@ class LocalHybridAdapter:
         surface: str | None,
         now_local: datetime,
         timezone: str | None,
+        schedule: str = "",
     ) -> VoiceToken:
+        # `schedule` is ignored: the pipeline fetches a fresh snapshot per turn
+        # and resolves entities against it directly (see api._local_snapshot).
         ttl = settings.voice_relay_ticket_ttl_seconds
         config = LocalPipelineConfig(
             interpreter=self._interpreter_config(settings),

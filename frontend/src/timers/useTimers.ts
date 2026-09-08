@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useAppSocket } from '../realtime/useAppSocket'
 import { AlarmChime } from './chime'
 import { ALARM_MAX_RING_MS, type Timer, type TimerMessage, type TimerMutationResult } from './types'
 
@@ -75,37 +76,19 @@ export function useTimers({ apiBaseUrl, onConnectionChange, onStarted, onFired }
     }
   }, [apiBaseUrl, applyTimers])
 
-  // -- live connection (no reconnect today, matching /api/ws elsewhere) --------
+  // -- live connection (shared `/api/ws`; no reconnect, matching the server) ---
   useEffect(() => {
-    let socket: WebSocket | null = null
-    let disposed = false
-    onConnRef.current?.('connecting')
     void refresh()
-    try {
-      socket = new WebSocket(`${apiBaseUrl.replace(/^http/, 'ws')}/api/ws`)
-      socket.addEventListener('open', () => {
-        onConnRef.current?.('live')
-        void refresh()
-      })
-      socket.addEventListener('close', () => {
-        if (!disposed) onConnRef.current?.('offline')
-      })
-      socket.addEventListener('message', (event: MessageEvent) => {
-        try {
-          const data = JSON.parse(String(event.data)) as TimerMessage
-          if (Array.isArray(data.timers)) applyTimers(data.timers)
-        } catch {
-          // Non-JSON / unrelated frame — ignore.
-        }
-      })
-    } catch {
-      onConnRef.current?.('offline')
-    }
-    return () => {
-      disposed = true
-      socket?.close()
-    }
-  }, [apiBaseUrl, refresh, applyTimers])
+  }, [refresh])
+
+  useAppSocket(apiBaseUrl, {
+    onStatus: (status) => onConnRef.current?.(status),
+    onOpen: () => void refresh(),
+    onMessage: (data) => {
+      const message = data as unknown as TimerMessage
+      if (Array.isArray(message.timers)) applyTimers(message.timers)
+    },
+  })
 
   // -- countdown: a 1 Hz tick only while a timer is active --------------------
   useEffect(() => {

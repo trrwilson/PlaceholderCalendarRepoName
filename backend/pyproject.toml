@@ -24,6 +24,14 @@ dev = [
   "respx>=0.21,<1.0",
   "ruff>=0.6",
 ]
+# The `azure` wake-word provider only. Native Speech SDK; spots an Azure custom
+# keyword `.table` on-device (no key, no network) from mic audio the kiosk
+# streams to `WS /api/voice/wake/azure` (app/voice/wake_azure.py). Left out of
+# the core deps so the default `openwakeword` path never pulls a native SDK —
+# `pip install -e '.[azure-wake]'` to enable it.
+azure-wake = [
+  "azure-cognitiveservices-speech>=1.44,<2.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -65,6 +65,7 @@ class AzureOpenAIRealtimeAdapter:
         surface: str | None,
         now_local: datetime,
         timezone: str | None,
+        schedule: str = "",
     ) -> VoiceToken:
         if reason := self.missing_config(settings):
             raise VoiceUnavailable(reason)
@@ -73,7 +74,7 @@ class AzureOpenAIRealtimeAdapter:
         endpointing = settings.azure_openai_realtime_endpointing
         url = f"{to_wss(settings.azure_openai_endpoint)}/openai/v1/realtime?model={deployment}"
         session = build_openai_ga_session(
-            instructions=build_system_instruction(now_local, calendar_names, timezone),
+            instructions=build_system_instruction(now_local, calendar_names, timezone, schedule),
             tools=as_openai_tools(),
             voice=settings.azure_openai_realtime_voice,
             turn_detection=openai_turn_detection(endpointing),

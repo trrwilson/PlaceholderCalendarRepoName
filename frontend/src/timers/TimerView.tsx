@@ -15,7 +15,11 @@ interface Props {
   onDismiss: () => void
 }
 
-const PRESETS_MIN = [1, 3, 5, 10, 15, 30, 45, 60, 120]
+// Duration presets are one tidy grammar: minutes, then a couple of hour options —
+// evenly spaced, no "45" sitting next to "1 hr". The dial is the fine adjust.
+// See docs/controls-layout-design.md → "Timer view".
+const PRESET_MINUTES = [1, 3, 5, 10, 15, 30, 45]
+const PRESET_HOURS = [1]
 const LABEL_CHIPS = ['Food', 'Oven', 'Laundry', 'Kids', 'Homework']
 const STEP_SECONDS = 60
 
@@ -57,6 +61,7 @@ function TimerSetup({ onStart }: { onStart: Props['onStart'] }) {
   return (
     <div className="timer-setup">
       <p className="section-kicker">New timer</p>
+
       <div className="timer-dial">
         <button
           className="timer-step"
@@ -74,29 +79,49 @@ function TimerSetup({ onStart }: { onStart: Props['onStart'] }) {
           +
         </button>
       </div>
-      <div className="timer-presets">
-        {PRESETS_MIN.map((minutes) => (
-          <button
-            key={minutes}
-            className={seconds === minutes * 60 ? 'selected' : ''}
-            onClick={() => setSeconds(minutes * 60)}
-          >
-            {minutes < 60 ? `${minutes} min` : `${minutes / 60} hr`}
-          </button>
-        ))}
+
+      <div className="timer-block">
+        <p className="timer-caption">Quick set</p>
+        <div className="timer-presets">
+          {PRESET_MINUTES.map((minutes) => (
+            <button
+              key={minutes}
+              className={seconds === minutes * 60 ? 'selected' : ''}
+              onClick={() => setSeconds(minutes * 60)}
+            >
+              {minutes} min
+            </button>
+          ))}
+          {PRESET_HOURS.map((hours) => (
+            <button
+              key={`${hours}h`}
+              className={seconds === hours * 3600 ? 'selected' : ''}
+              onClick={() => setSeconds(hours * 3600)}
+            >
+              {hours} hr
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="timer-labels" role="group" aria-label="Timer label">
-        {LABEL_CHIPS.map((chip) => (
-          <button
-            key={chip}
-            className={label === chip ? 'selected' : ''}
-            aria-pressed={label === chip}
-            onClick={() => setLabel((current) => (current === chip ? null : chip))}
-          >
-            {chip}
-          </button>
-        ))}
+
+      <div className="timer-divider" role="presentation" />
+
+      <div className="timer-block">
+        <p className="timer-caption">Label (optional)</p>
+        <div className="timer-labels" role="group" aria-label="Timer label">
+          {LABEL_CHIPS.map((chip) => (
+            <button
+              key={chip}
+              className={label === chip ? 'selected' : ''}
+              aria-pressed={label === chip}
+              onClick={() => setLabel((current) => (current === chip ? null : chip))}
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
       </div>
+
       <button
         className="timer-start"
         disabled={!startable}
@@ -138,22 +163,35 @@ function TimerRunning({
           {timer.label && <span>{timer.label}</span>}
         </div>
       </div>
+      {/* Two concerns, grouped and separated: add time, then control the run. The
+          one primary (Pause/Resume) carries the coral fill; Cancel is a quiet
+          ghost so the eye never lands on the destructive control first. */}
       <div className="timer-controls">
-        {paused ? (
-          <button className="timer-resume" onClick={onResume}>
-            Resume
-          </button>
-        ) : (
-          <button className="timer-pause" onClick={onPause}>
-            Pause
-          </button>
-        )}
-        <button onClick={() => onExtend(60)}>+1 min</button>
-        <button onClick={() => onExtend(5 * 60)}>+5 min</button>
-        <button onClick={onRestart}>Restart</button>
-        <button className="timer-cancel" onClick={onCancel}>
-          Cancel
-        </button>
+        <div className="timer-control-group">
+          <p className="timer-caption">Add time</p>
+          <div className="timer-control-row">
+            <button onClick={() => onExtend(60)}>+1 min</button>
+            <button onClick={() => onExtend(5 * 60)}>+5 min</button>
+          </div>
+        </div>
+        <div className="timer-control-group">
+          <p className="timer-caption">Controls</p>
+          <div className="timer-control-row">
+            {paused ? (
+              <button className="timer-resume" onClick={onResume}>
+                Resume
+              </button>
+            ) : (
+              <button className="timer-pause" onClick={onPause}>
+                Pause
+              </button>
+            )}
+            <button onClick={onRestart}>Restart</button>
+            <button className="timer-cancel" onClick={onCancel}>
+              Cancel
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

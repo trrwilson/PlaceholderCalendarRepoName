@@ -7,7 +7,10 @@ const iso = (h: number) => {
   return d.toISOString()
 }
 
-function context(overrides: Partial<ToolContext['actions']> = {}): ToolContext {
+function context(
+  overrides: Partial<ToolContext['actions']> = {},
+  ctx: Partial<Omit<ToolContext, 'actions'>> = {},
+): ToolContext {
   return {
     apiBaseUrl: 'http://api.test',
     actions: {
@@ -15,8 +18,10 @@ function context(overrides: Partial<ToolContext['actions']> = {}): ToolContext {
       focusDate: vi.fn(),
       highlightEvent: vi.fn(() => ({ matched: true, title: 'Swim practice', when: 'Fri 4:00 PM' })),
       setPeopleFilter: vi.fn(() => ({ matched: ['jordan'], unmatched: [] })),
+      requestPrivacyUnlock: vi.fn(),
       ...overrides,
     },
+    ...ctx,
   }
 }
 
@@ -219,5 +224,106 @@ describe('voice tool dispatch', () => {
     )
     const result = await dispatchToolCall('get_timer', {}, context())
     expect(result).toMatchObject({ running: false, paused: true, remaining_minutes: 5, label: 'bread' })
+  })
+
+  // -- grocery list ---------------------------------------------------------
+
+  const listWith = (items: { id: string; name: string; checked?: boolean }[]) => ({
+    id: 'grocery',
+    title: 'Grocery',
+    items: items.map((item) => ({ checked: false, ...item })),
+  })
+
+  it('adds multiple items to the grocery list in one call', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ list: listWith([]), added: ['eggs', 'bread'], already_present: [] }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await dispatchToolCall('add_to_list', { items: ['eggs', 'bread'] }, context())
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toContain('/api/lists/grocery/items')
+    expect(JSON.parse((init as { body: string }).body)).toEqual({ names: ['eggs', 'bread'], source: 'voice' })
+    expect(result).toMatchObject({ ok: true, added: ['eggs', 'bread'] })
+  })
+
+  it('resolves an item name to its id before removing it', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => listWith([{ id: 'a', name: 'Whole milk' }]) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ list: listWith([]), removed: [{ id: 'a' }] }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await dispatchToolCall('remove_from_list', { item: 'milk' }, context())
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/api/lists/grocery/items/a')
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'DELETE' })
+    expect(result).toMatchObject({ ok: true, removed: 'Whole milk' })
+  })
+
+  it('says when an item to remove is not on the list', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => listWith([{ id: 'a', name: 'Eggs' }]) }))
+    const result = await dispatchToolCall('check_off_item', { item: 'milk' }, context())
+    expect(result).toEqual({ ok: false, error: "milk isn't on the list" })
+  })
+
+  it('clears the whole list by default', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ list: listWith([]), removed: [{ id: 'a' }, { id: 'b' }] }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await dispatchToolCall('clear_list', {}, context())
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ scope: 'all' })
+    expect(result).toMatchObject({ ok: true, scope: 'all', removed_count: 2 })
+  })
+
+  it('reads the list back for get_list', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => listWith([{ id: 'a', name: 'Milk' }, { id: 'b', name: 'Eggs', checked: true }]),
+      }),
+    )
+    const result = await dispatchToolCall('get_list', {}, context())
+    expect(result).toMatchObject({
+      items: [{ name: 'Milk', checked: false }, { name: 'Eggs', checked: true }],
+      unchecked_count: 1,
+    })
+  })
+
+  describe('privacy mode', () => {
+    it('enter_privacy_mode posts to /api/privacy/lock', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+      vi.stubGlobal('fetch', fetchMock)
+      const result = await dispatchToolCall('enter_privacy_mode', {}, context())
+      expect(String(fetchMock.mock.calls[0][0])).toContain('/api/privacy/lock')
+      expect(result).toMatchObject({ ok: true })
+    })
+
+    it('request_privacy_unlock opens the on-screen keypad', async () => {
+      const ctx = context()
+      const result = await dispatchToolCall('request_privacy_unlock', {}, ctx)
+      expect(ctx.actions.requestPrivacyUnlock).toHaveBeenCalled()
+      expect(result).toMatchObject({ ok: true })
+    })
+
+    it('refuses every other tool while privacy mode is locked', async () => {
+      const ctx = context({}, { privacyLocked: true })
+      for (const tool of ['get_events', 'show_view', 'start_timer', 'add_to_list', 'get_list']) {
+        const result = await dispatchToolCall(tool, { view: 'home', start: '2026-09-11', end: '2026-09-11' }, ctx)
+        expect(result.ok).toBe(false)
+        expect(String(result.error)).toContain('Privacy mode is on')
+      }
+    })
+
+    it('still allows request_privacy_unlock while locked', async () => {
+      const ctx = context({}, { privacyLocked: true })
+      const result = await dispatchToolCall('request_privacy_unlock', {}, ctx)
+      expect(result).toMatchObject({ ok: true })
+      expect(ctx.actions.requestPrivacyUnlock).toHaveBeenCalled()
+    })
   })
 })

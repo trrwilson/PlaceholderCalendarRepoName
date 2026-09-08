@@ -3,5 +3,6 @@
 # ../README.md in this directory for what belongs here.
 *.onnx
 *.tflite
+*.table
 *.wasm
 *.mjs

@@ -116,6 +116,7 @@ const actions = {
   focusDate: vi.fn(),
   highlightEvent: vi.fn(() => ({ matched: false })),
   setPeopleFilter: vi.fn(() => ({ matched: [], unmatched: [] })),
+  requestPrivacyUnlock: vi.fn(),
 }
 const options = { apiBaseUrl: 'http://api.test', actions }
 
@@ -171,7 +172,7 @@ describe('useVoiceSession', () => {
     )
   })
 
-  it('concatenates settled transcription fragments verbatim and shows an interim preview first', async () => {
+  it('shows the latest transcript snapshot and lets a settled revision replace an early guess', async () => {
     const { result } = renderHook(() => useVoiceSession(options))
     await act(async () => {
       await result.current.startTurn()
@@ -181,11 +182,13 @@ describe('useVoiceSession', () => {
     act(() => h.state.emit({ type: 'user-transcript', text: "what's tomo", final: false }))
     expect(result.current.transcript.user).toBe("what's tomo")
 
-    // Settled fragments arrive with their own spacing and are joined as-is —
-    // no trimming, no separator guessing ("What 's to morrow?" was the bug).
-    act(() => h.state.emit({ type: 'user-transcript', text: "what's", final: true }))
-    act(() => h.state.emit({ type: 'user-transcript', text: ' tomorrow', final: true }))
-    act(() => h.state.emit({ type: 'user-transcript', text: '?', final: true }))
+    // The provider assembles the transcript and emits the whole best-so-far
+    // string each time — a revised hypothesis replaces the earlier one rather
+    // than being appended (which used to strand a wrong early guess on screen
+    // through the model's thinking time).
+    act(() => h.state.emit({ type: 'user-transcript', text: "what's to", final: true }))
+    act(() => h.state.emit({ type: 'user-transcript', text: "what's tomorrow", final: true }))
+    act(() => h.state.emit({ type: 'user-transcript', text: "what's tomorrow?", final: true }))
 
     expect(result.current.transcript.user).toBe("what's tomorrow?")
 

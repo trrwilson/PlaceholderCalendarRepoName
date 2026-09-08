@@ -13,6 +13,7 @@ No static list of names is baked in. The snapshot is passed in per turn.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from difflib import SequenceMatcher
@@ -194,7 +195,11 @@ class EntityResolver:
             cat_score = max(
                 (_fuzzy_score(query, cat.name) for cat in event.categories), default=0.0
             )
-            score = max(title_score, 0.7 * cat_score)
+            # A loose reference often names the place, not the title ("the thing
+            # in Bellevue" -> location "Overlake Clinic, Bellevue"). Weighted
+            # below title/category so a real title match still wins.
+            loc_score = _fuzzy_score(query, event.location) if event.location else 0.0
+            score = max(title_score, 0.7 * cat_score, 0.6 * loc_score)
             if score > 0.2:
                 scored.append((event, score))
 
@@ -219,8 +224,44 @@ class EntityResolver:
     def event_by_id(self, event_id: str) -> CalendarEvent | None:
         return next((e for e in self.snapshot.events if e.id == event_id), None)
 
-    # -- lists (no Mission Control list feature yet) ----------------------
-    def resolve_list(self, text: str) -> EntityMatch:
-        # There is no list store. Always unresolved — the interpreter turns this
-        # into a clean "lists aren't supported yet" / escalation, never a guess.
-        return EntityMatch(kind="list", query=text.strip())
+    # -- lists ----------------------------------------------------------
+    # There is one household list (grocery). Names the household uses for it all
+    # resolve to that id; a genuinely different list ("the packing list") stays
+    # unresolved so the interpreter can say "I've only got the grocery list"
+    # rather than guess. When several named lists exist, pass their names in.
+    _GROCERY_ALIASES = {
+        "grocery",
+        "groceries",
+        "grocery list",
+        "shopping",
+        "shopping list",
+        "costco",
+        "target",
+        "walmart",
+        "safeway",
+        "trader joe's",
+        "the store",
+        "store",
+        "food",
+        "list",
+        "the list",
+    }
+
+    def resolve_list(self, text: str, *, known: Iterable[str] | None = None) -> EntityMatch:
+        query = text.strip()
+        match = EntityMatch(kind="list", query=query)
+        names = list(known) if known is not None else ["grocery"]
+        norm = _norm(query)
+        if not norm or norm in self._GROCERY_ALIASES or "grocery" in norm or "shopping" in norm:
+            match.value = "grocery" if "grocery" in names else (names[0] if names else "grocery")
+            match.label = "grocery list"
+            match.score = 1.0
+            return match
+        scored = sorted(
+            ((n, _fuzzy_score(query, n)) for n in names), key=lambda s: s[1], reverse=True
+        )
+        if scored and scored[0][1] >= 0.7:
+            match.value = scored[0][0]
+            match.label = f"{scored[0][0]} list"
+            match.score = round(scored[0][1], 3)
+        return match

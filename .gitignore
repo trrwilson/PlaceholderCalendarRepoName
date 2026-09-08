@@ -29,6 +29,17 @@ frontend/blob-report/
 backend/voice-captures/
 voice-captures/
 
+# Household lists store (MISSION_CONTROL_LISTS_FILE) — durable app data, per install
+backend/lists.json
+lists.json
+*.lists.json
+
+# Privacy-mode state (MISSION_CONTROL_PRIVACY_STATE_FILE) — persisted so a
+# power-cycle does not clear the lock
+backend/privacy.json
+privacy.json
+*.privacy.json
+
 # Local STT benchmark samples + downloaded model caches (provisioned per install)
 backend/voice-samples/
 voice-samples/

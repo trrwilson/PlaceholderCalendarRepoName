@@ -281,6 +281,75 @@ def _extract_list_span(text: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+_LIST_ITEM_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "some",
+    "my",
+    "our",
+    "to",
+    "of",
+    "list",
+    "it",
+    "that",
+    "something",
+    "anything",
+    "stuff",
+    "things",
+    "them",
+    "these",
+    "those",
+    "",
+}
+_LIST_ALIAS_WORDS = {"grocery", "groceries", "shopping", "costco", "target", "walmart", "store"}
+
+
+def _named_list(text: str) -> str | None:
+    """A list the utterance explicitly names ('the packing list'), or None when
+    it just says 'the list' / a grocery alias / nothing."""
+    m = re.search(r"\b([a-z']+)\s+list\b", text)
+    if m and m.group(1) not in _LIST_ALIAS_WORDS | {"the", "my", "our", "a", "to", "on", "this"}:
+        return m.group(1)
+    return None
+
+
+def _split_items(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    parts = re.split(r"\s*(?:,|\band\b|\bplus\b|&)\s*", raw.strip())
+    out: list[str] = []
+    for part in parts:
+        cleaned = re.sub(r"^(?:the|a|an|some|my|our)\s+", "", part.strip()).strip(" .")
+        if cleaned and cleaned.lower() not in _LIST_ITEM_STOPWORDS:
+            out.append(cleaned)
+    return out
+
+
+# The verb + the run of item words, before any "to/on the … list" destination.
+_LIST_ITEM_VERB = re.compile(
+    r"\b(?:add|put|remove|delete|drop|take|get|grab|cross|check off|mark|"
+    r"got|picked up|grabbed|bought|need|needing|out of|ran out of)\s+"
+    r"(?:to |the |some |a |an |off |up |more )*(.+)$"
+)
+_LIST_DESTINATION = re.compile(
+    r"\s+(?:to|on|onto|off|out of|from)\s+(?:the |my |our )?[\w' ]*?\blist\b.*$"
+    r"|\s+(?:to|on|from)\s+(?:the |my )?(?:grocery|groceries|shopping|costco|target|walmart)\b.*$"
+    r"|\s+(?:as )?(?:bought|done|off|picked up)\s*$"
+)
+
+
+def _extract_list_items(raw: str) -> list[str]:
+    """Item names from an add / remove / check utterance. Runs on the *raw*
+    transcript (``normalize`` strips the commas that separate items)."""
+    text = raw.lower().strip().strip(".?!")
+    body = _LIST_DESTINATION.sub("", text)
+    m = _LIST_ITEM_VERB.search(body)
+    if not m:
+        return []
+    return _split_items(m.group(1))
+
+
 def _word_number(token: str) -> int | None:
     token = token.strip()
     if token.isdigit():
@@ -554,6 +623,7 @@ def _escalation_payload(
                         "start": e.starts_at.isoformat(timespec="minutes"),
                         "end": e.ends_at.isoformat(timespec="minutes"),
                         "all_day": e.all_day,
+                        "location": e.location,
                     }
                 )
     return {
@@ -615,22 +685,6 @@ def _plan(
             base.reason = "no DisplayController capability yet (see docs/camera-support-plan.md)"
             base.speech = "I can't control the display yet."
             return base
-        if intent.name.startswith("list."):
-            list_name, items = _extract_list_span(normalized)
-            base.slots = {"list": list_name, "items": items}
-            base.entities = [ResolvedEntity.of(resolver.resolve_list(list_name or ""))]
-            if cfg.cloud_escalation_enabled:
-                base.disposition = Disposition.escalate_to_cloud
-                base.tier = 1
-                base.reason = "no local shopping-list capability; a cloud assistant may handle it"
-                base.escalation = _escalation_payload(
-                    transcript, "no-list-feature", date_res, snapshot, now
-                )
-            else:
-                base.disposition = Disposition.rejected
-                base.reason = "Mission Control has no shopping lists yet"
-                base.speech = "I can't do shopping lists yet."
-            return base
         base.disposition = Disposition.rejected
         base.reason = "recognised but unsupported"
         base.speech = "I can't do that yet."
@@ -659,6 +713,10 @@ def _plan(
             transcript, "needs-reasoning", date_res, snapshot, now, person=person
         )
         return base
+
+    # --- grocery list -------------------------------------------------
+    if intent.name.startswith("list."):
+        return _plan_list(base, intent.name, transcript, normalized, resolver, cfg, conf)
 
     # --- timers ---------------------------------------------------------
     if intent.name == "timer.start":
@@ -833,6 +891,100 @@ def _plan_person_filter(
     base.speech = f"Showing {_join(labels)}."
     base.reason = "people filter (local, state-aware)"
     base.tier = 1
+    return base
+
+
+def _plan_list(
+    base: Interpretation,
+    intent_name: str,
+    transcript: str,
+    normalized: str,
+    resolver: EntityResolver,
+    cfg: InterpreterConfig,
+    conf: float,
+) -> Interpretation:
+    named = _named_list(normalized)
+    wants_items = intent_name in ("list.add", "list.remove", "list.check")
+    items = _extract_list_items(transcript) if wants_items else []
+    list_match = resolver.resolve_list(named or "")
+    base.entities = [ResolvedEntity.of(list_match)]
+    if not list_match.resolved:
+        base.disposition = Disposition.needs_clarification
+        base.reason = f"'{named}' is not a list Mission Control keeps"
+        base.clarification = "I've only got the grocery list."
+        return base
+    list_id = list_match.value or "grocery"
+    show = ToolCall(name="show_view", args={"view": "lists"})
+    base.tier = 1 if intent_name != "list.show" else 0
+    base.reason = "grocery list (local capability)"
+
+    if intent_name == "list.show":
+        base.tool_calls = [show]
+        base.speech = "Here's the grocery list."
+        return base
+
+    if intent_name == "list.clear":
+        checked_only = bool(
+            re.search(r"\b(ones|stuff|things) we (got|bought|picked up|have)\b", normalized)
+            or re.search(r"\bchecked(?: off)?\b", normalized)
+        )
+        if not checked_only and conf < cfg.mutation_threshold:
+            base.disposition = Disposition.needs_clarification
+            base.reason = "clearing the whole list is a big change; confidence is low"
+            base.clarification = "Clear the whole grocery list?"
+            return base
+        scope = "checked" if checked_only else "all"
+        base.slots = {"list": list_id, "scope": scope}
+        base.tool_calls = [
+            ToolCall(name="clear_list", args={"scope": scope, "list": list_id}),
+            show,
+        ]
+        base.speech = (
+            "Cleared the ones we've got."
+            if checked_only
+            else "Cleared the grocery list — you can undo that on screen."
+        )
+        return base
+
+    if not items:
+        base.disposition = Disposition.needs_clarification
+        base.reason = "no item named"
+        base.clarification = (
+            "What should I add to the list?" if intent_name == "list.add" else "Which item?"
+        )
+        return base
+
+    if intent_name == "list.add":
+        base.slots = {"list": list_id, "items": items}
+        base.tool_calls = [
+            ToolCall(name="add_to_list", args={"items": items, "list": list_id}),
+            show,
+        ]
+        base.speech = f"Adding {_join(items)} to the grocery list."
+        return base
+
+    # list.remove / list.check — one item, and removal is destructive.
+    item = items[0]
+    if intent_name == "list.remove":
+        if conf < cfg.mutation_threshold:
+            base.disposition = Disposition.needs_clarification
+            base.reason = "removing an item on low confidence is unsafe"
+            base.clarification = f"Take {item} off the grocery list?"
+            return base
+        base.slots = {"list": list_id, "item": item}
+        base.tool_calls = [
+            ToolCall(name="remove_from_list", args={"item": item, "list": list_id}),
+            show,
+        ]
+        base.speech = f"Taking {item} off the list."
+        return base
+
+    base.slots = {"list": list_id, "item": item}
+    base.tool_calls = [
+        ToolCall(name="check_off_item", args={"item": item, "list": list_id}),
+        show,
+    ]
+    base.speech = f"Checked off {item}."
     return base
 
 

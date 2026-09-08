@@ -37,12 +37,13 @@
 // Full picture, including where every audio setting lives: docs/audio-pipeline.md.
 
 /**
- * Default boost, in dB, for the kiosk's far-field USB microphone. Mirrors
- * `Settings.mic_input_gain_db` in `backend/app/config.py`, which is the
- * authority at runtime; this is the fallback for a backend that cannot be
- * reached. Keep the two in step.
+ * Default software capture gain, in dB. 0 disables the stage: the kiosk captures
+ * through a hardware microphone path with adequate level, so no software boost is
+ * applied unless an install configures one. Mirrors `Settings.mic_input_gain_db`
+ * in `backend/app/config.py`, which is the authority at runtime; this is the
+ * fallback for a backend that cannot be reached. Keep the two in step.
  */
-export const DEFAULT_INPUT_GAIN_DB = 20
+export const DEFAULT_INPUT_GAIN_DB = 0
 
 /**
  * The capture gain that every client-side level threshold is expressed at.

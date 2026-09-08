@@ -6,6 +6,10 @@ import type { DashboardActions, ViewMode } from './types'
 export interface ToolContext {
   actions: DashboardActions
   apiBaseUrl: string
+  /** Privacy mode is on: refuse every command except summoning the unlock
+   *  keypad. The assistant session itself stays up (see docs/privacy-mode-plan.md,
+   *  resolution 5). */
+  privacyLocked?: boolean
 }
 
 type ApiEvent = {
@@ -36,6 +40,32 @@ const parseLocalDateTime = (value: unknown): Date | null => {
 }
 
 const TIMER_MAX_SECONDS = 21_600
+const DEFAULT_LIST_ID = 'grocery'
+
+type ApiListItem = { id: string; name: string; checked: boolean }
+type ApiList = { id: string; title: string; items: ApiListItem[] }
+
+const listId = (value: unknown): string =>
+  typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : DEFAULT_LIST_ID
+
+const normalizeItem = (value: string): string =>
+  value.trim().toLowerCase().replace(/\s+/g, ' ').replace(/s$/, '')
+
+async function fetchList(ctx: ToolContext, id: string): Promise<ApiList | null> {
+  const response = await fetch(`${ctx.apiBaseUrl}/api/lists/${id}`)
+  return response.ok ? ((await response.json()) as ApiList) : null
+}
+
+function findItem(list: ApiList, query: string): ApiListItem | null {
+  const needle = normalizeItem(query)
+  if (!needle) return null
+  return (
+    list.items.find((item) => normalizeItem(item.name) === needle) ??
+    list.items.find((item) => normalizeItem(item.name).includes(needle)) ??
+    list.items.find((item) => needle.includes(normalizeItem(item.name))) ??
+    null
+  )
+}
 
 type ApiTimer = {
   id: string
@@ -90,10 +120,33 @@ export async function dispatchToolCall(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<Record<string, unknown>> {
+  // Privacy mode: the assistant stays reachable but does nothing except bring up
+  // the unlock keypad. Everything else — including reads, so no titles are ever
+  // spoken — is politely refused.
+  if (ctx.privacyLocked && name !== 'request_privacy_unlock' && name !== 'enter_privacy_mode') {
+    return {
+      ok: false,
+      error:
+        'Privacy mode is on. I can bring up the keypad to turn it off — otherwise it stays this way until someone enters the PIN on the display.',
+    }
+  }
   switch (name) {
+    case 'enter_privacy_mode': {
+      const response = await fetch(`${ctx.apiBaseUrl}/api/privacy/lock`, { method: 'POST' })
+      if (response.status === 409) {
+        return { ok: false, error: 'Privacy mode is not set up on this display.' }
+      }
+      return response.ok
+        ? { ok: true, note: 'Privacy mode is on. It takes the on-screen PIN to turn off.' }
+        : { ok: false, error: `could not turn on privacy mode (${response.status})` }
+    }
+    case 'request_privacy_unlock': {
+      ctx.actions.requestPrivacyUnlock()
+      return { ok: true, note: 'Ask them to enter the four-digit PIN on the display.' }
+    }
     case 'show_view': {
       const view = args.view as ViewMode
-      if (!['home', 'week', 'month', 'timer'].includes(view)) return { ok: false, error: 'unknown view' }
+      if (!['home', 'week', 'month', 'timer', 'lists'].includes(view)) return { ok: false, error: 'unknown view' }
       const date = isoDate(args.date)
       ctx.actions.showView(view, date ? parseLocalDate(date) : null)
       return { ok: true, showing: view, date: date ?? undefined }
@@ -229,6 +282,69 @@ export async function dispatchToolCall(
         paused,
         remaining_minutes: Math.max(0, Math.round(remainingMs / 60_000)),
         label: timer.label ?? undefined,
+      }
+    }
+    case 'add_to_list': {
+      const raw = Array.isArray(args.items)
+        ? args.items
+        : typeof args.items === 'string'
+          ? [args.items]
+          : typeof args.item === 'string'
+            ? [args.item]
+            : []
+      const names = raw.map((entry) => String(entry).trim()).filter(Boolean)
+      if (!names.length) return { ok: false, error: 'nothing to add' }
+      const response = await fetch(`${ctx.apiBaseUrl}/api/lists/${listId(args.list)}/items`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ names, source: 'voice' }),
+      })
+      if (response.status === 404) return { ok: false, error: 'I only have the grocery list.' }
+      if (!response.ok) return { ok: false, error: `could not add to the list (${response.status})` }
+      const result = (await response.json()) as {
+        added: string[]
+        already_present: string[]
+      }
+      return { ok: true, added: result.added, already_present: result.already_present }
+    }
+    case 'remove_from_list':
+    case 'check_off_item': {
+      const id = listId(args.list)
+      const list = await fetchList(ctx, id)
+      if (!list) return { ok: false, error: 'I only have the grocery list.' }
+      const item = findItem(list, String(args.item ?? ''))
+      if (!item) return { ok: false, error: `${String(args.item ?? 'that')} isn't on the list` }
+      if (name === 'check_off_item') {
+        const response = await fetch(`${ctx.apiBaseUrl}/api/lists/${id}/items/${item.id}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ checked: true }),
+        })
+        return response.ok ? { ok: true, checked: item.name } : { ok: false, error: 'could not check it off' }
+      }
+      const response = await fetch(`${ctx.apiBaseUrl}/api/lists/${id}/items/${item.id}`, {
+        method: 'DELETE',
+      })
+      return response.ok ? { ok: true, removed: item.name } : { ok: false, error: 'could not remove it' }
+    }
+    case 'clear_list': {
+      const scope = args.scope === 'checked' ? 'checked' : 'all'
+      const response = await fetch(`${ctx.apiBaseUrl}/api/lists/${listId(args.list)}/clear`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scope }),
+      })
+      if (response.status === 404) return { ok: false, error: 'I only have the grocery list.' }
+      if (!response.ok) return { ok: false, error: 'could not clear the list' }
+      const result = (await response.json()) as { removed: unknown[] }
+      return { ok: true, scope, removed_count: Array.isArray(result.removed) ? result.removed.length : 0 }
+    }
+    case 'get_list': {
+      const list = await fetchList(ctx, listId(args.list))
+      if (!list) return { ok: false, error: 'I only have the grocery list.' }
+      return {
+        items: list.items.map((item) => ({ name: item.name, checked: item.checked })),
+        unchecked_count: list.items.filter((item) => !item.checked).length,
       }
     }
     default:

@@ -102,10 +102,16 @@ class VoiceProviderAdapter(Protocol):
         surface: str | None,
         now_local: datetime,
         timezone: str | None,
+        schedule: str = "",
     ) -> VoiceToken:
         """Mint / obtain a short-lived, constrained session grant for the kiosk.
 
         ``now_local`` is the kiosk's wall clock (naive local); ``timezone`` is its
         IANA label, used only for the "it is now …" stamp in the system prompt.
+        ``schedule`` is the pre-formatted N-day schedule digest
+        (``app.voice.prompt.build_schedule_digest``) baked into the system
+        instruction so loose references resolve without a tool call; providers
+        that build the snapshot fresh per turn (the Local / Hybrid pipeline)
+        ignore it.
         """
         ...

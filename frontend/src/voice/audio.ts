@@ -70,6 +70,18 @@ export class MicSource {
   private gainLoggedAt = 0
   private lastGainStats: InputGainStats | null = null
 
+  // Which input device `getUserMedia` asks for. `null` means "let the OS pick".
+  // Resolved from the per-browser microphone choice by `useAudioInput`; see
+  // `./audioInput` and docs/audio-pipeline.md. `deviceStrict` picks `{exact}`
+  // (fail loudly if absent) over `{ideal}` (best effort).
+  private inputDeviceId: string | null = null
+  private inputDeviceStrict = false
+
+  // Fired after the shared stream is (re)acquired or torn down. Device labels
+  // only become readable once the page has held a grant, so `useAudioInput`
+  // re-enumerates on this signal.
+  private readonly streamListeners = new Set<() => void>()
+
   /**
    * Create/resume the `AudioContext` synchronously inside a user gesture, so a
    * later turn's response audio is allowed to play. Safe to call repeatedly.
@@ -110,6 +122,76 @@ export class MicSource {
   /** Configured capture gain, in dB. */
   get inputGainDb(): number {
     return this.inputGain.db
+  }
+
+  /**
+   * Choose the input device for the shared stream. `null` restores the OS
+   * default. `strict` requests it as `{exact}` — a missing device then fails the
+   * capture instead of quietly falling back to another microphone. Safe to call
+   * before or during capture: an active stream is torn down and rebuilt under the
+   * same listeners.
+   */
+  setInputDeviceId(deviceId: string | null, strict = false): void {
+    const next = deviceId || null
+    if (next === this.inputDeviceId && strict === this.inputDeviceStrict) return
+    this.inputDeviceId = next
+    this.inputDeviceStrict = strict
+    console.info('[voice] mic input device', { deviceId: next ?? '(system default)', strict })
+    void this.reacquire()
+  }
+
+  /** The input device the current stream is bound to (label needs a live grant). */
+  boundInputLabel(): string | null {
+    return this.stream?.getAudioTracks()[0]?.label || null
+  }
+
+  /**
+   * Subscribe to stream (re)acquisition / teardown. Returns an unsubscribe
+   * function. Used by `useAudioInput` to re-read device labels once a grant
+   * exists.
+   */
+  onStreamChange(listener: () => void): () => void {
+    this.streamListeners.add(listener)
+    return () => {
+      this.streamListeners.delete(listener)
+    }
+  }
+
+  private notifyStreamChange(): void {
+    for (const listener of this.streamListeners) {
+      try {
+        listener()
+      } catch {
+        // a diagnostics listener must never break capture
+      }
+    }
+  }
+
+  /** Rebuild the stream for the current input device, keeping every listener. */
+  private async reacquire(): Promise<void> {
+    if (!this.node && !this.starting) return // not capturing; the next subscribe() picks it up
+    try {
+      await this.starting?.catch(() => {})
+    } catch {
+      // ignore a failed in-flight start; we tear it down next anyway
+    }
+    const hadListeners = this.listeners.size > 0
+    this.node?.port.close()
+    this.node?.disconnect()
+    this.sourceNode?.disconnect()
+    this.stream?.getTracks().forEach((track) => track.stop())
+    void this.context?.close()
+    this.node = null
+    this.sourceNode = null
+    this.stream = null
+    this.context = null
+    this.notifyStreamChange()
+    if (!hadListeners) return
+    try {
+      await this.ensureRunning()
+    } catch (cause) {
+      console.warn('[voice] could not re-acquire the microphone after a device change', cause)
+    }
   }
 
   /**
@@ -181,8 +263,21 @@ export class MicSource {
             // fights our own dB gain stage (gain.ts) for the level.
             noiseSuppression: false,
             autoGainControl: false,
+            // Device chosen by `useAudioInput` (default: OS pick, or VB-CABLE
+            // when present). See ./audioInput and docs/audio-pipeline.md.
+            ...(this.inputDeviceId
+              ? { deviceId: this.inputDeviceStrict ? { exact: this.inputDeviceId } : { ideal: this.inputDeviceId } }
+              : {}),
           },
         })
+        const track = this.stream.getAudioTracks()[0]
+        console.info('[voice] mic stream acquired', {
+          requestedDeviceId: this.inputDeviceId ?? '(system default)',
+          strict: this.inputDeviceStrict,
+          boundLabel: track?.label || '(unknown)',
+          boundDeviceId: track?.getSettings?.().deviceId ?? '(unknown)',
+        })
+        this.notifyStreamChange()
         this.activateContext()
         const context = this.context
         if (!context) throw new Error('Could not create the microphone audio context.')
@@ -228,6 +323,7 @@ export class MicSource {
     this.sourceNode = null
     this.stream = null
     this.context = null
+    this.notifyStreamChange()
   }
 }
 

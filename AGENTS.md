@@ -29,12 +29,15 @@ clone.
 
 The voice assistant exists and is a running bake-off: tap-to-talk, five selectable
 providers (Gemini Live, three Azure paths, and an experimental on-device Local /
-Hybrid pipeline). It answers schedule questions, drives the dashboard, and controls
-one kitchen timer — the single documented exception to read-only; it cannot write
-the calendar. Local wake-word activation ("Mission Control") is **integrated but off
-by default** — the browser-resident architecture is in place and tested and a
-locally-trained model ships, but its ONNX feature maths and recall still need
-hardware validation (see **Wake word** below). Long-term direction (do **not** build
+Hybrid pipeline). It answers schedule questions, drives the dashboard, controls
+one kitchen timer, and manages the household grocery list — the two documented
+exceptions to read-only; it cannot write the calendar. It can also turn *on*
+**privacy mode** (a houseguest redact-and-lock state; see **Privacy mode**) but
+never turn it off. Wake-word activation ("Mission Control") is **integrated but off
+by default**, and is itself a bake-off: an in-browser openWakeWord detector (a
+locally-trained model ships; its ONNX feature maths and recall still need hardware
+validation) and a backend-spotted Azure custom keyword, swappable at runtime (see
+**Wake word** below). Long-term direction (do **not** build
 until explicitly asked): a Google Calendar provider, Home Assistant, voice-driven
 calendar writes, and optional local media processing. `.prompts/` holds the dated
 prompt history that produced the repo and is useful background.
@@ -96,6 +99,19 @@ frontend/                React 19 + TypeScript (strict) + Vite
    panel. Keep the contextual region (right rail / detail sheet) able to host event
    detail, exceptions, and later assistant proposals with Confirm/Cancel.
 
+## Comparative product research
+
+When a feature is user-facing behaviour or UX and someone outside this repo has
+almost certainly shipped something adjacent (a smart display, a family calendar, a
+shared list, a kiosk-lockdown tool), do a short comparative pass before settling
+the design. **`docs/comparative-product-research.md`** holds the method, a reusable
+comparison template, and a maintained catalogue of comparison-worthy products
+grouped by tier — so "does anyone else do this, and what works?" is a ~30–60 minute
+question, not a from-scratch investigation. Fold the findings into a *Pattern
+inspirations* section in the feature's plan doc (as `docs/timer-plan.md`,
+`docs/lists-plan.md`, and `docs/privacy-mode-plan.md` did), and add anything
+durable — a new product, a lasting principle — back to the research doc.
+
 ## Persistent chrome (header, status, navigation)
 
 The frame around the calendar is not a dashboard. Keep it minimal so the recovered
@@ -115,21 +131,46 @@ space goes to schedule content.
   when healthy, a clear touch-sized icon when not, with the detail message behind a
   tap (transient popover, Escape + outside-click dismiss) — never spelled out inline
   in the header.
+- **The bottom dock has two zones: navigation (left) and adjust (right).** Left
+  answers "what am I looking at?" — the mode nav; right holds "change what I see" —
+  People (calendar scope) then Settings (config). Global *actions* (Ask / Add) stay
+  in the header; the dock gets no third "actions" zone. **Every dock control is one
+  object**: one height, one radius, one type size (the `--dock-control-*` tokens).
+  People and Settings are the same size as a mode button — quiet until active/open —
+  never small secondary chrome. See `docs/controls-layout-design.md`.
 - **Persistent mode navigation must stay spatially stable.** Home / Week / Month
   are peer controls with equal, generous touch targets — inactive ones quieter than
   the selected one, but never styled as mouse-oriented text links. Their positions
-  never move. **Timer is not a calendar-viewing peer** — it is a role/appliance
-  mode and is set apart from that group: a gap + hairline divider in the dock, the
-  timer's coral identity instead of the neutral ink fill (coral when it is the
-  active view; a quiet coral outline + the running countdown otherwise), and a warm
-  self-contained view panel rather than the borderless calendar grids. This uses
-  the same "different kind of thing → distinct shape/colour, placed outside the
-  group" grammar as the contextual Today action. See `docs/timer-plan.md` →
-  "Visual separation".
+  never move. **Timer and Lists are not calendar-viewing peers** — they are
+  role/appliance modes, set apart from the views as their own cluster inside the
+  nav: the wider between-cluster gap plus a full-height hairline (visible across the
+  room, not a 1px rule), and their identity colours (coral / fern). Set apart, not
+  elevated — same size, same reading order, no centre-stage promotion. Each keeps a
+  warm self-contained view panel rather than the borderless calendar grids. Same
+  "different kind of thing → distinct grouping, placed within the nav but apart"
+  grammar as the contextual Today action. See `docs/timer-plan.md` → "Visual
+  separation" and `docs/controls-layout-design.md`.
+- **Ambient state on a dock button rides as a corner badge, never inline.** The
+  soonest timer's remaining time and the unchecked-list count are absolutely-
+  positioned overlays straddling the button's top-right corner, so the button — and
+  everything beside it — is a fixed size in every state. Nothing in the dock moves
+  when a timer starts, ticks, or ends.
 - **Contextual actions are not primary modes.** "Today" is a return-to-current-date
   action, shown only when Week/Month is displaced from today, styled distinctly from
-  the mode selector and placed visually outside it. Its appearance/disappearance must
-  not shift the mode buttons. The same rule applies to any future contextual action.
+  the mode selector and placed visually outside it (trailing the views cluster). Its
+  appearance/disappearance must not shift the mode buttons. The same rule applies to
+  any future contextual action.
+- **Settings is a categorised centred sheet, not a scrolling popover.** It joins the
+  `.detail-scrim` / `.detail-sheet` family (Escape + scrim dismiss) with a category
+  rail (Display · Calendars · Voice & sound) and a scrolling panel. Everyday display
+  preferences (event colour, week start, per-calendar colour) are the default view;
+  bake-off / diagnostic knobs (voice provider, keyword provider, mic routing) sit
+  behind an **Advanced** disclosure under "Voice & sound", collapsed by default, and
+  never show raw engine error strings on the wall. Control grammar follows the
+  choice shape: a segmented control for a small mutually-exclusive set, a switch for
+  on/off, swatch groups for colour. Add a new setting to the category it belongs to;
+  add a new category only for a genuinely distinct area. See
+  `docs/controls-layout-design.md`.
 
 ## Calendar event legibility & overflow
 
@@ -153,6 +194,37 @@ arm's length. Events are the primary information.
   All-day / multi-day bars keep their existing overlay treatment.
 - **Week view** has more room — show more event detail directly, at the same
   baseline event typography and touch standards.
+
+## Holidays
+
+US public holidays are shown as ambient context, **not** as events.
+`frontend/src/holidays.ts` computes them — a pure function of the date, in the browser's
+local zone, with no provider, no network, and no persistence (the same class of
+client-only helper as `dates.ts`). The set mirrors the "Holidays in United States"
+calendar people already see in Google / Outlook: the federal holidays plus widely-observed
+cultural days (Valentine's, St. Patrick's, Easter, Mother's / Father's Day, Halloween,
+Christmas Eve, New Year's Eve). Each carries one small thematic emoji.
+
+- **A holiday is a label, never a chip.** It renders in space that already exists — right
+  of the date number in the Month day heading (vertically centred on the number,
+  `HolidayNote`), on the Week all-day lane (`.allday-holiday`, centred under its date), and
+  under the day's headline on Home (today / tomorrow) — one step smaller than the
+  surrounding type, muted, `pointer-events: none`, and a `<span>` not a `<button>`. It
+  must never look tappable and never open a sheet.
+- **In the Week all-day lane, holidays and events stay visually distinct and share the
+  row.** Holidays are plain muted text + emoji with no fill or border; real all-day /
+  multi-day events are the coral- / identity-tinted rounded `span-bar` buttons that
+  stretch across days. The lane is **not** made taller for holidays: a holiday sits on the
+  top lane and events that don't touch that day stay on the same line beside it. A
+  holiday's day column is passed to `layoutSpans` as a reserved top-lane column, so an
+  event that *does* cover that day is packed onto the next lane — the non-interactive
+  holiday always reads ahead of the interactive event on a shared day.
+- **It must not move real content.** The Month note is one clipped line inside the
+  fixed-height heading (`--month-heading-h`); it never changes the presence, position, or
+  spacing of calendar events, the "+N" overflow, or the spanning bars.
+- Extend the set by adding rows in `holidays.ts`. Keep icons emoji (no committed asset —
+  see `docs/credits.md`) and avoid regional-indicator flag emoji (Windows renders them as
+  letters). A non-US holiday set would be a future locale choice, not a provider feed.
 
 ## Semantic color
 
@@ -225,27 +297,34 @@ arm's length. Events are the primary information.
   never entered on the kiosk. The initial zero-account prompt and Settings both use
   this same flow; Settings can add another Outlook account, and the personal provider
   exposes each cached account as a separate household calendar.
-- **Persistence.** No datastore yet; the MSAL token cache is a single JSON file. A
-  SQLite-backed provider or token store should drop in behind the same protocol without
-  any frontend change.
+- **Persistence.** No general datastore; two single JSON files — the MSAL token
+  cache, and the grocery list's `lists.json` (`app/lists.py`, `MISSION_CONTROL_LISTS_FILE`).
+  A SQLite-backed provider / token / list store should drop in behind the same
+  protocol without any frontend change.
 - **Real-time.** `/api/ws` is a deliberately small typed endpoint. Do not build a
   generalized event bus. `ApplicationMessage` in `app/models.py` is the server→client
   envelope. **Timers are its first real use:** `app/realtime.py` holds a tiny
   connection registry + `broadcast()`, the socket sends the current timer list on
   connect, and the timer store pushes `timer-started` / `-extended` / `-paused` /
   `-resumed` / `-restarted` / `-dismissed` / `-fired` messages (each carrying
-  `timers`, and `timer` / `replaced` as relevant).
-  Keep any further push a small typed addition to this envelope, not a bus.
+  `timers`, and `timer` / `replaced` as relevant). The **list store** uses the same
+  envelope (`lists` / `list` / `removed`) and channel — `list-item-added` / `-removed`
+  / `-checked` / `-unchecked` / `-cleared` / `-restored`; the socket also sends the
+  current lists on connect. On the frontend one shared connection
+  (`frontend/src/realtime/appSocket.ts` + `useAppSocket`) feeds both `useTimers` and
+  `useLists`. Keep any further push a small typed addition to this envelope, not a bus.
 
 ## Voice assistant
 
 Initial voice support (see `docs/voice-support-plan.md`). Tap-to-talk. It answers
-schedule questions and moves the display; it **cannot change the calendar**. The one
-documented, narrow exception to read-only: it may **set / cancel / extend / pause /
-resume / restart a single kitchen timer** (`start_timer` / `cancel_timer` /
-`extend_timer` / `pause_timer` / `resume_timer` / `restart_timer` / `get_timer`) —
-ephemeral, local, single-appliance state with no external side effect. Calendar
-writes stay out of scope.
+schedule questions and moves the display; it **cannot change the calendar**. There
+are **two** documented, narrow exceptions to read-only, both local single-household
+appliance state with no external side effect:
+1. the **kitchen timer** — `start_timer` / `cancel_timer` / `extend_timer` /
+   `pause_timer` / `resume_timer` / `restart_timer` / `get_timer`;
+2. the **grocery list** — `add_to_list` / `remove_from_list` / `check_off_item` /
+   `clear_list` / `get_list` (see **Lists** below and `docs/lists-plan.md`).
+Calendar writes stay out of scope.
 
 **Audio itself — microphone capture, the one software gain stage, sample rates,
 echo cancellation, playout and every audio setting — is documented once in
@@ -400,7 +479,9 @@ before changing anything that touches samples or level.
   / `highlight_event` / `set_people_filter` mutate local view state only; `get_events` /
   `get_agenda` / `check_conflicts` are answered from `GET /api/calendar`; `start_timer` /
   `cancel_timer` / `extend_timer` / `pause_timer` / `resume_timer` / `restart_timer` /
-  `get_timer` call `/api/timers`. Agent code must
+  `get_timer` call `/api/timers`; `add_to_list` / `remove_from_list` / `check_off_item` /
+  `clear_list` / `get_list` call `/api/lists` (remove/check resolve the item name against
+  the live list in the browser first). Agent code must
   never reach a calendar provider directly. The local intent router
   (`app/voice/local/`) plans the same tool calls without a speech-to-speech provider.
   Adding a tool = update both files (the backend copy is what gets locked into the token),
@@ -410,10 +491,36 @@ before changing anything that touches samples or level.
   everything voice understands — the phrasings, what each does, and its limits. Any
   change to the tool set (`tools.py` / `tools.ts`), to the spoken behaviour in
   `prompt.py`, or to what voice is allowed to touch (calendar read scope, the timer
-  exception, wake word) must update `docs/voice-commands.md` in the same change,
-  alongside the code and `test_voice.py`.
+  and grocery-list exceptions, wake word) must update `docs/voice-commands.md` in the
+  same change, alongside the code and `test_voice.py`.
 - **The display is the output surface.** Spoken replies are one-sentence confirmations;
   the dashboard carries the answer. The `VoiceOverlay` is transient, not a chat panel.
+- **Single-turn, no follow-up questions.** Every activation is one self-contained
+  exchange — there is no running conversation and no idea of a "next step". The prompt
+  (`prompt.py`) forbids follow-up offers ("Do you want me to…", "Should I…", "Would you
+  like…", "Let me know if…"): answer what was asked, then stop. This is a hard rule for
+  the speech-to-speech providers, whose models otherwise drift into assistant-chat
+  patterns; keep any new spoken-behaviour guidance consistent with it.
+- **The prompt carries the schedule, not just the calendar names.** The system
+  instruction bakes in a compact digest of the next `MISSION_CONTROL_VOICE_CONTEXT_DAYS`
+  (default 30) of events — per day, `who — title, time, @ location` — built by
+  `prompt.build_schedule_digest` from the same `[today, +N]` snapshot the token cache
+  already fetches (`app/voice/cache.py`). This is what lets a loose reference ("that
+  doctor appointment in Bellevue later this month" → a "new patient visit" at a Bellevue
+  clinic) resolve with **no tool call**: the prompt tells the model to match the spoken
+  words against **both** the title and the location. `get_events` is for dates past the
+  window or a detail a line does not carry. The digest costs ~a line per busy day; the
+  token cache amortises it, and event-boundary freshness is unchanged (the *next*
+  boundary still dominates `freshness_horizon`). The Local / Hybrid pipeline resolves
+  entities against the same `voice_context_days` window (`api._local_snapshot`), and
+  `entities.resolve_event` matches location as well as title/category.
+- **Transcript assembly lives in the provider, not `useVoiceSession`.** Each
+  `user-transcript` `VoiceEvent` carries the **whole best-so-far string** (Gemini
+  concatenates its VERBATIM `inputTranscription` fragments; the relay accumulates
+  `input_audio_transcription` deltas and the `completed` frame replaces). The hook just
+  shows the latest — a revised final hypothesis **replaces** the earlier one rather than
+  appending, so an inaccurate early partial does not linger on screen through the
+  model's thinking time. The interim preview shows only until the first settled text.
 - `surface` is accepted on the token request and threaded through unused — reserved for
   a future multi-screen setup where one screen's command drives another.
 
@@ -536,26 +643,48 @@ wired end to end and selectable in Settings. **Durable decisions:**
 ## Wake word
 
 Local "Mission Control" activation (`docs/wake-word-plan.md`,
-`docs/wake-word-model-training.md`). **Browser-resident** — no host process; all
-idle-listening audio stays in the browser and only the turn *after* the phrase
-reaches Gemini. **Off by default**; a missing model or runtime degrades silently
-to push-to-talk, which is always independent of any of this.
+`docs/wake-word-model-training.md`, `docs/wake-word-provider-bakeoff.md`).
+**Off by default**; a missing model, runtime, or backend degrades silently to
+push-to-talk, which is always independent of any of this.
 
 - **It is not conversational AI.** The detector answers only "did someone say the
   phrase?" — it never touches Gemini, tools, or the transcript. On detection it
   calls the *same* `startTurn()` the Ask button does.
+- **Providers (a bake-off, orthogonal to the voice-provider one).**
+  `WakeProviderId = "openwakeword" | "azure"`, selected at runtime from Settings
+  (`PUT /api/voice/wake-config` → process-memory override, like the voice
+  provider) and defaulted by `MISSION_CONTROL_WAKE_WORD_PROVIDER`.
+  - `openwakeword` (default): **browser-resident** — no host process; all
+    idle-listening audio stays in the browser and only the turn *after* the
+    phrase reaches the voice provider.
+  - `azure`: an Azure Speech Studio custom-keyword `.table`, spotted **on the
+    backend** by the native Speech SDK (`backend/app/voice/wake_azure.py`, the
+    optional `.[azure-wake]` dependency). The JS Speech SDK has no working
+    `.table` loader, so the kiosk streams 16 kHz mic PCM to
+    `WS /api/voice/wake/azure` (`AzureKeywordDetector`) and the backend answers
+    `{type:"wake"}`. Spotting is still on-device (no key, no network) but the
+    audio reaches the backend — a **deliberate exception** to "no host process",
+    at the same localhost/LAN trust boundary as the Azure voice relay.
 - **Seam.** `frontend/src/voice/wake/` — `WakeDetector` interface +
-  `createWakeDetector()`; `OpenWakeWordDetector` (local ONNX via lazily-imported
-  `onnxruntime-web`, a package dependency, kept out of Vite's dep pre-bundle so it
-  resolves its own `.wasm` same-origin); `FakeWakeDetector`
-  (`VITE_WAKE_FAKE=1`, mic-free, for tests/manual UI); `useWakeWord` owns the
-  detector lifecycle and diagnostics. Mock it the way `./session` / `./audio` are
-  mocked.
+  `createWakeDetector()` (picks the impl from `config.provider`);
+  `OpenWakeWordDetector` (local ONNX via lazily-imported `onnxruntime-web`, a
+  package dependency, kept out of Vite's dep pre-bundle so it resolves its own
+  `.wasm` same-origin); `AzureKeywordDetector` (the backend WS relay above);
+  `FakeWakeDetector` (`VITE_WAKE_FAKE=1`, mic-free, for tests/manual UI);
+  `WakePreroll` is the shared pre-roll ring buffer. `useWakeWord` owns the
+  detector lifecycle, the provider switch, and diagnostics. Mock it the way
+  `./session` / `./audio` are mocked.
 - **One microphone, one gain.** `audio.ts` has a reference-counted `MicSource` (one
   `getUserMedia` + `AudioContext` + capture worklet, many listeners). Never open
   a second mic stack — push-to-talk and the detector are both just listeners.
+  *Which* input device that one stream opens is `useAudioInput` →
+  `micSource.setInputDeviceId()` (per-browser `localStorage['mission-control.audio-input']`,
+  default `"auto"`, which prefers a **VB-CABLE** virtual input when present); pure
+  logic in `voice/audioInput.ts`, picker in Settings → Microphone. Never put a
+  `deviceId` constraint anywhere else.
   `MicSource` also owns the **only** gain stage (`voice/gain.ts`): a dB-denominated
-  amplitude multiplier (`10^(dB/20)`, 0 dB = off, default +20 dB) applied to every
+  amplitude multiplier (`10^(dB/20)`, 0 dB = off, the default — the hardware mic
+  path carries the level; opt in per install) applied to every
   native frame *before* fan-out, so wake word and the provider both get the
   adjusted, ±1-saturated audio and neither knows it happened. Configured by
   `MISSION_CONTROL_MIC_INPUT_GAIN_DB` → `VoiceConfig.mic_input_gain_db` on `GET
@@ -591,14 +720,19 @@ to push-to-talk, which is always independent of any of this.
   `takeRetainedAudio()` is what turns it off (until `resume()` re-arms). Dropping
   retention at suspend loses the whole command on a single-shot phrase.
 - **Config.** `MISSION_CONTROL_WAKE_WORD_*` in `config.py` (enabled, phrase,
-  threshold, cooldown_ms, model_path, models_base_url); `GET
-  /api/voice/wake-config` (`_require_local`-gated) reports `enabled` only when
-  both wake word and voice are on. `WakeWordConfig` in `models.py`.
-- **Settings.** One "Wake word" control in the settings popover (on/off +
-  status/detail/last-latency note), shown only when the backend permits it. No
-  permanent dashboard space; no debugging console in the kiosk UI.
+  threshold, cooldown_ms, model_path, models_base_url, **provider**,
+  **azure_model_path**); `GET /api/voice/wake-config` (`_require_local`-gated)
+  reports `enabled` only when both wake word and voice are on, plus the active
+  `provider` and the selectable `providers[]` (`configured` is false for `azure`
+  until the SDK + `.table` are present). `PUT` swaps the provider. Resolution +
+  labels live in `app/voice/wake.py` (mirrors `app/voice/providers/`).
+- **Settings.** A "Wake word" control (on/off + status/detail/last-latency note)
+  and, when more than one back end is offered, a "Keyword provider" button list —
+  both shown only when the backend permits it. No permanent dashboard space; no
+  debugging console in the kiosk UI.
 - Web Speech API is **ruled out** — Chrome sends its audio to Google, breaking
-  local-by-default.
+  local-by-default. (The `azure` provider's `.table` spotting is genuinely
+  on-device — the audio goes only to our own backend, never to Azure.)
 
 ## Timers
 
@@ -626,8 +760,12 @@ timers are core.
 - **Frontend.** `frontend/src/timers/` — `useTimers()` owns the single timer, the
   `/api/ws` subscription, a 1 Hz countdown *only while a timer is active*, a
   local-clock safety-net fire if the socket is down, `navigator.wakeLock('screen')`
-  while active, and the alarm chime. `TimerView` renders setup / running (with a
-  Pause/Resume + Restart control set) / fired.
+  while active, and the alarm chime. `TimerView` renders setup / running / fired.
+  Setup is a vertical stack with one hero (the dial) and one primary (Start);
+  duration presets feed the dial, the label is a separate optional block below a
+  divider. Running groups the controls by concern — *add time* (`+1`/`+5`) apart
+  from *controls* (Pause/Resume primary·coral, Restart, Cancel·ghost). One primary
+  per state. See `docs/controls-layout-design.md` → "Timer view".
   The chime (`timers/chime.ts`) plays through the shared echo-cancelled output bus
   (`voice/aecPlayback.ts`), not `context.destination` — it routinely rings while
   someone is speaking to the kiosk, and uncancelled playout is heard by the open
@@ -654,6 +792,97 @@ timers are core.
   semantic booleans for the future display-power controller (see
   `docs/camera-support-plan.md`): a timer must count as a keep-awake vote and, when
   the policy would otherwise sleep the panel, switch to the Timer tab instead.
+
+## Lists
+
+A "lists" utility, currently one **grocery list** (`docs/lists-plan.md`). Like the
+Timer tab it is a **role/appliance mode**, not a calendar view — set apart in the
+dock (gap + hairline, `fern` identity not `coral`, an unchecked-item count badge)
+with a warm self-contained panel. `ViewMode` gains `'lists'`.
+
+- **State — backend-owned and *durable*.** `GroceryList` / `ListItem` /
+  `ListItem*Request` / `ListMutationResult` in `app/models.py`; the store is
+  `app/lists.py` (process singleton, keyed by id so several named lists is a later
+  config change). Unlike timers it **persists to one JSON file**
+  (`MISSION_CONTROL_LISTS_FILE`, default `lists.json`, git-ignored, atomic write,
+  reloaded at startup) — a wall appliance that forgets the grocery list on reboot is
+  broken UX. Same "one file, no datastore" class as the MSAL cache; a SQLite store
+  drops in behind the store's shape. `MISSION_CONTROL_LISTS_RECENT_ITEMS_MAX` caps
+  the remembered item-name history.
+- **`/api/lists`** `GET` (all / one), `POST /{id}/items` (add — `name` or `names[]`,
+  deduped: an unchecked match is a no-op, a checked match is un-checked),
+  `PATCH /{id}/items/{itemId}` (check/uncheck/edit), `DELETE /{id}/items/{itemId}`,
+  `POST /{id}/clear` (`scope` `checked` default / `all`), `POST /{id}/restore` (Undo),
+  `POST /{id}/reorder` (`item_ids` in the new drag order — a partial list keeps
+  unnamed items after; the order is persisted, so `restore` no longer re-sorts).
+  All `_require_local`-gated and `_require_unlocked` (privacy mode). Every mutation
+  returns the state **and** broadcasts.
+- **Real-time.** Reuses `ApplicationMessage` (now also `lists` / `list` / `removed`)
+  and the `/api/ws` push — `list-item-added` / `-removed` / `-checked` / `-unchecked`
+  / `-cleared` / `-restored` / `-reordered`. `app/realtime.py` sends the current lists on connect.
+  **One socket:** `frontend/src/realtime/appSocket.ts` + `useAppSocket` is the shared
+  `/api/ws` connection that both `useTimers` and `useLists` subscribe to (no second
+  socket, no bus).
+- **Frontend.** `frontend/src/lists/` — `useLists()` owns the list, reconciles via
+  `GET /api/lists/{id}` on (re)open, applies pushes, and fires `onRemoved` so a clear
+  shows an on-screen **"Cleared N · Undo"** (`lists.restore`). `ListsView` renders the
+  unchecked rows (tap = check off, `×` = remove), a "Got it" strip of checked items,
+  and a **recent-items quick-add grid** — the touch path for adding, since there is
+  no on-screen keyboard (novel items come from voice, matching the timer-label
+  precedent). "Clear all" is behind an overflow `⋯` + confirm. Unchecked rows have a
+  **drag grip** (`frontend/src/lists/dragReorder.ts` — pointer-capture drag, touch-first,
+  no HTML5 DnD) that reorders them and persists via `POST .../reorder`; a stale
+  `list-reordered` echo is suppressed briefly after a local drag. The dock **Lists**
+  button carries the unchecked count when another view is on screen.
+- **Voice** is the second read-only exception (above): `add_to_list` (splits
+  "x, y and z"), `remove_from_list`, `check_off_item`, `clear_list`, `get_list`; any
+  list change also calls `show_view('lists')`. The local pipeline's `list.*` intents
+  (`intents.py`) are `supported=True` and planned in `interpreter.py`;
+  `entities.resolve_list` matches grocery aliases and asks (never guesses) for an
+  unknown named list. `docs/voice-commands.md` carries the phrasings.
+
+## Privacy mode
+
+A houseguest-facing state that **redacts the specifics** (event/list title,
+location, category → `•••` and identity-colour only; the *when / how many / whose*
+stay) **and locks the appliance read-only** until a PIN is entered on screen. One
+household-global flag drives both. `docs/privacy-mode-plan.md` is the design
+record + the ratified resolutions. **It is a social / glance barrier, not a
+security control** — physical access to the host defeats it.
+
+- **Backend-owned, persisted, broadcast.** `app/privacy.py` is a `PrivacyStore`
+  singleton in the same mould as `app/timers.py` / `app/lists.py` (injected clock
+  + broadcast, no socket import). State persists to
+  `MISSION_CONTROL_PRIVACY_STATE_FILE` (default `privacy.json`, git-ignored) so a
+  power-cycle does not clear it; wrong-PIN lockout counters are process memory
+  only. `PrivacyState` rides `ApplicationMessage.privacy` on the `/api/ws` hello
+  and every lock / unlock.
+- **The read-only gate is one line.** `_require_unlocked()` in `app/api.py`
+  returns **423 Locked** while privacy mode is on, and is called after
+  `_require_local` on every mutating endpoint (timers, lists, calendar sign-in,
+  `PUT /api/voice/config`). **A new mutating endpoint MUST add
+  `_require_unlocked()`** — the Definition of Done has a line for it. The one
+  exception: `DELETE /api/timers/{id}` is allowed while locked *iff* that timer
+  is `fired`, so a ringing alarm can still be silenced.
+- **Voice stays reachable; commands do not.** The session is **not** gated — the
+  assistant answers — but `frontend/src/voice/tools.ts` refuses every tool while
+  locked (reads included, so no titles are spoken) **except**
+  `request_privacy_unlock` (brings up the keypad) and `enter_privacy_mode`. Voice
+  can turn privacy mode *on* and *ask* for the keypad; it can never turn it
+  *off* (speaking a PIN aloud would defeat it).
+- **Entry is understated, exit is gated.** A ~600 ms press-and-hold on the brand
+  lockup (`BrandLockup` in `App.tsx`), a Settings row, or the voice tool enters
+  it — no secret, the safe direction, plus an 8 s no-PIN "Undo". Exit is a
+  header padlock → `PrivacyPad` (a fixed `7-8-9 / 4-5-6 / 1-2-3 / 0` keypad, no
+  text field — the kiosk has no keyboard) → `POST /api/privacy/unlock`. MVP is
+  **exactly four digits**, backend-configured (`MISSION_CONTROL_PRIVACY_MODE_PIN`,
+  default `8426`); **blank disables the whole feature** (entry affordances
+  hidden, `lock` 409s — nobody can be locked out).
+- **Redaction is a render choice, not a data change.** `App.tsx` maps events
+  through `redactEvent` and forces `people-first` colour + a no-op `onSelect`
+  while locked; `ListsView` takes a `redacted` prop. The snapshot the backend
+  sent is untouched, so unlock is instant. No React context was added (the
+  prop/transform path was lighter — see the plan's §0).
 
 ## Bundled media
 
@@ -742,6 +971,27 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
   (`providers/local.test.ts`, fake `WebSocket` — forwards `VoiceEvent`s +
   `diagnostic`/`escalation`, JSON-string tool results). The real STT engine is
   benchmarked on hardware (`scripts/benchmark_local_stt.py`), not in CI.
+- lists: the store (`test_lists.py` — add dedupe / un-check-on-re-add, check/uncheck
+  timestamps, remove + clear(checked|all) + restore, reorder (custom order, partial id
+  list, no-op, survives reload + undo), capped recent-names surviving a clear, broadcast
+  on every mutation, JSON reload + corrupt-file reseed); the endpoints (happy paths,
+  404s, 422 blank name, reorder persists, `_require_local` 403, WS lists-on-connect
+  + broadcast); frontend `useLists` (reconcile, apply push, ignore non-list frames,
+  `onRemoved` → Undo, optimistic reorder + stale-echo suppression), `moveItem`
+  (`dragReorder.test.ts`), the five list tool dispatches (`tools.test.ts`), an App-level
+  view + check-off + dock-count test, and Playwright kiosk-fit + quick-add + check-off
+  + drag-reorder-sticks-after-reload.
+- privacy mode (`test_privacy.py`): the store (lock idempotent + `since`, unlock
+  ok/bad/disabled, lockout after N + doubling cooldown, undo only inside the grace
+  window, JSON reload + corrupt-file → unlocked), the config validator (4 digits or
+  blank), the endpoints (401/409/429+`Retry-After`/410, `_require_local` 403), the
+  **gate** (a mutation per area is 423 while locked, the GETs still 200, a `fired`
+  timer still dismissible, `/api/voice/token` **not** 423), WS privacy-on-connect +
+  broadcast; frontend `usePrivacy` (reconcile, apply push, cooldown), `PrivacyPad`
+  (four-digit submit, wrong-PIN shake, cooldown-disabled, no text input), the
+  privacy tool dispatch (refuses others while locked, `request_privacy_unlock`
+  opens the pad), an App-level redact + read-only + padlock test, and a Playwright
+  long-press-enter → redacted → wrong-then-right-PIN → restored.
 - wake word: `/api/voice/wake-config` (default disabled, enabled only with both flags,
   non-LAN → 403); the wake/voice state machine (arm → detect → turn → re-arm, suspend
   during a turn, repeated/late detections don't stack sessions, disable stops it,
@@ -761,14 +1011,20 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
 - Playwright (`npm run test:e2e`) passes when frontend behavior or layout changed.
 - Changes are small, readable, and scoped to the requested behavior.
 - No document-level scrolling in Home/Week/Month at 3840x2160 or 1920x1080.
+- **A new mutating API endpoint calls `_require_unlocked()`** after `_require_local`
+  (privacy mode is a read-only lock over *all* mutation — see **Privacy mode**).
 
 ## Current non-goals (do not start without an explicit request)
 
 Google Calendar, Home Assistant, frontend authentication / account management,
-persistence/SQLite, Docker, Redis, Postgres, message brokers, cloud infrastructure.
-Voice cannot write the calendar — no voice-driven calendar writes, no conversation
-persistence. (Voice may set/cancel/extend/pause/resume/restart the kitchen timer — the
-one documented exception; see **Timers**.) The **Local / Hybrid** voice pipeline (local STT + intent /
+SQLite / a real datastore (the grocery list's single JSON file is the one durable
+store — do not add more), Docker, Redis, Postgres, message brokers, cloud
+infrastructure. Voice cannot write the calendar — no voice-driven calendar writes,
+no conversation persistence. (Voice may set/cancel/extend/pause/resume/restart the
+kitchen timer and manage the grocery list — the two documented exceptions; see
+**Timers** and **Lists**.) Lists: one grocery list only — no multiple named lists,
+list CRUD, categories/aisle grouping, or an on-screen keyboard yet
+(`docs/lists-plan.md` §12). The **Local / Hybrid** voice pipeline (local STT + intent /
 entity resolution + cloud escalation) **is** now in scope and integrated, experimentally
 (see **Voice assistant → Local / Hybrid pipeline**); keep its seams inside
 `app/voice/local/`, do not generalize them into the shared voice layer, and the cloud
@@ -778,3 +1034,9 @@ wake-word activation **is** also in scope and integrated (see
 push-to-talk path. (Microsoft Graph *read* providers exist for both tenant and
 personal accounts; do not expand them into write-heavy two-way sync without being
 asked.)
+
+**Privacy mode is built** (see the **Privacy mode** section) — a redact-the-specifics
++ read-only-lock state for a houseguest, `docs/privacy-mode-plan.md`. Still out of
+scope on top of it: an in-app way to set the PIN, a passphrase (needs an on-screen
+keyboard), multiple privacy *levels*, server-side title redaction, hold-to-reveal,
+and a presence-detection auto-trigger.

@@ -1,4 +1,4 @@
-export type ViewMode = 'home' | 'week' | 'month' | 'timer'
+export type ViewMode = 'home' | 'week' | 'month' | 'timer' | 'lists'
 export type VoiceStatus =
   | 'idle'
   // Wake word is loaded and listening locally for the phrase. No session, no
@@ -48,4 +48,10 @@ export interface DashboardActions {
     matched: string[]
     unmatched: string[]
   }
+  /**
+   * Open the on-screen PIN keypad so a household member can turn OFF privacy
+   * mode. Voice can ask for the keypad but can never enter the PIN itself —
+   * speaking it aloud would defeat the point. See docs/privacy-mode-plan.md.
+   */
+  requestPrivacyUnlock(): void
 }

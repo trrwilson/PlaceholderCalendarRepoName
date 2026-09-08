@@ -138,6 +138,9 @@ interface Options {
   apiBaseUrl: string
   actions: DashboardActions
   surface?: string | null
+  /** Privacy mode is on — the session stays up but every tool call except the
+   *  unlock keypad is refused (docs/privacy-mode-plan.md, resolution 5). */
+  privacyLocked?: boolean
 }
 
 /**
@@ -158,7 +161,12 @@ interface Options {
  * exactly as it does for a tap (see the constants block below). Push-to-talk
  * stays independent of all of it.
  */
-export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options) {
+export function useVoiceSession({
+  apiBaseUrl,
+  actions,
+  surface = null,
+  privacyLocked = false,
+}: Options) {
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [transcript, setTranscript] = useState<VoiceTranscript>({ user: '', assistant: '' })
   const [error, setError] = useState<VoiceError | null>(null)
@@ -178,11 +186,12 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
   // audio was the server generating slowly or this thread being too busy to
   // drain the socket (which throttles the sender via TCP backpressure).
   const lagRef = useRef<MainThreadLagProbe | null>(null)
-  // Transcription is assembled from two independent Gemini streams. `final`
-  // (`inputTranscription`) fragments are the settled text and are concatenated
-  // verbatim; `interim` (`interimInputTranscription`) is a low-latency preview
-  // shown only until the settled text starts arriving. Neither is trimmed or
-  // re-spaced — the fragments already carry the right whitespace.
+  // The provider assembles the user transcript and every `user-transcript` event
+  // now carries the FULL best-so-far string (not a fragment) — so a late
+  // correction from the recogniser replaces the early, often wrong, guess
+  // instead of leaving it stranded on screen through the model's thinking time.
+  // `final` is the settled text; `interim` is a low-latency preview shown only
+  // until settled text starts arriving.
   const finalUserRef = useRef('')
   const interimUserRef = useRef('')
   // Client-side end-of-speech state (see constants above).
@@ -203,6 +212,8 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
   const endpointingRef = useRef<EndpointingMode>('client')
   const actionsRef = useRef(actions)
   actionsRef.current = actions
+  const privacyLockedRef = useRef(privacyLocked)
+  privacyLockedRef.current = privacyLocked
   const errorRef = useRef(error)
   errorRef.current = error
   const statusRef = useRef(status)
@@ -315,7 +326,9 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
           // turn that transcribed late but was otherwise fine got killed.
           if (statusRef.current === 'thinking' || statusRef.current === 'speaking') armWatchdog()
           if (event.final) {
-            finalUserRef.current += event.text
+            // Full transcript-so-far from the provider — replace, don't append,
+            // so a revised hypothesis supersedes the earlier one.
+            finalUserRef.current = event.text
             interimUserRef.current = ''
             setTranscript((t) => ({ ...t, user: finalUserRef.current }))
           } else if (!finalUserRef.current) {
@@ -342,6 +355,7 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
           dispatchToolCall(event.name, event.args, {
             actions: actionsRef.current,
             apiBaseUrl,
+            privacyLocked: privacyLockedRef.current,
           })
             .then((result) => {
               armWatchdog()
@@ -746,5 +760,6 @@ export function useVoiceSession({ apiBaseUrl, actions, surface = null }: Options
     dismissError,
     wake: wake.diagnostics,
     setWakeEnabled: wake.setEnabled,
+    setWakeProvider: wake.setProvider,
   }
 }
