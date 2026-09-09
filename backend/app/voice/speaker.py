@@ -12,8 +12,8 @@ PCM at 48 kHz — the whole echo-cancelled output bus (assistant replies, the
 listening cue, the timer chime), tapped in the browser and summed there (see
 ``frontend/src/voice/speakerOut.ts``). This bridge applies an open-loop
 clock-drift slip, encodes each frame to the wire format the device receiver is
-decoding (``invoke_speaker_codec`` — ``raw`` S32LE/48k/2ch by default, or the
-smaller ``s16`` / ``g711u``; MUST equal the daemon's ``SPK_CODEC`` in
+decoding (``invoke_speaker_codec`` — ``s16`` S16LE/48k/2ch by default, or
+``g711u`` µ-law / ``raw`` S32LE; MUST equal the daemon's ``SPK_CODEC`` in
 ``ReInvoke2026 output/invoke_speaker_daemon.sh`` — there is no control channel,
 so a mismatch plays back garbled and slow), and streams it to
 ``invoke_speaker_audio_port`` on the Invoke.
@@ -203,8 +203,8 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
     port = settings.invoke_speaker_audio_port
     slip = _DriftSlip(settings.invoke_speaker_drift_ppm)
     codec = settings.invoke_speaker_codec
-    if codec not in _OUT_FRAME_BYTES:  # unknown value → the daemon-native format
-        codec = "raw"
+    if codec not in _OUT_FRAME_BYTES:  # unknown value → behave as if unset
+        codec = "s16"
     prime = _SILENCE_BYTE[codec] * (int(_PRIME_SECONDS * RATE) * _OUT_FRAME_BYTES[codec])
 
     buffer = bytearray()

@@ -245,13 +245,13 @@ a device selection is inert and playout follows the default.
 pass through, so the `tap` forks the bus there: `AudioSink` and `AlarmChime` each
 attach a tap, `speakerOut.ts` sums them (`speakerMix.ts`), packs the sum to
 PCM16, and sends it as binary frames on `WS /api/voice/speaker`. The backend
-(`app/voice/speaker.py`) re-encodes each frame to the wire format the device
-daemon expects (`MISSION_CONTROL_INVOKE_SPEAKER_CODEC` — `raw` S32LE/48k/2ch by
-default, matching the daemon's built-in caps; `s16` / `g711u` are smaller but
-need a daemon set to the same `SPK_CODEC`, and there is **no handshake** on the
-port, so a mismatch plays back garbled and slowed) and forwards it over TCP to
-the `invoke_speaker_daemon.sh` receiver on the device (separate `ReInvoke2026`
-repo, `output/`). **No OS-wide virtual audio device, no separate feeder
+(`app/voice/speaker.py`) re-encodes each frame to the ReInvoke2026 Phase-1b wire
+codec (`MISSION_CONTROL_INVOKE_SPEAKER_CODEC` — `s16` S16LE/48k/2ch by default,
+or `g711u` / `raw`; there is **no handshake** on the port, so this MUST equal the
+daemon's `SPK_CODEC`, `invokectl`'s `speaker_codec`, and the feeder's `--codec`
+or playback is garbled and slowed) and forwards it over TCP to the
+`invoke_speaker_daemon.sh` receiver on the device (separate `ReInvoke2026` repo,
+`output/`). **No OS-wide virtual audio device, no separate feeder
 process** — MC generates its own output and already bridges browser sockets to
 that box (see `app/voice/wake_invoke.py`). The host falls back to
 `MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST`; Settings hides the option until one
@@ -297,7 +297,7 @@ and `GET /api/voice/wake-config`.
 | `TIMER_ALARM_MAX_RING_SECONDS` | `300` | How long the chime loops. |
 | `INVOKE_SPEAKER_HOST` / `_AUDIO_PORT` | `""` / `5006` | Wi-Fi speaker output target. Empty ⇒ falls back to `WAKE_WORD_INVOKE_GATE_HOST`; still empty ⇒ Settings omits the "Invoke (Wi-Fi)" speaker option. |
 | `INVOKE_SPEAKER_DRIFT_PPM` | `0` | Open-loop drift slip for the speaker stream (positive ⇒ the Invoke DAC runs fast). |
-| `INVOKE_SPEAKER_CODEC` | `raw` | Wire format on `:5006`. `raw` = S32LE/48k/2ch (the daemon's built-in caps). `s16` / `g711u` are smaller but need the device daemon's `SPK_CODEC` set to match — no handshake, a mismatch plays back slow and garbled. |
+| `INVOKE_SPEAKER_CODEC` | `s16` | ReInvoke2026 Phase-1b wire codec on `:5006`: `s16` (S16LE/48k/2ch, half the bytes) / `g711u` (µ-law) / `raw` (S32LE). No handshake — MUST equal the daemon's `SPK_CODEC`, `invokectl`'s `speaker_codec`, and the feeder's `--codec`, or playback is slow and garbled. |
 
 The Azure relay's own VAD settings (`semantic_vad`, `azure_semantic_vad` with
 `silence_duration_ms: 500`, 24 kHz PCM in and out) are pinned in
@@ -391,13 +391,13 @@ kiosk UI, by design.
   per-block with a linear resampler for the rare non-48 kHz output context, which
   can add faint artefacts there — 48 kHz hardware (the norm) is a clean
   pass-through.
-- **The Wi-Fi speaker + Wi-Fi mic full-duplex round trip is not hardware-proven.**
-  The 802.11n ADDBA/AMPDU failure in the `ReInvoke2026` notes stalls TCP for
-  seconds and hits *both* streams at once; the device is 2× Cortex-A7 and a
-  second bulk stream competes for airtime and CPU. `ReInvoke2026`'s own plan
-  gates a usable interactive experience on the `httxcfg 0x0` fix (serial / boot
-  hook, not automatable). Until then, `s16` (`INVOKE_SPEAKER_CODEC`) halves the
-  downlink, and pausing the mic path during TTS sidesteps the contention. The
-  `raw`↔`s16` history: `s16` shipped as the default against a daemon that only
-  decoded S32LE (no handshake), which played back at ~½ speed and distorted;
-  `raw` is now the default and the daemon honours `SPK_CODEC`.
+- **The MC → daemon speaker path is not hardware-proven end to end.** ReInvoke2026
+  verified the Phase-1b speaker codecs (`s16` / `g711u` / `raw`) only through its
+  own generic feeder, not from MC; the mic side of the full duplex was confirmed
+  by a human on `s16@16k` with `addbareject` applied (the earlier `httxcfg 0x0`
+  ADDBA workaround was tested and found ineffective). If the MC path plays back
+  slow or garbled, first confirm `MISSION_CONTROL_INVOKE_SPEAKER_CODEC` equals
+  the deployed daemon's `SPK_CODEC` (both default `s16`, but a daemon predating
+  ReInvoke2026's Phase 1b only decodes `raw` S32LE) — a mismatch is the classic
+  ~½-speed-and-distorted symptom. Then check pacing: `sheds` / `reconnects` in
+  the Settings panel, and whether the mic uplink is contending for the radio.

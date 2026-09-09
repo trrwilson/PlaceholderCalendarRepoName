@@ -255,25 +255,24 @@ def test_bridge_round_trips_a_real_signal_for_the_daemon(
         assert got.tolist() == src.tolist()  # bit-exact
 
 
-def test_default_codec_is_raw_s32(
+def test_default_codec_is_s16(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_daemon: FakeDaemon
 ) -> None:
-    # no MISSION_CONTROL_INVOKE_SPEAKER_CODEC set -> the daemon's built-in S32LE
+    # no MISSION_CONTROL_INVOKE_SPEAKER_CODEC set -> s16 (the daemon default too)
     monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
     monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", "127.0.0.1")
     monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_AUDIO_PORT", str(fake_daemon.port))
     monkeypatch.delenv("MISSION_CONTROL_INVOKE_SPEAKER_CODEC", raising=False)
     get_settings.cache_clear()
-    prime_bytes = _PRIME_SAMPLES * _OUT_FRAME_BYTES["raw"]
+    prime_bytes = _PRIME_SAMPLES * _OUT_FRAME_BYTES["s16"]
     payload = array.array("h", [100, -200, 300, -400]).tobytes()
     with client.websocket_connect("/api/voice/speaker") as ws:
         assert ws.receive_json()["t"] == "status"
         fake_daemon.wait_connected()
         ws.send_bytes(payload)
-        raw = fake_daemon.wait_bytes(prime_bytes + 32)
-    tail = struct.unpack("<8i", raw[prime_bytes : prime_bytes + 32])
-    assert tail == (100 << 16, 100 << 16, -200 << 16, -200 << 16,
-                    300 << 16, 300 << 16, -400 << 16, -400 << 16)
+        raw = fake_daemon.wait_bytes(prime_bytes + 16)
+    tail = struct.unpack("<8h", raw[prime_bytes : prime_bytes + 16])
+    assert tail == (100, 100, -200, -200, 300, 300, -400, -400)  # S16LE interleaved stereo
 
 
 def test_first_status_frame_precedes_the_device_dial_out(
