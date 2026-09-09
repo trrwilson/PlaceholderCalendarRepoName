@@ -45,4 +45,5 @@ you can triage without opening it.
 | Doc | Summary |
 |---|---|
 | [camera-support-plan.md](camera-support-plan.md) | Local webcam presence detection — designed, not started. |
+| [display-dimming-plan.md](display-dimming-plan.md) | Backend-driven idle dimming of the physical panel (dim, not off); shares the presence-plan display seam. |
 | [eufy-sdk-integration.md](eufy-sdk-integration.md) | Eufy camera events — blocked on an upstream SDK release. |
