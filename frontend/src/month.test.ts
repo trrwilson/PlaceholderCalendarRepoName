@@ -34,4 +34,16 @@ describe('month view layout', () => {
     expect(iso(days[0])).toBe('2026-11-30')
     expect(title).toBe('December 2026')
   })
+
+  it('shows a past six-row month truncated instead of skipping it', () => {
+    // August 2026 is a six-row month (Mon-start). Navigating to it from a later "today" must land
+    // on August itself, not roll forward to September.
+    expect(naturalMonthGrid(new Date(2026, 7, 1), 'monday')).toHaveLength(42)
+    const { days, title, refMonth } = resolveMonthView(new Date(2026, 7, 1), new Date(2026, 8, 9), 'monday')
+    expect(days).toHaveLength(35)
+    expect(iso(days[0])).toBe('2026-07-27')
+    expect(days.some((day) => iso(day) === '2026-08-31')).toBe(false)
+    expect(title).toBe('August 2026')
+    expect(refMonth.getMonth()).toBe(7)
+  })
 })

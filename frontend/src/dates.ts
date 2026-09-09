@@ -30,8 +30,13 @@ export function naturalMonthGrid(month: Date, weekStart: WeekStart) {
 export function resolveMonthView(viewDate: Date, now: Date, weekStart: WeekStart): { days: Date[]; title: string; refMonth: Date } {
   const grid = naturalMonthGrid(viewDate, weekStart)
   if (grid.length <= 35) return { days: grid, title: monthLabel(viewDate), refMonth: viewDate }
-  const firstSpill = startOfDay(grid[35])
-  if (startOfDay(now).getTime() < firstSpill.getTime()) {
+  const today = startOfDay(now).getTime()
+  const firstSpill = startOfDay(grid[35]).getTime()
+  const gridEnd = startOfDay(grid[grid.length - 1]).getTime()
+  // Only roll forward while "today" is genuinely one of the spill days we would otherwise drop.
+  // Once today has moved past this month's grid entirely the user has deliberately navigated to a
+  // past six-row month — show it truncated rather than silently skipping ahead to the next month.
+  if (today < firstSpill || today > gridEnd) {
     return { days: grid.slice(0, 35), title: monthLabel(viewDate), refMonth: viewDate }
   }
   const nextMonth = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1)
