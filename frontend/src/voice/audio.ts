@@ -9,6 +9,7 @@
 import { createEchoCancelledOutput, type EchoCancelledOutput } from './aecPlayback'
 import { DEFAULT_INPUT_GAIN_DB, InputGain, atReferenceGain, type InputGainStats } from './gain'
 import { downsampleTo, floatToPcm16Base64, pcm16Base64ToFloat } from './pcm'
+import { speakerOut } from './speakerOut'
 
 /** Default capture rate: Gemini Live's input rate, and the local pipeline's. */
 const INPUT_RATE = 16_000
@@ -440,8 +441,9 @@ export class AudioSink {
       // Play out through a loopback peer connection so Chromium folds it into the
       // microphone's echo-cancellation reference (aecPlayback.ts). Both the reply
       // audio and the listening cue route through `this.gain`, so both are
-      // cancelled from the capture side.
-      this.output = createEchoCancelledOutput(this.context)
+      // cancelled from the capture side. The tap also forks this bus to the
+      // Wi-Fi speaker path when Settings routes output to the Invoke.
+      this.output = createEchoCancelledOutput(this.context, speakerOut.createTap('assistant'))
       this.gain.connect(this.output.node)
       console.info('[voice] speaker context created', {
         state: this.context.state,

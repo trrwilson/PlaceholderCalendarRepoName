@@ -20,6 +20,7 @@
 // one — see docs/audio-pipeline.md.
 
 import { createEchoCancelledOutput, type EchoCancelledOutput } from '../voice/aecPlayback'
+import { speakerOut } from '../voice/speakerOut'
 
 const FIRST_INTERVAL_MS = 2_000
 const INSISTENT_INTERVAL_MS = 1_400
@@ -59,7 +60,7 @@ export class AlarmChime {
     // established before a timer actually fires. It degrades to the plain
     // destination where `RTCPeerConnection` is unavailable, so the chime always
     // sounds — at worst without being cancelled from the capture side.
-    if (!this.output) this.output = createEchoCancelledOutput(this.context)
+    if (!this.output) this.output = createEchoCancelledOutput(this.context, speakerOut.createTap('chime'))
     if (this.context.state === 'suspended') void this.context.resume().catch(() => undefined)
   }
 

@@ -1,0 +1,221 @@
+"""The Wi-Fi speaker output bridge (``app/voice/speaker.py`` + its route).
+
+A fake asyncio TCP server stands in for the on-device ``invoke_speaker_daemon.sh``
+receiver. The bridge owns no audio semantics beyond format widening and the
+open-loop drift slip — these cover the widening, the slip, the link-status
+frame, and the route guard.
+"""
+
+from __future__ import annotations
+
+import array
+import asyncio
+import struct
+import threading
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from app.config import get_settings
+from app.main import app
+from app.voice.speaker import _DriftSlip, _widen
+
+_PRIME_BYTES = int(0.06 * 48_000) * 8  # silence lead the bridge sends on connect
+
+
+class FakeDaemon:
+    """A minimal TCP sink on its own background event loop; records every byte."""
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._server: asyncio.AbstractServer | None = None
+        self.port = 0
+        self.data = bytearray()
+        self._connected = threading.Event()
+        self._ready = threading.Event()
+
+    def start(self) -> None:
+        self._thread.start()
+        assert self._ready.wait(timeout=5), "fake daemon did not start"
+
+    def stop(self) -> None:
+        def _close() -> None:
+            if self._server is not None:
+                self._server.close()
+            self._loop.stop()
+
+        self._loop.call_soon_threadsafe(_close)
+        self._thread.join(timeout=3)
+
+    def _run(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._listen())
+        self._ready.set()
+        try:
+            self._loop.run_forever()
+        finally:
+            pending = asyncio.all_tasks(self._loop)
+            for task in pending:
+                task.cancel()
+            self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            self._loop.close()
+
+    async def _listen(self) -> None:
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.port = self._server.sockets[0].getsockname()[1]
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._connected.set()
+        try:
+            while True:
+                chunk = await reader.read(4096)
+                if not chunk:
+                    break
+                self.data.extend(chunk)
+        finally:
+            writer.close()
+
+    def wait_connected(self, timeout: float = 2.0) -> None:
+        assert self._connected.wait(timeout=timeout), "bridge never dialed the daemon"
+
+    def wait_bytes(self, at_least: int, timeout: float = 2.0) -> bytes:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if len(self.data) >= at_least:
+                return bytes(self.data)
+            time.sleep(0.02)
+        raise AssertionError(f"only {len(self.data)} bytes; wanted {at_least}")
+
+
+@pytest.fixture
+def fake_daemon():
+    daemon = FakeDaemon()
+    daemon.start()
+    yield daemon
+    daemon.stop()
+
+
+@pytest.fixture
+def client() -> TestClient:
+    return TestClient(app)
+
+
+def _enable(monkeypatch: pytest.MonkeyPatch, port: int, ppm: str = "0") -> None:
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", "127.0.0.1")
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_AUDIO_PORT", str(port))
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_DRIFT_PPM", ppm)
+    get_settings.cache_clear()
+
+
+# -- pure helpers ------------------------------------------------------------
+
+
+def test_widen_mono_s16_to_stereo_s32_left_justified() -> None:
+    mono = array.array("h", [0, 1, -2, 32767, -32768]).tobytes()
+    out = _widen(mono, _DriftSlip(0.0))
+    got = struct.unpack("<10i", out)
+    assert got == (
+        0,
+        0,
+        1 << 16,
+        1 << 16,
+        -2 << 16,
+        -2 << 16,
+        32767 << 16,
+        32767 << 16,
+        -32768 << 16,
+        -32768 << 16,
+    )
+
+
+def test_drift_slip_drops_samples_when_sink_is_fast() -> None:
+    # +100000 ppm = drop 1 in 10; 100 samples -> ~90 out.
+    slip = _DriftSlip(100_000.0)
+    out = slip.apply(array.array("h", list(range(100))))
+    assert 88 <= len(out) <= 92
+
+
+def test_drift_slip_repeats_samples_when_sink_is_slow() -> None:
+    slip = _DriftSlip(-100_000.0)
+    out = slip.apply(array.array("h", list(range(100))))
+    assert 108 <= len(out) <= 112
+
+
+def test_zero_drift_is_identity() -> None:
+    src = array.array("h", list(range(-50, 50)))
+    assert _DriftSlip(0.0).apply(src) is src
+
+
+# -- the bridge -------------------------------------------------------------
+
+
+def test_bridge_widens_and_forwards_audio(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_daemon: FakeDaemon
+) -> None:
+    _enable(monkeypatch, fake_daemon.port)
+    payload = array.array("h", [100, -200, 300, -400]).tobytes()
+    with client.websocket_connect("/api/voice/speaker") as ws:
+        assert ws.receive_json()["t"] == "status"
+        fake_daemon.wait_connected()
+        ws.send_bytes(payload)
+        raw = fake_daemon.wait_bytes(_PRIME_BYTES + 32)
+    assert raw[:_PRIME_BYTES] == b"\x00" * _PRIME_BYTES  # silence prime
+    tail = struct.unpack("<8i", raw[_PRIME_BYTES : _PRIME_BYTES + 32])
+    assert tail == (
+        100 << 16,
+        100 << 16,
+        -200 << 16,
+        -200 << 16,
+        300 << 16,
+        300 << 16,
+        -400 << 16,
+        -400 << 16,
+    )
+
+
+def test_status_frame_reports_link_up(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_daemon: FakeDaemon
+) -> None:
+    _enable(monkeypatch, fake_daemon.port)
+    with client.websocket_connect("/api/voice/speaker") as ws:
+        seen = {ws.receive_json()["link"] for _ in range(2)}
+    assert "up" in seen
+
+
+def test_ws_refused_when_host_unset(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    monkeypatch.delenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST", raising=False)
+    get_settings.cache_clear()
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/voice/speaker"):
+            pass
+
+
+def test_ws_falls_back_to_gate_host(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_daemon: FakeDaemon
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    monkeypatch.delenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", raising=False)
+    monkeypatch.setenv("MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST", "127.0.0.1")
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_AUDIO_PORT", str(fake_daemon.port))
+    get_settings.cache_clear()
+    with client.websocket_connect("/api/voice/speaker") as ws:
+        assert ws.receive_json()["t"] == "status"
+        fake_daemon.wait_connected()
+
+
+def test_ws_refused_for_non_lan_client(
+    monkeypatch: pytest.MonkeyPatch, fake_daemon: FakeDaemon
+) -> None:
+    _enable(monkeypatch, fake_daemon.port)
+    monkeypatch.delenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", raising=False)
+    get_settings.cache_clear()
+    remote = TestClient(app, client=("8.8.8.8", 1234))
+    with pytest.raises(WebSocketDisconnect):
+        with remote.websocket_connect("/api/voice/speaker"):
+            pass

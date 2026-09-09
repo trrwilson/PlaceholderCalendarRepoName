@@ -53,6 +53,7 @@ from app.voice.providers import (
     set_provider_override,
 )
 from app.voice.relay import redeem_ticket, run_relay
+from app.voice.speaker import resolve_speaker_host, speaker_configured
 from app.voice.wake import (
     WAKE_PROVIDER_LABELS,
     effective_invoke_gate_enabled,
@@ -222,6 +223,9 @@ def _voice_config() -> VoiceConfig:
             )
             for pid, label in PROVIDER_LABELS.items()
         ],
+        invoke_speaker_configured=speaker_configured(settings),
+        invoke_speaker_host=resolve_speaker_host(settings),
+        invoke_speaker_audio_port=settings.invoke_speaker_audio_port,
     )
 
 
@@ -387,6 +391,31 @@ async def voice_wake_invoke(websocket: WebSocket) -> None:
 
     try:
         await run_invoke_wake_relay(websocket)
+    except WebSocketDisconnect:
+        return
+
+
+@router.websocket("/voice/speaker")
+async def voice_speaker(websocket: WebSocket) -> None:
+    """Forward the kiosk's output bus (assistant audio, listening cue, timer
+    chime) to the Wi-Fi speaker daemon on the Invoke (``app/voice/speaker.py``)
+    when Settings → Speaker output is set to "Invoke". Binary S16LE/48k/mono
+    frames in; the bridge widens and streams them over TCP. Loopback / LAN only,
+    like every other voice route.
+    """
+    host = websocket.client.host if websocket.client else ""
+    if not _is_local_client(host):
+        await websocket.close(code=4403)
+        return
+    settings = get_settings()
+    if not speaker_configured(settings):
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    from app.voice.speaker import run_speaker_bridge
+
+    try:
+        await run_speaker_bridge(websocket, settings)
     except WebSocketDisconnect:
         return
 

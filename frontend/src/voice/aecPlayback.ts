@@ -18,7 +18,14 @@
 // box (a debug capture opened in a media player, Windows sounds) needs the
 // backend WASAPI-loopback path — see the AEC plan, phase 2.
 //
+// An optional `SpeakerTap` (speakerOut.ts) forks the same bus to the Wi-Fi
+// speaker path: the caller's audio is tapped *before* the local mute, so it can
+// stream to the Invoke while the local playout is silenced (`onRouted`). See
+// docs/audio-pipeline.md, "Output device selection".
+//
 // Ref: https://focused.io/lab/echo-cancellation-with-web-audio-api-and-chromium
+
+import type { SpeakerTap } from './speakerOut'
 
 export interface EchoCancelledOutput {
   /** Connect the playout graph into this instead of `context.destination`. */
@@ -35,8 +42,47 @@ let warnedFallback = false
  * node into `.node`. If `RTCPeerConnection` is unavailable (jsdom, a locked-down
  * runtime) this degrades to `context.destination` — playout still works, it just
  * is not in the AEC reference.
+ *
+ * When `tap` is given the same audio is also forwarded to the network speaker
+ * (and the local playout muted whenever that link is live).
  */
-export function createEchoCancelledOutput(context: AudioContext): EchoCancelledOutput {
+export function createEchoCancelledOutput(
+  context: AudioContext,
+  tap?: SpeakerTap,
+): EchoCancelledOutput {
+  let disposed = false
+
+  // Callers connect here. `entry` fans to the local playout (through `localMute`)
+  // and, when tapped, to the network speaker (pre-mute).
+  const entry = context.createGain()
+  const localMute = context.createGain()
+  entry.connect(localMute)
+
+  let tapNode: AudioWorkletNode | null = null
+  let unsubscribeRouted: (() => void) | null = null
+  const canTap =
+    !!tap && !!context.audioWorklet && typeof AudioWorkletNode === 'function'
+  if (tap && canTap) {
+    unsubscribeRouted = tap.onRouted((routed) => {
+      localMute.gain.value = routed ? 0 : 1
+    })
+    void context.audioWorklet
+      .addModule(new URL('./pcm-speaker-tap-worklet.js', import.meta.url))
+      .then(() => {
+        if (disposed) return
+        tapNode = new AudioWorkletNode(context, 'pcm-speaker-tap')
+        tapNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
+          tap.pushFrames(event.data, context.sampleRate)
+        }
+        entry.connect(tapNode)
+        // Silent leaf, connected only so the render graph keeps pulling it.
+        tapNode.connect(context.destination)
+      })
+      .catch((error) => {
+        console.warn('[voice] network speaker tap unavailable — local playout only', error)
+      })
+  }
+
   const RTCPeerConnectionCtor =
     typeof RTCPeerConnection === 'function' ? RTCPeerConnection : null
   const canLoopback =
@@ -47,15 +93,31 @@ export function createEchoCancelledOutput(context: AudioContext): EchoCancelledO
       warnedFallback = true
       console.warn('[voice] echo-cancelled playout unavailable — using the raw output')
     }
-    return { node: context.destination, active: false, dispose: () => {} }
+    localMute.connect(context.destination)
+    return {
+      node: entry,
+      active: false,
+      dispose() {
+        disposed = true
+        unsubscribeRouted?.()
+        try {
+          entry.disconnect()
+          localMute.disconnect()
+          tapNode?.disconnect()
+        } catch {
+          // not connected
+        }
+      },
+    }
   }
 
   const dest = context.createMediaStreamDestination()
   const pcSend = new RTCPeerConnectionCtor()
   const pcRecv = new RTCPeerConnectionCtor()
   let element: HTMLAudioElement | null = null
-  let disposed = false
   let active = false
+
+  localMute.connect(dest)
 
   pcSend.addEventListener('icecandidate', (event) => {
     if (event.candidate) void pcRecv.addIceCandidate(event.candidate).catch(() => {})
@@ -89,24 +151,24 @@ export function createEchoCancelledOutput(context: AudioContext): EchoCancelledO
       console.warn('[voice] echo-cancelled playout loopback failed — using the raw output', error)
       if (!disposed) {
         try {
-          dest.disconnect()
+          localMute.disconnect()
         } catch {
           // not connected yet
         }
-        // Nothing routed the graph anywhere yet; fall back by wiring dest→destination.
-        dest.connect(context.destination)
+        localMute.connect(context.destination)
       }
     }
   })()
 
   return {
-    node: dest,
+    node: entry,
     get active() {
       return active
     },
     dispose() {
       disposed = true
       active = false
+      unsubscribeRouted?.()
       if (element) {
         element.pause()
         element.srcObject = null
@@ -123,7 +185,9 @@ export function createEchoCancelledOutput(context: AudioContext): EchoCancelledO
         // already closed
       }
       try {
-        dest.disconnect()
+        entry.disconnect()
+        localMute.disconnect()
+        tapNode?.disconnect()
       } catch {
         // not connected
       }

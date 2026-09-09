@@ -123,3 +123,30 @@ test('wake word shows a Settings control and degrades safely without a model', a
   await page.getByRole('button', { name: 'Ask Mission Control' }).click()
   await expect(page.locator('.voice-overlay')).toBeVisible()
 })
+
+test('Speaker output picker appears only when an Invoke host is configured', async ({ page }) => {
+  await page.route('**/api/voice/config', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        enabled: true,
+        provider: 'gemini',
+        providers: [{ id: 'gemini', label: 'Gemini Live', implemented: true, configured: true }],
+        mic_input_gain_db: 0,
+        invoke_speaker_configured: true,
+        invoke_speaker_host: '192.168.50.67',
+        invoke_speaker_audio_port: 5006,
+      }),
+    }),
+  )
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Settings' })
+  await dialog.getByRole('button', { name: 'Voice & sound' }).click()
+  await dialog.getByRole('button', { name: 'Advanced (bake-off)' }).click()
+  await expect(dialog.getByText('Speaker output')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'This screen' })).toHaveAttribute('aria-pressed', 'true')
+  await dialog.getByRole('button', { name: 'Invoke (Wi-Fi)' }).click()
+  await expect(dialog.getByRole('button', { name: 'Invoke (Wi-Fi)' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(dialog.getByText(/Connecting to the Invoke|Streaming to the Invoke/)).toBeVisible()
+})

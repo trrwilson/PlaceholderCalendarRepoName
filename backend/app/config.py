@@ -317,6 +317,28 @@ class Settings(BaseSettings):
     # (``PUT /api/voice/wake-config {"invoke_gate_enabled": true}``, process-memory).
     wake_word_invoke_gate_enabled: bool = False
 
+    # -- Voice output: the Wi-Fi speaker path to the Invoke (additive) ----
+    # The ``invoke_speaker_daemon.sh`` receiver on the Harman Kardon Invoke
+    # (ReInvoke2026 ``output/``) plays raw PCM it receives on a LAN TCP port out
+    # the speakers, via the stock ``music`` ALSA route so the SHARC DSP's
+    # hardware AEC still uses it as the echo reference. When the kiosk's
+    # Settings -> Speaker output picker is set to "Invoke", the browser streams
+    # its whole output bus (assistant replies, the listening cue, the timer
+    # chime) to ``WS /api/voice/speaker`` and :mod:`app.voice.speaker` forwards
+    # it to the daemon over TCP -- no OS-wide virtual audio device, no separate
+    # feeder process. Empty host ⇒ the picker offers only "This screen"; it then
+    # falls back to ``wake_word_invoke_gate_host`` so one ``…INVOKE…HOST`` value
+    # commonly configures both directions.
+    invoke_speaker_host: str = ""  # e.g. "192.168.50.67"
+    invoke_speaker_audio_port: int = 5006
+    # Open-loop clock-drift correction, parts per million, applied to the stream
+    # as a periodic single-sample slip (positive ⇒ the Invoke DAC runs fast, so
+    # a sample is dropped every ``1e6 / ppm``; negative ⇒ a sample is repeated).
+    # 0 = no correction; the device-side buffer absorbs the residual as an
+    # occasional inaudible slip. Feed-forward the ppm the ReInvoke2026 mic feeder
+    # prints.
+    invoke_speaker_drift_ppm: float = 0.0
+
     # -- Voice debug audio capture ----------------------------------------
     # The kiosk keeps the last N activations' provider-input audio in the
     # browser; when this is on it also POSTs each finished capture to

@@ -435,6 +435,16 @@ class VoiceConfig(BaseModel):
     # delivered here because this endpoint is always safe to call. See
     # ``Settings.mic_input_gain_db``.
     mic_input_gain_db: float
+    # Wi-Fi speaker output to the Invoke. ``invoke_speaker_configured`` is true
+    # once an Invoke host is known (``MISSION_CONTROL_INVOKE_SPEAKER_HOST`` or the
+    # shared Invoke-gate host); Settings then offers "Invoke" beside "This
+    # screen" in the output picker and, when chosen, the kiosk streams its output
+    # bus to ``WS /api/voice/speaker``. Host / port are informational for
+    # Settings diagnostics. The choice itself is per-browser (localStorage), like
+    # the microphone choice — there is no backend setting for it.
+    invoke_speaker_configured: bool = False
+    invoke_speaker_host: str = ""
+    invoke_speaker_audio_port: int = 5006
 
 
 class VoiceConfigUpdate(BaseModel):

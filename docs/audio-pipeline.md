@@ -35,7 +35,8 @@ the *shape*: one device, one gain, one output bus, and which knob owns what.
 5. **One output bus, and everything the appliance plays goes through it.**
    Assistant replies, the listening cue, and the timer chime all render into the
    echo-cancelled output (`voice/aecPlayback.ts`). Anything that bypasses it is
-   heard by the open microphone as speech.
+   heard by the open microphone as speech — and is also missed by the Wi-Fi
+   speaker tap that forks the same bus (see **Output device selection**).
 6. **Level thresholds are acoustic facts; gain is a configuration.** Any decision
    about level is taken at a fixed reference gain, never at whatever gain happens
    to be configured today.
@@ -209,6 +210,44 @@ Playback rate comes from the provider (`outputSampleRate`), not from a constant.
 there is no jitter buffer (removed — it caused audible clicks), so a stream that
 arrives slower than real time leaves a gap and logs an underrun.
 
+## Output device selection
+
+The appliance's output normally plays on the local screen. It can instead be
+routed to a **recovered HK Invoke over Wi-Fi** — the mirror of the VB-CABLE
+*input* path. `createEchoCancelledOutput(context, tap?)` is the one place both
+output contexts pass through, so the `tap` forks the bus there: `AudioSink` (all
+provider reply audio + the cue) and `AlarmChime` (the timer chime) each attach a
+tap, `speakerOut.ts` sums them (`speakerMix.ts`), packs the sum to PCM16, and
+sends it as binary frames on `WS /api/voice/speaker`. The backend
+(`app/voice/speaker.py`) widens each frame to S32LE/48k/2ch and forwards it over
+TCP to the `invoke_speaker_daemon.sh` receiver on the device (separate
+`ReInvoke2026` repo, `output/`). **No OS-wide virtual audio device, no separate
+feeder process** — MC generates its own output and already bridges browser
+sockets to that box (see `app/voice/wake_invoke.py`).
+
+- **The choice is per-browser**, stored in `localStorage['mission-control.audio-output']`
+  as `"screen"` (default) or `"invoke"` — a property of the machine, like the
+  microphone choice. There is no backend setting; the backend only reports
+  whether an Invoke host is configured (`invoke_speaker_configured` on
+  `GET /api/voice/config`, from `MISSION_CONTROL_INVOKE_SPEAKER_HOST`, falling
+  back to `MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST`). Settings hides the
+  picker until then.
+- **`useAudioOutput` owns the choice** and pushes it to the one shared
+  `speakerOut`, mirroring how `useAudioInput` drives `MicSource`.
+- **The local playout is muted while the link is actually up** (`onRouted` sets a
+  post-tap gain to 0), so the assistant is not heard from both the screen and the
+  Invoke ~0.5 s apart. A dropped link un-mutes until it reconnects.
+- **Echo is handled on the device.** The daemon plays through the stock `music`
+  ALSA route, leaving the SHARC DSP running, so its hardware AEC uses the played
+  audio as the echo reference — the assistant's own speech does not loop into the
+  `dsp_mic` capture that VB-CABLE carries back. MC's browser-side loopback AEC is
+  redundant for this path (nothing plays locally) but stays wired for `"screen"`.
+- **Clock drift** (browser render clock vs. the Invoke DAC, ~30 ppm) is corrected
+  open-loop by `MISSION_CONTROL_INVOKE_SPEAKER_DRIFT_PPM` (default 0), applied in
+  the backend bridge as a periodic single-sample slip. Residual drift is an
+  occasional inaudible slip absorbed by the device-side buffer. A closed loop
+  would need device buffer telemetry — not built.
+
 ## Where audio settings live
 
 **Backend, `MISSION_CONTROL_*` (`app/config.py`, documented in `.env.example`).**
@@ -226,6 +265,8 @@ and `GET /api/voice/wake-config`.
 | `GEMINI_VOICE`, `AZURE_*_VOICE` | — | Reply timbre, per provider. |
 | `VOICE_DEBUG_CAPTURE_ENABLED` / `_DIR` / `_KEEP` | on / `voice-captures` / `10` | On-disk WAV captures of provider input. |
 | `TIMER_ALARM_MAX_RING_SECONDS` | `300` | How long the chime loops. |
+| `INVOKE_SPEAKER_HOST` / `_AUDIO_PORT` | `""` / `5006` | Wi-Fi speaker output target. Empty ⇒ falls back to `WAKE_WORD_INVOKE_GATE_HOST`; still empty ⇒ Settings offers only "This screen". |
+| `INVOKE_SPEAKER_DRIFT_PPM` | `0` | Open-loop drift slip for the speaker stream (positive ⇒ the Invoke DAC runs fast). |
 
 The Azure relay's own VAD settings (`semantic_vad`, `azure_semantic_vad` with
 `silence_duration_ms: 500`, 24 kHz PCM in and out) are pinned in
@@ -240,6 +281,8 @@ per install. Change them with a capture in hand.
 | `voice/gain.ts` | `DEFAULT_INPUT_GAIN_DB` (fallback when the backend is unreachable — keep in step with `config.py`), `LEVEL_REFERENCE_GAIN_DB` |
 | `voice/useVoiceSession.ts` | `SPEECH_RMS`, `SPEECH_LEVEL_FRACTION`, `SPEECH_RMS_FLOOR`, `SPEECH_LEVEL_CEILING`, `SILENCE_HOLD_MS`, `SERVER_VAD_BACKSTOP_MS`, `MIN_LISTEN_MS`, `MAX_LISTEN_MS`, `NO_SPEECH_TIMEOUT_MS`, `AEC_SETTLE_MS`, `PLAYOUT_GRACE_MS`, `RESPONSE_TIMEOUT_MS` |
 | `voice/audio.ts` | default capture / playback rates, `GAIN_LOG_INTERVAL_MS`, sink lead and cue tone |
+| `voice/speakerOut.ts` | `MAX_BUFFERED_BYTES` (WS stall threshold), `MAX_SEND_SAMPLES`, reconnect backoff |
+| `voice/speakerMix.ts` | ring seconds (how far a fast tap may run ahead) |
 | `voice/wake/openWakeWord.ts` | `OWW` model geometry, `PREROLL_SECONDS` |
 | `voice/debugRecorder.ts` | ring capacity, `MAX_CAPTURE_SECONDS` |
 | `timers/chime.ts` | repeat intervals, partials and levels |
@@ -256,6 +299,7 @@ kiosk UI, by design.
 | `wake.debug` = `off` | Silences the wake peak-score line. |
 | `mission-control.wake-word` | The user's wake-word on/off choice. |
 | `mission-control.audio-input` | The microphone device choice: `"auto"` (default, prefers VB-CABLE) or `{deviceId,label}`. See **Input device selection**. |
+| `mission-control.audio-output` | The speaker-output choice: `"screen"` (default) or `"invoke"`. See **Output device selection**. |
 
 ## Module map
 
@@ -266,8 +310,13 @@ kiosk UI, by design.
 | `voice/useAudioInput.ts` | Enumerates inputs, keeps the list fresh, pushes the resolved device to `MicSource` |
 | `voice/gain.ts` | `InputGain`, `dbToLinear`, `atReferenceGain`, the reference gain |
 | `voice/pcm.ts` | Format and rate conversion only — PCM16 to/from Float32, downsample, resample, WAV. No gain, no device, no rate assumptions |
-| `voice/aecPlayback.ts` | The echo-cancelled output bus |
+| `voice/aecPlayback.ts` | The echo-cancelled output bus; the network-speaker tap fork + local mute |
+| `voice/audioOutput.ts` | Pure speaker-output choice logic: the persisted `"screen"` / `"invoke"` selection |
+| `voice/useAudioOutput.ts` | Pushes the choice to `speakerOut`; exposes link status for Settings |
+| `voice/speakerOut.ts` | `SpeakerOut`: the `WS /api/voice/speaker` client, tap fan-in, local-mute signal |
+| `voice/speakerMix.ts` | `SpeakerMixer`: sums the output-context taps into one mono 48 kHz PCM16 stream |
 | `voice/pcm-capture-worklet.js` | Native-rate batching off the audio thread |
+| `voice/pcm-speaker-tap-worklet.js` | Same, tapping the output bus for the network speaker |
 | `voice/wake/ringBuffer.ts` | Wake pre-roll retention; named wrappers over `pcm.ts` |
 | `voice/debugRecorder.ts` | Retains and uploads exactly what reached the provider |
 | `timers/chime.ts` | Timer alarm, on the shared output bus |
@@ -280,7 +329,9 @@ kiosk UI, by design.
   by `useAudioInput`). Never a `deviceId` constraint anywhere else.
 - Anything that scales samples belongs in `gain.ts`, or it does not belong.
 - Anything that converts format or rate belongs in `pcm.ts`, or it is a duplicate.
-- Anything that makes sound connects to the echo-cancelled output.
+- Anything that makes sound connects to the echo-cancelled output — which is
+  also what reaches the Wi-Fi speaker. A new output context means a new
+  `speakerOut.createTap()` beside its `createEchoCancelledOutput()` call.
 - A new absolute level threshold must say what gain it was measured at, and read
   a level normalised to `LEVEL_REFERENCE_GAIN_DB`.
 - Changing `MISSION_CONTROL_MIC_INPUT_GAIN_DB`'s default means changing
@@ -300,3 +351,10 @@ kiosk UI, by design.
 - **No automated acoustic test.** Everything above is unit-tested at the seams
   (gain maths, rate conversion, endpointing decisions from synthetic levels), but
   the real round-trip is verified by hand on the kiosk.
+- **Wi-Fi speaker drift correction is open-loop.** The bridge slips whole samples
+  at a configured ppm; there is no closed loop off device buffer telemetry, so a
+  wrong `INVOKE_SPEAKER_DRIFT_PPM` still drifts (slowly). The tap is also summed
+  per-block with a linear resampler for the rare non-48 kHz output context, which
+  can add faint artefacts there — 48 kHz hardware (the norm) is a clean
+  pass-through. The 802.11n ADDBA/AMPDU issue in the `ReInvoke2026` notes hits
+  this stream too; a live full-duplex round trip is verified by hand.

@@ -21,15 +21,25 @@
 
 /** Float32 [-1, 1] samples to a base64-encoded little-endian PCM16 string. */
 export function floatToPcm16Base64(samples: Float32Array): string {
+  const bytes = new Uint8Array(floatToPcm16(samples).buffer)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i])
+  return btoa(binary)
+}
+
+/**
+ * Float32 [-1, 1] samples to signed 16-bit PCM as an `Int16Array` (its `.buffer`
+ * is little-endian on every platform the kiosk runs on). Same quantisation as
+ * {@link floatToPcm16Base64}, without the base64 hop — for binary transports
+ * like the Wi-Fi speaker socket.
+ */
+export function floatToPcm16(samples: Float32Array): Int16Array {
   const pcm = new Int16Array(samples.length)
   for (let i = 0; i < samples.length; i += 1) {
     const clamped = Math.max(-1, Math.min(1, samples[i]))
     pcm[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff
   }
-  const bytes = new Uint8Array(pcm.buffer)
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i])
-  return btoa(binary)
+  return pcm
 }
 
 /**

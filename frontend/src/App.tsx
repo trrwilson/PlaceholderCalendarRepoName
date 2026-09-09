@@ -8,6 +8,7 @@ import type { WakeState } from './voice/wake/useWakeWord'
 import { useVoiceSession } from './voice/useVoiceSession'
 import { useVoiceConfig } from './voice/useVoiceConfig'
 import { useAudioInput } from './voice/useAudioInput'
+import { useAudioOutput } from './voice/useAudioOutput'
 import { VoiceOverlay } from './voice/VoiceOverlay'
 import { VoiceToast } from './voice/VoiceToast'
 import { TimerView } from './timers/TimerView'
@@ -435,6 +436,10 @@ function App() {
   })
   const voiceConfig = useVoiceConfig(API_URL)
   const audioInput = useAudioInput()
+  const audioOutput = useAudioOutput({
+    available: voiceConfig.config.invoke_speaker_configured,
+    apiBaseUrl: API_URL,
+  })
 
   function navigate(amount: number) {
     setViewDate((current) => amount === 0 ? (mode === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1) : new Date(now)) : mode === 'month' ? new Date(current.getFullYear(), current.getMonth() + amount, 1) : addDays(current, amount * (mode === 'week' ? 7 : 1)))
@@ -505,7 +510,7 @@ function App() {
         {mode === 'lists' && <ListsView list={lists.list} recentItems={lists.recentItems} redacted={redacting} onAdd={(name) => { if (!redacting) void lists.add(name) }} onToggle={(id, checked) => { if (!redacting) void lists.toggle(id, checked) }} onRemove={(id) => { if (!redacting) void lists.remove(id) }} onClear={(scope) => { if (!redacting) void lists.clear(scope) }} onReorder={(ids) => { if (!redacting) void lists.reorder(ids) }} />}
       </section>
 
-      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={calendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} voiceConfig={voiceConfig} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onSetWakeGateEnabled={voice.setWakeGateEnabled} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
+      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={calendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} audioOutput={audioOutput} voiceConfig={voiceConfig} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onSetWakeGateEnabled={voice.setWakeGateEnabled} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
       {selectedEvent && !redacting && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
       {connectOpen && auth && !redacting && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}
       {privacyPadOpen && <PrivacyPad onClose={() => setPrivacyPadOpen(false)} onUnlock={privacy.unlock} onUndo={privacyNotice ? () => { void privacy.undo(); setPrivacyPadOpen(false); setPrivacyNotice(false) } : undefined} cooldownMs={privacy.cooldownMs} />}
@@ -526,7 +531,7 @@ function App() {
 type SettingsCategory = 'display' | 'calendars' | 'voice'
 function SettingsSheet({
   auth, onAddCalendar, colorMode, onColorMode, weekStart, onWeekStart, calendars, onCalendarColor,
-  audioInput, voiceConfig, wake, onSetWakeEnabled, onSetWakeProvider, onSetWakeGateEnabled, onClose,
+  audioInput, audioOutput, voiceConfig, wake, onSetWakeEnabled, onSetWakeProvider, onSetWakeGateEnabled, onClose,
 }: {
   auth: CalendarAuth | null
   onAddCalendar: () => void
@@ -537,6 +542,7 @@ function SettingsSheet({
   calendars: Calendar[]
   onCalendarColor: (calendarId: string, color: string) => void
   audioInput: ReturnType<typeof useAudioInput>
+  audioOutput: ReturnType<typeof useAudioOutput>
   voiceConfig: ReturnType<typeof useVoiceConfig>
   wake: ReturnType<typeof useVoiceSession>['wake']
   onSetWakeEnabled: ReturnType<typeof useVoiceSession>['setWakeEnabled']
@@ -545,11 +551,12 @@ function SettingsSheet({
   onClose: () => void
 }) {
   const diagnostics = audioInput.diagnostics
+  const speaker = audioOutput.diagnostics
   const linkedAccounts = auth?.accounts ?? (auth?.account ? [auth.account] : [])
   const hasCalendars = auth?.provider === 'outlook_personal' && auth.state === 'connected'
   const hasProviders = voiceConfig.config.enabled && voiceConfig.config.providers.length > 0
   const hasMic = diagnostics.available && (voiceConfig.config.enabled || wake.available)
-  const hasAdvanced = hasProviders || wake.providers.length > 1 || hasMic
+  const hasAdvanced = hasProviders || wake.providers.length > 1 || hasMic || speaker.available
   const hasVoice = wake.available || hasAdvanced
   const categories: { id: SettingsCategory; label: string }[] = [
     { id: 'display', label: 'Display' },
@@ -660,6 +667,18 @@ function SettingsSheet({
                       ))}
                     </div>
                     <p className="settings-note">{diagnostics.boundLabel ? `Capturing from “${diagnostics.boundLabel}”. ` : ''}Automatic prefers a VB-CABLE input when present.</p>
+                  </div>}
+                  {speaker.available && <div className="settings-group">
+                    <h3>Speaker output</h3>
+                    <div className="settings-provider-list">
+                      <button className={speaker.selection === 'screen' ? 'selected' : ''} aria-pressed={speaker.selection === 'screen'} onClick={() => audioOutput.choose('screen')}>This screen</button>
+                      <button className={speaker.selection === 'invoke' ? 'selected' : ''} aria-pressed={speaker.selection === 'invoke'} onClick={() => audioOutput.choose('invoke')}>Invoke (Wi-Fi)</button>
+                    </div>
+                    <p className="settings-note">{speaker.selection === 'invoke'
+                      ? (speaker.status.connected
+                          ? `Streaming to the Invoke — ${speaker.status.streamedSeconds}s sent${speaker.status.reconnects ? `, ${speaker.status.reconnects} reconnect${speaker.status.reconnects === 1 ? '' : 's'}` : ''}${speaker.status.sheds ? `, ${speaker.status.sheds} dropped` : ''}.`
+                          : 'Connecting to the Invoke…')
+                      : 'Replies, the listening cue and the timer chime play on this screen.'}</p>
                   </div>}
                 </div>}
               </div>}

@@ -23,6 +23,14 @@ export interface VoiceConfigResponse {
    * delivered on this always-safe endpoint.
    */
   mic_input_gain_db: number
+  /**
+   * An Invoke host is configured on the backend, so Settings → Speaker output
+   * can offer "Invoke" beside "This screen". The choice itself is per-browser
+   * (`audioOutput.ts`), not carried here.
+   */
+  invoke_speaker_configured: boolean
+  invoke_speaker_host: string
+  invoke_speaker_audio_port: number
 }
 
 const EMPTY: VoiceConfigResponse = {
@@ -30,6 +38,9 @@ const EMPTY: VoiceConfigResponse = {
   provider: 'gemini',
   providers: [],
   mic_input_gain_db: DEFAULT_INPUT_GAIN_DB,
+  invoke_speaker_configured: false,
+  invoke_speaker_host: '',
+  invoke_speaker_audio_port: 5006,
 }
 
 function looksValid(value: unknown): value is VoiceConfigResponse {
