@@ -698,7 +698,9 @@ function SettingsSheet({
                     <p className="settings-note">{outputDiagnostics.selection.mode === 'invoke'
                       ? (outputDiagnostics.invokeStatus.connected
                           ? `Streaming to the Invoke — ${outputDiagnostics.invokeStatus.streamedSeconds}s sent${outputDiagnostics.invokeStatus.reconnects ? `, ${outputDiagnostics.invokeStatus.reconnects} reconnect${outputDiagnostics.invokeStatus.reconnects === 1 ? '' : 's'}` : ''}${outputDiagnostics.invokeStatus.sheds ? `, ${outputDiagnostics.invokeStatus.sheds} dropped` : ''}. The local screen is muted.`
-                          : 'Connecting to the Invoke…')
+                          : outputDiagnostics.invokeStatus.link === 'up'
+                            ? `Invoke link is unstable${outputDiagnostics.invokeStatus.sheds ? `, ${outputDiagnostics.invokeStatus.sheds} dropped` : ''}${outputDiagnostics.invokeStatus.reconnects ? `, ${outputDiagnostics.invokeStatus.reconnects} reconnect${outputDiagnostics.invokeStatus.reconnects === 1 ? '' : 's'}` : ''} — playing on the screen too until it settles.`
+                            : 'Connecting to the Invoke…')
                       : `Playing to “${outputDiagnostics.routedLabel}”. The assistant, the listening cue and the timer chime all use this; automatic follows the system default and steps off a VB-CABLE default.`}</p>
                   </div>}
                 </div>}

@@ -209,6 +209,7 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
 
     buffer = bytearray()
     have_audio = asyncio.Event()
+    shed_signal = asyncio.Event()
     lock = asyncio.Lock()
     stats = {"sent_bytes": 0, "sheds": 0, "reconnects": 0, "link": "down"}
 
@@ -222,6 +223,7 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
                 if len(buffer) > _MAX_BUFFER_BYTES:
                     del buffer[: len(buffer) - _MAX_BUFFER_BYTES // 2]
                     stats["sheds"] += 1
+                    shed_signal.set()
                 have_audio.set()
 
     async def _bridge_device() -> None:
@@ -277,6 +279,17 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
             await asyncio.sleep(_STATUS_INTERVAL_S)
             await _send_status()
 
+    async def _shed_reporter() -> None:
+        # Surface a shed to the kiosk immediately, not on the next 5 s tick — the
+        # kiosk un-mutes the local playout while the Invoke path is losing
+        # frames, and a slow reaction is the difference between a glitch and a
+        # silent reply. Rate-limited so a sustained stall is one frame/sec.
+        while True:
+            await shed_signal.wait()
+            shed_signal.clear()
+            await _send_status("shedding")
+            await asyncio.sleep(1.0)
+
     async def _send_status(detail: str = "") -> None:
         await _safe_send_text(
             client,
@@ -303,6 +316,7 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
         asyncio.create_task(_pump_client()),
         asyncio.create_task(_bridge_device()),
         asyncio.create_task(_status_ticker()),
+        asyncio.create_task(_shed_reporter()),
     ]
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

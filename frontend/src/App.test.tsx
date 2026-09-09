@@ -191,6 +191,33 @@ describe('Mission Control dashboard', () => {
     expect(document.querySelector('.day-events .event-chip')).not.toBeInTheDocument()
   })
 
+  it('paints multi-day spans with the primary colour — category first, then account', async () => {
+    const today = new Date()
+    const midnight = (offset: number) => new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset).toISOString()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({
+      calendars: [{ id: 'family', name: 'Family', color: 'fern', enabled: true }],
+      events: [{ id: 'break', calendar_id: 'family', title: 'School break', starts_at: midnight(-1), ends_at: midnight(2), location: null, all_day: true, categories: [{ id: 'holiday', name: 'Holiday', color: '#8e44ad' }] }],
+    }) }))
+
+    render(<App />)
+
+    // Category-first (default): the Home banner and the Month/Week span bar carry the category colour.
+    const banner = await screen.findByRole('button', { name: /School break/ })
+    expect(banner).toHaveClass('category-dominant')
+    expect(banner).toHaveStyle({ '--category-color': '#8e44ad' })
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
+    await waitFor(() => expect(document.querySelector('.month-week-spans .span-bar')).toBeInTheDocument())
+    const bar = document.querySelector('.month-week-spans .span-bar') as HTMLElement
+    expect(bar).toHaveClass('category-dominant')
+    expect(bar).toHaveStyle({ '--category-color': '#8e44ad' })
+
+    // People-first: the span bar falls back to the account identity colour instead.
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Color events by person/calendar' }))
+    await waitFor(() => expect(document.querySelector('.month-week-spans .span-bar')).toHaveClass('calendar-fern'))
+  })
+
   it('starts a timer, keeps navigation unlocked, and tracks the countdown in the dock', async () => {
     const today = new Date()
     const startsAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 16).toISOString()

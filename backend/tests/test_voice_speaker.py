@@ -297,6 +297,27 @@ def test_status_frame_reports_link_up(
     assert "up" in seen
 
 
+def test_shed_is_reported_immediately(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Device unreachable, so the client-side buffer overflows and sheds; the
+    # bridge must surface that at once (the kiosk un-mutes local playout on it),
+    # not wait for the 5 s status ticker.
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", "192.0.2.1")  # TEST-NET-1
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_AUDIO_PORT", "5006")
+    get_settings.cache_clear()
+    with client.websocket_connect("/api/voice/speaker") as ws:
+        assert ws.receive_json()["t"] == "status"
+        ws.send_bytes(b"\x00" * 200_000)  # well over the ~350 ms shed threshold
+        details = []
+        for _ in range(6):
+            details.append(ws.receive_json().get("detail"))
+            if "shedding" in details:
+                break
+    assert "shedding" in details
+
+
 def test_ws_refused_when_host_unset(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
     monkeypatch.delenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", raising=False)

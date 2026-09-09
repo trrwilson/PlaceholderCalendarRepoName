@@ -257,15 +257,32 @@ that box (see `app/voice/wake_invoke.py`). The host falls back to
 `MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST`; Settings hides the option until one
 is set.
 
-- **The tap streams continuously, silence included** (`pcm-speaker-tap-worklet.js`
-  fills a render quantum of zeros whenever the output bus is idle), so the
-  device-side ALSA ring stays primed between replies instead of underrunning into
-  the first word of the next one.
-- **The local playout is muted only once the backend confirms the device link is
-  up** (`onRouted` sets a post-tap gain to 0), so a socket that is open but not
-  yet — or no longer — forwarding to the Invoke never leaves the kiosk silent.
-  The assistant is not heard from both the screen and the Invoke ~0.5 s apart; a
-  dropped link un-mutes until it reconnects.
+- **The stream to the device is continuous, silence included.** Each
+  `pcm-speaker-tap-worklet.js` advances its batch by one render quantum on
+  *every* `process()` call — real samples when the bus is producing, zeros when
+  it is idle. `process()` runs once per 128-sample quantum at exactly real time,
+  so a gap in the reply audio lands as real silence *at the quantum it occupies*.
+  This is the only correct layer for the fill: the render thread is the one clock
+  synchronous with the audio. A wall-clock pacer downstream cannot tell a genuine
+  end-of-utterance gap from reply audio arriving a beat late, so it pads the
+  latter too and permanently shoves the pending audio back — that is the "plays a
+  segment, then an equal gap of silence, then the next segment" stretch.
+- **`SpeakerMixer.available()` sums on the furthest writer, never the slowest.**
+  Both output contexts (`AudioSink`, `AlarmChime`) have their own `AudioContext`
+  and each feeds continuous silence; gating the send rate on
+  `min(writeAbs)` pinned it to whichever context's crystal ran behind (and
+  stalled entirely if one context suspended). `maxWrittenAbs - readAbs` follows
+  the live context; a lagging or frozen second writer is harmless — `write()`
+  clamps it back to `readAbs` when it resumes.
+- **The local playout is muted only while the Invoke path is carrying audio
+  cleanly** (`onRouted` sets a post-tap gain to 0): the socket is open, the
+  backend confirms `link:"up"`, *and* the last status frame showed no new
+  `sheds` / `reconnects`. A link that is up but dropping frames (the classic
+  slow-and-choppy failure) keeps the assistant **and** the timer chime audible on
+  the screen instead of replacing them with broken Invoke audio. The bridge
+  reports a shed immediately rather than on the 5 s status tick, so the un-mute is
+  prompt. The assistant is not heard from both the screen and the Invoke ~0.5 s
+  apart; a dropped or unhealthy link un-mutes until it settles.
 - **Echo is handled on the device.** The daemon plays through the stock `music`
   ALSA route, leaving the SHARC DSP running, so its hardware AEC uses the played
   audio as the echo reference — the assistant's own speech does not loop into the
@@ -391,13 +408,22 @@ kiosk UI, by design.
   per-block with a linear resampler for the rare non-48 kHz output context, which
   can add faint artefacts there — 48 kHz hardware (the norm) is a clean
   pass-through.
-- **The MC → daemon speaker path is not hardware-proven end to end.** ReInvoke2026
-  verified the Phase-1b speaker codecs (`s16` / `g711u` / `raw`) only through its
-  own generic feeder, not from MC; the mic side of the full duplex was confirmed
-  by a human on `s16@16k` with `addbareject` applied (the earlier `httxcfg 0x0`
-  ADDBA workaround was tested and found ineffective). If the MC path plays back
-  slow or garbled, first confirm `MISSION_CONTROL_INVOKE_SPEAKER_CODEC` equals
-  the deployed daemon's `SPK_CODEC` (both default `s16`, but a daemon predating
-  ReInvoke2026's Phase 1b only decodes `raw` S32LE) — a mismatch is the classic
-  ~½-speed-and-distorted symptom. Then check pacing: `sheds` / `reconnects` in
-  the Settings panel, and whether the mic uplink is contending for the radio.
+- **The MC → daemon speaker path is hardware-proven end to end** as of
+  2026-09-09: `s16` on every end (MC `INVOKE_SPEAKER_CODEC`, `invokectl`
+  `speaker_codec`, the daemon's `SPK_CODEC`), continuous worklet fill, and the
+  furthest-writer `available()` — the Invoke plays assistant replies at the right
+  speed and timing. Earlier failures for the record: a codec mismatch (MC `s16`
+  against a pre-Phase-1b daemon that only decodes `raw` S32LE) is the classic
+  ~½-speed-and-distorted symptom and is **not** cleared by a daemon restart
+  unless the codec is actually realigned; a *different* stretch — a clean segment
+  of audio, then a roughly equal gap of silence, then the next segment, very
+  regular — was a pacing bug on the MC side (a downstream wall-clock pacer padding
+  normal delivery lag; removed). If either recurs, check `sheds` / `reconnects`
+  in the Settings panel and whether the mic uplink is contending for the radio.
+- **The device daemon crash-loops for a few seconds on an unlucky start.**
+  `output/invoke_speaker_daemon.sh` on GStreamer 1.10.2 sometimes hits a
+  `gst_adapter` CRITICAL in the `rndbuffersize` reblock and `alsasink` then
+  rejects the stream as "wrong format" (`rc=1`); the 1 s supervisor retry catches
+  it. Seen at daemon start, self-heals, benign once prerolled — but worth a fix
+  in ReInvoke2026 (`rndbuffersize` is a workaround for that GStreamer having no
+  `rawaudioparse`).

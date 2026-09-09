@@ -85,6 +85,23 @@ describe('speakerOut', () => {
     expect(routed[routed.length - 1]).toBe(false)
   })
 
+  it('un-mutes local playout when the link is up but shedding frames', () => {
+    const routed: boolean[] = []
+    speakerOut.createTap('assistant').onRouted((r) => routed.push(r))
+
+    speakerOut.setRoute('invoke', 'http://api.test')
+    last().open()
+    last().status({ link: 'up', sheds: 0, reconnects: 0 })
+    expect(routed[routed.length - 1]).toBe(true) // clean — muted, audio is on the Invoke
+
+    last().status({ link: 'up', sheds: 3, reconnects: 0 }) // dropping frames
+    expect(speakerOut.status().connected).toBe(false)
+    expect(routed[routed.length - 1]).toBe(false) // audible on the screen again
+
+    last().status({ link: 'up', sheds: 3, reconnects: 0 }) // stopped shedding — re-mute
+    expect(routed[routed.length - 1]).toBe(true)
+  })
+
   it('streams into the socket before the device link is confirmed', () => {
     const tap = speakerOut.createTap('assistant')
     speakerOut.setRoute('invoke', 'http://api.test')
@@ -119,6 +136,19 @@ describe('speakerOut', () => {
     expect(status.reconnects).toBe(2)
     expect(status.sheds).toBe(1)
     expect(seen[seen.length - 1]).toBe('up/2')
+  })
+
+  it('sends exactly the real audio the mixer holds — no silence padding of its own', () => {
+    const tap = speakerOut.createTap('assistant')
+    speakerOut.setRoute('invoke', 'http://api.test')
+    last().open()
+    last().status({ link: 'up', sheds: 0, reconnects: 0 })
+
+    tap.pushFrames(new Float32Array(4800).fill(0.25), SPEAKER_RATE)
+    const sent = (last().sent as ArrayBuffer[]).reduce((n, buf) => n + buf.byteLength / 2, 0)
+    // exactly the 4800 samples pushed — the continuous-silence fill lives in the
+    // tap worklet (on the render clock), never here on a wall-clock timer.
+    expect(sent).toBe(4800)
   })
 
   it('reconnects with backoff while still routed to the Invoke', () => {

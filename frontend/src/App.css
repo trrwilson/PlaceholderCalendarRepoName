@@ -392,6 +392,10 @@
 .span-bar.calendar-gold { color: #80661f; background: #f4e6b6; }
 .span-bar.calendar-fern { color: #397145; background: #cbe2c8; }
 .span-bar.calendar-violet { color: #735080; background: #e0d2e8; }
+/* Category-first mode: the multi-day bar takes the primary (category) colour, the same
+   dark-ink-on-pale-tint derivation as every other category-dominant card. The compound
+   selector outranks the plain .span-bar base regardless of source order. */
+.span-bar.category-dominant { color: color-mix(in srgb, var(--category-color, #6e8596) 62%, #14211f); background: color-mix(in srgb, var(--category-color, #6e8596) 16%, var(--surface)); }
 
 /* --- Home: pinned all-day / multi-day banners above today's timed agenda --- */
 .today-banners { display: grid; align-content: start; gap: 6px; padding-bottom: clamp(8px, .7vw, 20px); }
@@ -406,6 +410,8 @@
 .today-banner.calendar-gold { color: #80661f; background: #f4e6b6; }
 .today-banner.calendar-fern { color: #397145; background: #cbe2c8; }
 .today-banner.calendar-violet { color: #735080; background: #e0d2e8; }
+/* Category-first mode: the pinned multi-day banner takes the primary (category) colour. */
+.today-banner.category-dominant { color: color-mix(in srgb, var(--category-color, #6e8596) 62%, #14211f); background: color-mix(in srgb, var(--category-color, #6e8596) 16%, var(--surface)); }
 
 /* --- Holidays: an ambient label beside the date, never a calendar entry ----------
    US public holidays (frontend/src/holidays.ts) read as quiet context — one step

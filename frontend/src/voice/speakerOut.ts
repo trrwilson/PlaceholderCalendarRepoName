@@ -10,9 +10,11 @@
 // `WS /api/voice/speaker`. The backend widens and forwards to the on-device
 // `invoke_speaker_daemon.sh` (ReInvoke2026). No OS virtual audio device.
 //
-// While the socket is actually open the taps also mute the *local* playout (via
-// `onRouted`), so the assistant is not heard from both the screen and the
-// Invoke half a second apart. A dropped link un-mutes until it reconnects.
+// While the Invoke is carrying the audio *cleanly* (socket open, backend
+// `link:"up"`, and no fresh sheds/reconnects) the taps also mute the *local*
+// playout (via `onRouted`), so the assistant is not heard from both the screen
+// and the Invoke half a second apart. A dropped or stuttering link un-mutes
+// until it settles.
 
 import { resampleLinear } from './pcm'
 import { SPEAKER_RATE, SpeakerMixer } from './speakerMix'
@@ -59,15 +61,24 @@ class SpeakerOut {
   private readonly routedListeners = new Set<(routed: boolean) => void>()
   private readonly statusListeners = new Set<(status: SpeakerLinkStatus) => void>()
   private backendLink = ''
-  /** The backend's last-reported device link (`"up"` ⇒ audio is actually
-   *  reaching the Invoke). Local playout is only muted once this is true, so a
-   *  socket that is open but not yet forwarding to the device never leaves the
-   *  kiosk silent. */
+  /** The backend's last-reported device link (`"up"` ⇒ the TCP socket to the
+   *  daemon is connected). Necessary but not sufficient for muting local
+   *  playout — see `streamHealthy`. */
   private deviceLinkUp = false
+  /** The Invoke path is not just connected but carrying audio cleanly: the last
+   *  status frame showed `link:"up"` and no new sheds / reconnects. Drives the
+   *  local-playout mute, so a link that is "up" but dropping frames (the classic
+   *  slow-and-choppy failure) keeps the assistant and the chime audible on the
+   *  screen rather than replacing them with broken Invoke audio. */
+  private streamHealthy = false
   private detail = ''
   private streamedSeconds = 0
   private sheds = 0
   private reconnects = 0
+  /** The `sheds` / `reconnects` counters from the previous status frame, for
+   *  spotting a link that is "up" but losing frames. Reset on every (re)open. */
+  private prevFrameSheds = 0
+  private prevFrameReconnects = 0
 
   /** Point the output bus at the screen or the Invoke. Idempotent. */
   setRoute(selection: SpeakerRoute, apiBaseUrl: string): void {
@@ -97,12 +108,12 @@ class SpeakerOut {
     return this.ws?.readyState === WebSocket.OPEN
   }
 
-  /** True while the Invoke is actually carrying the audio — the socket is open
-   *  *and* the backend says its link to the device daemon is up. Drives the
-   *  local-playout mute, so a dropped or never-established device link keeps the
-   *  assistant audible on the screen. */
+  /** True while the Invoke is actually carrying the audio cleanly — the socket
+   *  is open, the device link is up, *and* the stream is healthy (not shedding
+   *  or reconnecting). Drives the local-playout mute, so a dropped, unhealthy,
+   *  or never-established device link keeps the assistant audible on the screen. */
   routed(): boolean {
-    return this.socketOpen() && this.deviceLinkUp
+    return this.socketOpen() && this.deviceLinkUp && this.streamHealthy
   }
 
   onStatusChange(listener: (status: SpeakerLinkStatus) => void): () => void {
@@ -162,6 +173,8 @@ class SpeakerOut {
     ws.onopen = () => {
       this.reconnectAttempt = 0
       this.mixer.reset()
+      this.prevFrameSheds = 0
+      this.prevFrameReconnects = 0
       this.notifyRouted()
       this.emitStatus()
     }
@@ -178,12 +191,22 @@ class SpeakerOut {
         if (frame.t !== 'status') return
         this.backendLink = frame.link ?? this.backendLink
         this.detail = frame.detail || this.detail
+        const sheds = typeof frame.sheds === 'number' ? frame.sheds : this.prevFrameSheds
+        const reconnects =
+          typeof frame.reconnects === 'number' ? frame.reconnects : this.prevFrameReconnects
+        const losingFrames =
+          sheds > this.prevFrameSheds || reconnects > this.prevFrameReconnects
+        this.prevFrameSheds = sheds
+        this.prevFrameReconnects = reconnects
         if (typeof frame.sheds === 'number') this.sheds = frame.sheds
         if (typeof frame.reconnects === 'number') this.reconnects = frame.reconnects
+
         const linkUp = this.backendLink === 'up'
-        if (linkUp !== this.deviceLinkUp) {
+        const healthy = linkUp && !losingFrames
+        if (linkUp !== this.deviceLinkUp || healthy !== this.streamHealthy) {
           this.deviceLinkUp = linkUp
-          this.notifyRouted() // un/re-mute the local playout as the device link comes and goes
+          this.streamHealthy = healthy
+          this.notifyRouted() // un/re-mute the local playout as the link comes, goes, or degrades
         }
         this.emitStatus()
       } catch {
@@ -195,6 +218,7 @@ class SpeakerOut {
       this.ws = null
       this.backendLink = 'down'
       this.deviceLinkUp = false
+      this.streamHealthy = false
       this.notifyRouted()
       this.emitStatus()
       if (this.selection === 'invoke') this.scheduleReconnect()
@@ -233,6 +257,9 @@ class SpeakerOut {
     this.mixer.reset()
     this.backendLink = ''
     this.deviceLinkUp = false
+    this.streamHealthy = false
+    this.prevFrameSheds = 0
+    this.prevFrameReconnects = 0
     this.detail = ''
     this.notifyRouted()
   }

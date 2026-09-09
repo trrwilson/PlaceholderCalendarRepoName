@@ -4,6 +4,20 @@
 // passes nothing through — it is a silent leaf connected to `destination` only
 // so the graph keeps pulling it. Resampling to 48 kHz and PCM16 packing happen
 // on the main thread (see speakerOut.ts / speakerMix.ts).
+//
+// `process()` is invoked once per 128-sample render quantum at exactly real
+// time, whether or not anything upstream is producing — Chrome hands an empty
+// input list between replies. This worklet advances its batch by one quantum
+// EVERY call, filling with zeros when the bus is idle, so the stream it feeds
+// downstream is an unbroken 48 kHz timeline: a gap in the reply audio lands as
+// real silence *at the quantum it occupies*, not as a stretch inserted later.
+// The device daemon needs that continuity or its ALSA ring underruns into the
+// first word of the next reply.
+//
+// This is the right layer for the silence fill: the render thread is the one
+// clock that is synchronous with the audio. `SpeakerMixer.available()` must sum
+// on the *furthest* writer (not the slowest) so a second idle tap on its own
+// AudioContext cannot gate the stream — see speakerMix.ts.
 class PcmSpeakerTapProcessor extends AudioWorkletProcessor {
   constructor() {
     super()
@@ -13,12 +27,6 @@ class PcmSpeakerTapProcessor extends AudioWorkletProcessor {
 
   process(inputs) {
     const channel = inputs[0] && inputs[0][0]
-    // Advance the batch by one render quantum every call, filling with silence
-    // when the bus is idle. Between assistant replies nothing upstream is
-    // producing and Chrome hands `process` an empty input list — but the Wi-Fi
-    // speaker daemon needs an unbroken 48 kHz stream or its device-side ALSA
-    // ring underruns in the gap and the next reply starts choppy. `return true`
-    // keeps this processor scheduled every quantum regardless of input.
     const frames = channel ? channel.length : 128
     for (let i = 0; i < frames; i += 1) {
       this._batch[this._filled] = channel ? channel[i] : 0

@@ -52,16 +52,15 @@ export class SpeakerMixer {
     if (end > this.maxWrittenAbs) this.maxWrittenAbs = end
   }
 
-  /** Samples ready to send: what *every still-writing* source has reached, so a
-   *  second tap that writes a beat later (the timer chime starting mid-reply) is
-   *  mixed in rather than skipped past. A source that stops — its cursor is
-   *  overtaken by `readAbs` — drops out of the frontier within one `read()`. */
+  /** Samples ready to send: everything the furthest-ahead source has reached.
+   *  A second tap that writes a beat later (a timer chime starting mid-reply)
+   *  still mixes in — `write()` resumes it at `readAbs`, not in the past, so its
+   *  samples land in ring slots ahead of the read cursor and are summed on the
+   *  next `read()`. Gating this on the *slowest* source instead pins the send
+   *  rate to whichever tap's AudioContext clock runs behind, which is what made
+   *  the Invoke stream stutter once every tap fed continuous silence. */
   available(): number {
-    let frontier = this.maxWrittenAbs
-    for (const writeAbs of this.writeAbs.values()) {
-      if (writeAbs > this.readAbs && writeAbs < frontier) frontier = writeAbs
-    }
-    return frontier - this.readAbs
+    return this.maxWrittenAbs - this.readAbs
   }
 
   /**
