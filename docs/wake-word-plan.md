@@ -1,3 +1,8 @@
+---
+status: historical
+summary: The wake-word activation build.
+---
+
 # Mission Control: Local Wake-Word Activation
 
 Design, implement, and integrate local wake-word activation for Mission Control.

@@ -1,3 +1,8 @@
+---
+status: historical
+summary: The privacy-mode build and its ratified design resolutions.
+---
+
 # Mission Control: Privacy mode — design plan
 
 Status: **implemented (2026-09-07).** Backend store + endpoints + the read-only

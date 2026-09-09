@@ -1,3 +1,8 @@
+---
+status: future
+summary: Eufy camera events - blocked on an upstream SDK release.
+---
+
 # Eufy camera events — feasibility assessment + implementation plan
 
 Status: **not implemented, and blocked on an upstream release.** This document is a

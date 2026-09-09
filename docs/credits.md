@@ -1,3 +1,8 @@
+---
+status: reference
+summary: Source and licence for every bundled media asset and trained model artifact.
+---
+
 # Credits & provenance for bundled media
 
 Bundled media assets get their source and licence noted here — lightweight, not a

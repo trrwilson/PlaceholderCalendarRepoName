@@ -1,3 +1,8 @@
+---
+status: historical
+summary: The initial voice build: token endpoint, app/voice/, frontend session.
+---
+
 # Voice support — initial plan
 
 Status: **initial version implemented** (backend token endpoint + `app/voice/`, frontend
@@ -35,7 +40,7 @@ Give Mission Control a first, genuinely useful voice capability:
 > there is no spoken announcement on fire in this task — the chime + forced Timer
 > view are the notification. Revisit with the wake-word work.
 
-Non-negotiable from `AGENTS.md` / `.prompts/0001-bootstrap.txt`:
+Non-negotiable from `AGENTS.md`:
 
 > browser microphone → speech service → agent → **explicit application tools** → actions →
 > real-time UI update → optional TTS. The agent must never touch calendar providers

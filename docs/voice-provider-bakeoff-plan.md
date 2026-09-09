@@ -1,3 +1,8 @@
+---
+status: historical
+summary: The multi-provider voice seam and end-of-speech-ownership design.
+---
+
 # Voice provider bake-off — plan
 
 Status: **all stages implemented; all four contestants connectivity-verified against the

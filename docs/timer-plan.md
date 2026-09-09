@@ -1,3 +1,8 @@
+---
+status: historical
+summary: The Timer tab build.
+---
+
 # Mission Control: Timers — design plan
 
 Status: **implemented (2026-09-06).** All six phases below are built and covered by

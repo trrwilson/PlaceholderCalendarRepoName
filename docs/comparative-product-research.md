@@ -1,3 +1,8 @@
+---
+status: reference
+summary: Method and maintained catalogue for short comparative passes on user-facing behaviour.
+---
+
 # Comparative product research
 
 **Purpose.** Make "does anyone else do this, and what seems to work?" a fast

@@ -1,3 +1,8 @@
+---
+status: historical
+summary: The local / hybrid voice pipeline build (experimental).
+---
+
 # Local / Hybrid voice pipeline
 
 Status: **implemented, experimental.** A fifth voice provider

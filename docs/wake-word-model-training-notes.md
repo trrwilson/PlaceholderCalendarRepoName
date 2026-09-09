@@ -1,3 +1,8 @@
+---
+status: reference
+summary: Working notes for the WSL / GPU wake-word training environment.
+---
+
 # Wake-word model training — local WSL environment (working notes)
 
 Companion to [`wake-word-model-training.md`](wake-word-model-training.md). Records the

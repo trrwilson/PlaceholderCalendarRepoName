@@ -1,3 +1,8 @@
+---
+status: reference
+summary: What you can say to Mission Control today, what each does, and its limits.
+---
+
 # Voice commands
 
 What you can say to Mission Control today, what each thing does, and where the

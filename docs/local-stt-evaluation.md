@@ -1,3 +1,8 @@
+---
+status: reference
+summary: Evidence behind the local STT engine choice and how to re-benchmark it.
+---
+
 # Local STT technology evaluation
 
 The evidence behind the initial local speech-to-text choice for the

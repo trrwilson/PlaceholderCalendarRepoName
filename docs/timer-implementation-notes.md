@@ -1,3 +1,8 @@
+---
+status: historical
+summary: Timer build notes captured for review.
+---
+
 # Timer implementation — build notes & decisions for review
 
 Implemented 2026-09-06 headlessly (scheduled task `implement-timer-plan`), from

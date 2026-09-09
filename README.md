@@ -38,7 +38,9 @@ questions, drives the display, and controls the timer — but never writes the c
   word, and tools. `docs/audio-pipeline.md` is the authority on capture/playout.
 - `backend/tests/`: focused provider, model, Graph-mapping, timer, and voice tests.
 - `AGENTS.md`: durable architecture, product constraints, conventions, and definition of
-  done for future coding-agent work (`.github/copilot-instructions.md` points here).
+  done for coding-agent work — with nested `frontend/AGENTS.md`, `backend/AGENTS.md`,
+  and `backend/app/voice/AGENTS.md`, and `docs/README.md` indexing the deep dives.
+  (`.github/copilot-instructions.md` points here.)
 
 Credentials, OAuth tokens, important household state, and AI/audio/video processing belong
 on the server. Voice and AI work calls explicit application tools (`get_events`,
@@ -133,16 +135,12 @@ The wake detector is a two-way bake-off (`openwakeword` | `azure`), orthogonal t
 the voice provider (`MISSION_CONTROL_WAKE_WORD_PROVIDER` / Settings → "Keyword
 provider").
 
-Independent of that, the **on-device Invoke gate** can be layered in front of the
-selected detector: the `invoke-gate` daemon on a Harman Kardon Invoke
-(`ReInvoke2026 wakeword/`) runs a loose first stage and only streams real audio
-after a candidate; the selected detector then re-checks it and both must agree.
-**Off by default** — turn it on via Settings → "On-device audio gate",
-`MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_ENABLED=true`, or
-`PUT /api/voice/wake-config {"invoke_gate_enabled": true}`. Needs
-`MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST=<ip>`. Run the device side with
-`ReInvoke2026 wakeword/harness/invoke_gate.sh up|down|status`. See
-`docs/wake-word-provider-bakeoff.md` and `ReInvoke2026 wakeword/RUN_END_TO_END.md`.
+Independent of that, an **on-device Invoke gate** can be layered in front of the
+selected detector — a loose first stage running on a companion device (the separate
+`ReInvoke2026` repo) that only streams real audio after a candidate, which the
+selected detector then re-checks. **Off by default**; needs
+`MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST=<ip>` and Settings → "On-device audio
+gate". See `docs/wake-word-provider-bakeoff.md`.
 
 ## Validation
 

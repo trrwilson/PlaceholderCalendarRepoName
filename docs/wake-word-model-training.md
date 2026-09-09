@@ -1,3 +1,8 @@
+---
+status: reference
+summary: Training, licensing, and provenance of the "Mission Control" wake-word model.
+---
+
 # The "Mission Control" wake-word model — training, licensing, provenance
 
 This is the companion to [`docs/wake-word-plan.md`](wake-word-plan.md). The plan's

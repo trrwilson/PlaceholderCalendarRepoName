@@ -1,3 +1,8 @@
+---
+status: reference
+summary: Sole authority on mic capture, the one gain stage, sample rates, echo cancellation, and playout.
+---
+
 # Audio pipeline
 
 The single authoritative description of how Mission Control captures, processes
@@ -99,8 +104,8 @@ Nothing in the capture chain changes, but the bytes on "CABLE Output" are no
 longer necessarily continuous. When the additive Invoke gate is on
 (`invoke_gate_enabled`, default off — see `docs/wake-word-provider-bakeoff.md`),
 the on-device `invoke-gate` daemon on the Invoke only streams real room audio
-after a candidate; between activations the Windows feeder
-(`ReInvoke2026 wakeword/feeder/invoke_gate_feeder.py`) writes **synthesised
+after a candidate; between activations the Windows feeder (in the separate
+`ReInvoke2026` repo, `wakeword/feeder/invoke_gate_feeder.py`) writes **synthesised
 digital silence** to "CABLE Input". So "CABLE Output" stays a valid, running,
 silent input — `MicSource` sees an unbroken stream of zero samples, the selected
 wake detector (openWakeWord / Azure) scores ~0, and no turn starts. On an

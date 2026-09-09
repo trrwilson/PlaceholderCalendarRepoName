@@ -1,3 +1,8 @@
+---
+status: historical
+summary: How display_name is resolved per calendar provider.
+---
+
 # Natural account names — implementation notes
 
 Added 2026-09-06 (scheduled task `name-updates`, executed headless).

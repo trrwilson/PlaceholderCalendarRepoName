@@ -1,3 +1,8 @@
+---
+status: reference
+summary: Design record for the header / dock / settings layout grammar.
+---
+
 # Controls & settings layout design
 
 Design record for a 2026-09-08 pass over three interactive surfaces that had drifted:

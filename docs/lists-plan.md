@@ -1,3 +1,8 @@
+---
+status: historical
+summary: The grocery-list build.
+---
+
 # Mission Control: Lists — design plan
 
 Status: **implemented (2026-09-07).** All six phases below are built and covered

@@ -1,3 +1,8 @@
+---
+status: future
+summary: Local webcam presence detection - designed, not started.
+---
+
 # Mission Control: Presence Detection and Future Person Recognition
 
 Design, implement, and integrate local webcam-based presence detection for Mission Control.

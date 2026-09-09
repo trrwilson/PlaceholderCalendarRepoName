@@ -1,3 +1,8 @@
+---
+status: reference
+summary: Write-up of the comparative voice-provider runs.
+---
+
 # Voice provider bake-off — results
 
 Write-up of the comparative runs. Plan and architecture:

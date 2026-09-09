@@ -1,3 +1,8 @@
+---
+status: historical
+summary: Voice token and snapshot caching plus freshness rules.
+---
+
 # Voice token caching — implementation notes
 
 Implemented 2026-09-06. Motivation: prior voice diagnostics

@@ -1,3 +1,8 @@
+---
+status: historical
+summary: openWakeWord vs Azure .table, the Invoke gate, and the recall-eval harness.
+---
+
 # Wake-word provider bake-off
 
 Two ways to spot "Mission Control", swappable at runtime — the activation-side
