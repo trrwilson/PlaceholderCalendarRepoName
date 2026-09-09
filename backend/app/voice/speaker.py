@@ -10,10 +10,12 @@ direction from the mic path.
 The kiosk sends **binary** WebSocket frames of signed 16-bit little-endian mono
 PCM at 48 kHz — the whole echo-cancelled output bus (assistant replies, the
 listening cue, the timer chime), tapped in the browser and summed there (see
-``frontend/src/voice/speakerOut.ts``). This bridge widens each frame to the
-S32LE / 48 kHz / 2 ch the device receiver's GStreamer caps demand
-(``ReInvoke2026 output/invoke_speaker_daemon.sh``), applies an open-loop
-clock-drift slip, and streams it to ``invoke_speaker_audio_port`` on the Invoke.
+``frontend/src/voice/speakerOut.ts``). This bridge applies an open-loop
+clock-drift slip, encodes each frame to the wire codec the device receiver
+expects (``invoke_speaker_codec`` — ``s16`` S16LE/48k/2ch by default, ``g711u``
+µ-law, or ``raw`` S32LE; MUST equal the daemon's ``SPK_CODEC`` in
+``ReInvoke2026 output/invoke_speaker_daemon.sh`` — there is no control channel),
+and streams it to ``invoke_speaker_audio_port`` on the Invoke.
 The device is the TCP server; we dial out, exactly like the ReInvoke2026 feeder.
 
 WHY NOT AN OS VIRTUAL AUDIO DEVICE
@@ -52,9 +54,13 @@ from app.config import Settings
 from app.voice.trace import note
 
 RATE = 48_000
-#: S16LE mono in, S32LE stereo out (the daemon's fixed caps).
+#: S16LE mono in; the wire format out depends on ``invoke_speaker_codec`` and
+#: MUST match the device daemon's ``SPK_CODEC``.
 _IN_BYTES_PER_FRAME = 2
-_OUT_BYTES_PER_FRAME = 8
+#: bytes per output (stereo) frame, per codec
+_OUT_FRAME_BYTES = {"raw": 8, "s16": 4, "g711u": 2}
+#: the byte the device buffer reads as digital silence, per codec
+_SILENCE_BYTE = {"raw": b"\x00", "s16": b"\x00", "g711u": b"\xff"}
 
 #: A brief silence lead on every (re)connect so the device queue / ALSA ring
 #: never starts from empty and clicks. Matches the feeder's ``PRIME_SILENCE_S``.
@@ -105,23 +111,71 @@ class _DriftSlip:
         return out
 
 
-def _widen(pcm16_mono: bytes, slip: _DriftSlip) -> bytes:
-    """S16LE mono bytes → S32LE interleaved-stereo bytes, with the drift slip.
-    ``sample << 16`` is an exact left-justify into 32-bit; the daemon's softvol
-    scales from there."""
+_ULAW_TABLE: bytes | None = None
+
+
+def _ulaw_table() -> bytes:
+    """uint16 index (an int16 sample) → G.711 µ-law byte. Bit-exact port of
+    CPython audioop's ``st_14linear2ulaw`` (== ``audioop.lin2ulaw``), so the
+    device's gst ``mulawdec`` decodes it as standard G.711. Built once, lazily
+    (only the ``g711u`` codec needs it)."""
+    global _ULAW_TABLE
+    if _ULAW_TABLE is not None:
+        return _ULAW_TABLE
+    seg_uend = (0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF, 0x1FFF)
+    out = bytearray(65536)
+    for u in range(65536):
+        s = u - 65536 if u >= 32768 else u          # uint16 -> int16
+        x = s >> 2                                   # 16-bit -> 14-bit
+        mask = 0x7F if x < 0 else 0xFF
+        x = min(abs(x), 32635) + (0x84 >> 2)         # CLIP + (BIAS >> 2)
+        seg = next((i for i, e in enumerate(seg_uend) if x <= e), 8)
+        if seg >= 8:
+            out[u] = (0x7F ^ mask) & 0xFF
+        else:
+            out[u] = (((seg << 4) | ((x >> (seg + 1)) & 0xF)) ^ mask) & 0xFF
+    _ULAW_TABLE = bytes(out)
+    return _ULAW_TABLE
+
+
+def _encode(pcm16_mono: bytes, slip: _DriftSlip, codec: str) -> bytes:
+    """S16LE mono bytes → wire bytes for ``codec``, drift slip applied first:
+
+    * ``raw``   — S32LE interleaved stereo (``sample << 16`` left-justify)
+    * ``s16``   — S16LE interleaved stereo
+    * ``g711u`` — G.711 µ-law interleaved stereo (1 byte/sample)
+    """
     mono = array.array("h")
     mono.frombytes(pcm16_mono[: len(pcm16_mono) // 2 * 2])
     if sys.byteorder != "little":  # wire is little-endian
         mono.byteswap()
     mono = slip.apply(mono)
-    stereo = array.array("i")
-    for sample in mono:
-        wide = sample << 16
-        stereo.append(wide)
-        stereo.append(wide)
-    if sys.byteorder != "little":
-        stereo.byteswap()
-    return stereo.tobytes()
+
+    if codec == "raw":
+        stereo = array.array("i")
+        for sample in mono:
+            wide = sample << 16
+            stereo.append(wide)
+            stereo.append(wide)
+        if sys.byteorder != "little":
+            stereo.byteswap()
+        return stereo.tobytes()
+
+    if codec == "s16":
+        stereo = array.array("h", bytes(len(mono) * 4))
+        stereo[0::2] = mono
+        stereo[1::2] = mono
+        if sys.byteorder != "little":
+            stereo.byteswap()
+        return stereo.tobytes()
+
+    # g711u
+    table = _ulaw_table()
+    enc = bytes(table[sample & 0xFFFF] for sample in mono)
+    stereo = bytearray(len(enc) * 2)
+    stereo[0::2] = enc
+    stereo[1::2] = enc
+    return bytes(stereo)
 
 
 async def _safe_send_text(ws: WebSocket, text: str) -> None:
@@ -138,6 +192,8 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
     host = resolve_speaker_host(settings)
     port = settings.invoke_speaker_audio_port
     slip = _DriftSlip(settings.invoke_speaker_drift_ppm)
+    codec = settings.invoke_speaker_codec if settings.invoke_speaker_codec in _OUT_FRAME_BYTES else "s16"
+    prime = _SILENCE_BYTE[codec] * (int(_PRIME_SECONDS * RATE) * _OUT_FRAME_BYTES[codec])
 
     buffer = bytearray()
     have_audio = asyncio.Event()
@@ -170,12 +226,12 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
                 continue
             attempt = 0
             stats["link"] = "up"
-            note(f"voice speaker bridge: connected to {host}:{port}")
+            note(f"voice speaker bridge: connected to {host}:{port} (codec {codec})")
             async with lock:  # a reconnect costs one clean gap, not stale latency
                 buffer.clear()
                 have_audio.clear()
             try:
-                writer.write(b"\x00" * (int(_PRIME_SECONDS * RATE) * _OUT_BYTES_PER_FRAME))
+                writer.write(prime)
                 await writer.drain()
                 await _send_status("streaming")
                 await _drain_to_device(reader, writer)
@@ -198,7 +254,7 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
                 buffer.clear()
                 have_audio.clear()
             if pending:
-                writer.write(_widen(pending, slip))
+                writer.write(_encode(pending, slip, codec))
                 await writer.drain()
                 stats["sent_bytes"] += len(pending)
             if reader.at_eof():  # the daemon closed the socket

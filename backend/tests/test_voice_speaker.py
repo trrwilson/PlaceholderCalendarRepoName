@@ -20,9 +20,10 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
 from app.main import app
-from app.voice.speaker import _DriftSlip, _widen
+from app.voice.speaker import _DriftSlip, _encode
 
-_PRIME_BYTES = int(0.06 * 48_000) * 8  # silence lead the bridge sends on connect
+_PRIME_SAMPLES = int(0.06 * 48_000)  # silence lead the bridge sends on connect
+_OUT_FRAME_BYTES = {"raw": 8, "s16": 4, "g711u": 2}
 
 
 class FakeDaemon:
@@ -103,33 +104,43 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def _enable(monkeypatch: pytest.MonkeyPatch, port: int, ppm: str = "0") -> None:
+def _enable(monkeypatch: pytest.MonkeyPatch, port: int, ppm: str = "0",
+            codec: str = "s16") -> None:
     monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
     monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", "127.0.0.1")
     monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_AUDIO_PORT", str(port))
     monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_DRIFT_PPM", ppm)
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_CODEC", codec)
     get_settings.cache_clear()
 
 
 # -- pure helpers ------------------------------------------------------------
 
 
-def test_widen_mono_s16_to_stereo_s32_left_justified() -> None:
+def test_encode_raw_mono_s16_to_stereo_s32_left_justified() -> None:
     mono = array.array("h", [0, 1, -2, 32767, -32768]).tobytes()
-    out = _widen(mono, _DriftSlip(0.0))
+    out = _encode(mono, _DriftSlip(0.0), "raw")
     got = struct.unpack("<10i", out)
     assert got == (
-        0,
-        0,
-        1 << 16,
-        1 << 16,
-        -2 << 16,
-        -2 << 16,
-        32767 << 16,
-        32767 << 16,
-        -32768 << 16,
-        -32768 << 16,
+        0, 0, 1 << 16, 1 << 16, -2 << 16, -2 << 16,
+        32767 << 16, 32767 << 16, -32768 << 16, -32768 << 16,
     )
+
+
+def test_encode_s16_mono_to_interleaved_stereo() -> None:
+    mono = array.array("h", [0, 1, -2, 32767, -32768]).tobytes()
+    out = _encode(mono, _DriftSlip(0.0), "s16")
+    assert struct.unpack("<10h", out) == (0, 0, 1, 1, -2, -2, 32767, 32767, -32768, -32768)
+
+
+def test_encode_g711u_matches_reference_and_is_stereo() -> None:
+    import audioop  # noqa: PLC0415 - reference only, test-time
+
+    mono = array.array("h", [0, 100, -100, 4000, -4000, 32767, -32768])
+    out = _encode(mono.tobytes(), _DriftSlip(0.0), "g711u")
+    ref = audioop.lin2ulaw(mono.tobytes(), 2)
+    assert out[0::2] == ref and out[1::2] == ref          # both channels
+    assert out[0:1] == b"\xff"                            # 0 -> canonical µ-law idle
 
 
 def test_drift_slip_drops_samples_when_sink_is_fast() -> None:
@@ -153,28 +164,37 @@ def test_zero_drift_is_identity() -> None:
 # -- the bridge -------------------------------------------------------------
 
 
-def test_bridge_widens_and_forwards_audio(
+def test_bridge_encodes_and_forwards_audio(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_daemon: FakeDaemon
 ) -> None:
-    _enable(monkeypatch, fake_daemon.port)
+    _enable(monkeypatch, fake_daemon.port)  # default codec s16
+    prime_bytes = _PRIME_SAMPLES * _OUT_FRAME_BYTES["s16"]
     payload = array.array("h", [100, -200, 300, -400]).tobytes()
     with client.websocket_connect("/api/voice/speaker") as ws:
         assert ws.receive_json()["t"] == "status"
         fake_daemon.wait_connected()
         ws.send_bytes(payload)
-        raw = fake_daemon.wait_bytes(_PRIME_BYTES + 32)
-    assert raw[:_PRIME_BYTES] == b"\x00" * _PRIME_BYTES  # silence prime
-    tail = struct.unpack("<8i", raw[_PRIME_BYTES : _PRIME_BYTES + 32])
-    assert tail == (
-        100 << 16,
-        100 << 16,
-        -200 << 16,
-        -200 << 16,
-        300 << 16,
-        300 << 16,
-        -400 << 16,
-        -400 << 16,
-    )
+        raw = fake_daemon.wait_bytes(prime_bytes + 16)
+    assert raw[:prime_bytes] == b"\x00" * prime_bytes  # silence prime
+    tail = struct.unpack("<8h", raw[prime_bytes : prime_bytes + 16])
+    assert tail == (100, 100, -200, -200, 300, 300, -400, -400)
+
+
+def test_bridge_raw_codec_still_widens_to_s32(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_daemon: FakeDaemon
+) -> None:
+    _enable(monkeypatch, fake_daemon.port, codec="raw")
+    prime_bytes = _PRIME_SAMPLES * _OUT_FRAME_BYTES["raw"]
+    payload = array.array("h", [100, -200, 300, -400]).tobytes()
+    with client.websocket_connect("/api/voice/speaker") as ws:
+        assert ws.receive_json()["t"] == "status"
+        fake_daemon.wait_connected()
+        ws.send_bytes(payload)
+        raw = fake_daemon.wait_bytes(prime_bytes + 32)
+    assert raw[:prime_bytes] == b"\x00" * prime_bytes
+    tail = struct.unpack("<8i", raw[prime_bytes : prime_bytes + 32])
+    assert tail == (100 << 16, 100 << 16, -200 << 16, -200 << 16,
+                    300 << 16, 300 << 16, -400 << 16, -400 << 16)
 
 
 def test_status_frame_reports_link_up(
