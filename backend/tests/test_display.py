@@ -3,11 +3,14 @@ from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.display import (
+    DdcCiDisplayController,
     DisplayControlError,
     DisplayStore,
+    FallbackDisplayController,
     NullDisplayController,
     ProbeResult,
     WmiDisplayController,
+    _as_percent,
     build_controller,
 )
 from app.main import app
@@ -57,9 +60,21 @@ def test_build_controller_is_inert_without_colocation() -> None:
     )
 
 
-def test_build_controller_picks_wmi_when_colocated() -> None:
+def test_build_controller_auto_is_a_wmi_then_ddcci_fallback_when_colocated() -> None:
+    controller = build_controller(mechanism="auto", host_local_display=True)
+    assert isinstance(controller, FallbackDisplayController)
+    assert [type(c) for c in controller._candidates] == [
+        WmiDisplayController,
+        DdcCiDisplayController,
+    ]
+
+
+def test_build_controller_picks_an_explicit_mechanism() -> None:
     assert isinstance(
-        build_controller(mechanism="auto", host_local_display=True), WmiDisplayController
+        build_controller(mechanism="wmi", host_local_display=True), WmiDisplayController
+    )
+    assert isinstance(
+        build_controller(mechanism="ddcci", host_local_display=True), DdcCiDisplayController
     )
 
 
@@ -68,6 +83,62 @@ def test_wmi_probe_is_not_ok_off_windows(monkeypatch: pytest.MonkeyPatch) -> Non
     result = WmiDisplayController().probe()
     assert result.ok is False
     assert "Windows" in (result.error or "")
+
+
+def test_ddcci_probe_is_not_ok_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.display.sys.platform", "linux")
+    result = DdcCiDisplayController().probe()
+    assert result.ok is False
+    assert "Windows" in (result.error or "")
+
+
+def test_ddcci_set_level_raises_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.display.sys.platform", "linux")
+    with pytest.raises(DisplayControlError):
+        DdcCiDisplayController().set_level(10)
+
+
+# -- fallback controller -------------------------------------------------
+
+
+def test_fallback_adopts_the_first_working_mechanism() -> None:
+    dead = FakeController(probe=ProbeResult(ok=False, error="not supported"))
+    dead.mechanism = "wmi"
+    live = FakeController(probe=ProbeResult(ok=True, level=55))
+    live.mechanism = "ddcci"
+    controller = FallbackDisplayController([dead, live])
+
+    result = controller.probe()
+    assert result.ok is True
+    assert result.level == 55
+    assert controller.mechanism == "ddcci"
+
+    controller.set_level(20)
+    assert live.levels == [20]
+    assert dead.levels == []
+
+
+def test_fallback_reports_none_and_collects_errors_when_all_fail() -> None:
+    a = FakeController(probe=ProbeResult(ok=False, error="not supported"))
+    a.mechanism = "wmi"
+    b = FakeController(probe=ProbeResult(ok=False, error="no monitor"))
+    b.mechanism = "ddcci"
+    controller = FallbackDisplayController([a, b])
+
+    result = controller.probe()
+    assert result.ok is False
+    assert "wmi: not supported" in (result.error or "")
+    assert "ddcci: no monitor" in (result.error or "")
+    assert controller.mechanism == "none"
+    with pytest.raises(DisplayControlError):
+        controller.set_level(10)
+
+
+def test_as_percent_scales_from_the_panels_native_range() -> None:
+    assert _as_percent(0, 50, 100) == 50
+    assert _as_percent(0, 128, 255) == 50
+    assert _as_percent(20, 20, 80) == 0
+    assert _as_percent(0, 5, 0) == 5  # degenerate range: clamp, don't divide by zero
 
 
 # -- store: probe --------------------------------------------------------

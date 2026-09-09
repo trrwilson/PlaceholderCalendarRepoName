@@ -312,7 +312,7 @@ class HostCapabilities(BaseModel):
     host_local_display: bool
 
 
-DisplayMechanism = Literal["wmi", "none"]
+DisplayMechanism = Literal["wmi", "ddcci", "none"]
 
 
 class DisplayState(BaseModel):

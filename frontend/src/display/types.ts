@@ -1,6 +1,6 @@
 // Mirrors backend/app/models.py `DisplayState` — keep field names in sync.
 
-export type DisplayMechanism = 'wmi' | 'none'
+export type DisplayMechanism = 'wmi' | 'ddcci' | 'none'
 
 export interface DisplayState {
   brightness: number
