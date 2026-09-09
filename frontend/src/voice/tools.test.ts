@@ -326,4 +326,26 @@ describe('voice tool dispatch', () => {
       expect(ctx.actions.requestPrivacyUnlock).toHaveBeenCalled()
     })
   })
+
+  describe('night mode', () => {
+    it('set_night_mode PUTs night_mode to /api/display', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ night_mode: true, brightness: 10 }),
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const result = await dispatchToolCall('set_night_mode', { on: true }, context())
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(String(url)).toContain('/api/display')
+      expect(init).toMatchObject({ method: 'PUT' })
+      expect(JSON.parse(init.body)).toEqual({ night_mode: true })
+      expect(result).toEqual({ ok: true, night_mode: true, brightness: 10 })
+    })
+
+    it('reports a failure to change night mode', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 423 }))
+      const result = await dispatchToolCall('set_night_mode', { on: false }, context())
+      expect(result.ok).toBe(false)
+    })
+  })
 })

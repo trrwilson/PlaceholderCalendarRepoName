@@ -146,6 +146,7 @@ def test_token_minted_with_locked_constraints(
         "get_list",
         "enter_privacy_mode",
         "request_privacy_unlock",
+        "set_night_mode",
     }
     # The six-hour cap is carried in the timer tool descriptions so the agent can
     # speak the rejection rather than silently failing.

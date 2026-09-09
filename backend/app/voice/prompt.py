@@ -172,6 +172,11 @@ def build_system_instruction(
             "that keypad (request_privacy_unlock), so do that and politely decline anything "
             "else until it is off.",
             "",
+            "You control the wall display's night mode: set_night_mode with on=true for "
+            "'night mode' / 'dim the screen for the night' / 'it's too bright' (it drops "
+            "to about a tenth), on=false for 'day mode' / 'turn off night mode' / 'bring "
+            "it back up'. Confirm in one short sentence.",
+            "",
             "You can only READ the calendar — if asked to add or change a calendar event, "
             "say you can't yet. (Timers and the grocery list are the things you can "
             "change.) Work out relative dates ('tomorrow', 'this weekend') from the time "

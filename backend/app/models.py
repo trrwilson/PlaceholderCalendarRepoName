@@ -293,6 +293,65 @@ class PrivacyUnlockRequest(BaseModel):
     pin: str = Field(min_length=1, max_length=16)
 
 
+# -- Host colocation & the physical display -------------------------------
+# Capabilities that only exist when the backend and the kiosk browser run on the
+# same physical host (it owns the attached panel, the webcam, the OS power
+# policy). One structural assertion — ``MISSION_CONTROL_HOST_LOCAL_DISPLAY`` —
+# gates all of them; see ``app/host.py`` and ``docs/display-dimming-plan.md``.
+
+
+class HostCapabilities(BaseModel):
+    """What this deployment can do that depends on backend/frontend colocation.
+
+    Served by ``GET /api/capabilities`` (always safe to call). Today the only
+    flag is ``host_local_display``; the presence / display-sleep work
+    (``docs/camera-support-plan.md``) will add ``host_local_camera`` and friends
+    behind the same seam.
+    """
+
+    host_local_display: bool
+
+
+DisplayMechanism = Literal["wmi", "none"]
+
+
+class DisplayState(BaseModel):
+    """Live state of the physical wall panel's brightness.
+
+    ``brightness`` is the current target (0-100). ``reference_brightness`` is the
+    level night mode restores to — captured the moment night mode is switched on.
+    ``mechanism`` is the effector actually in use (``none`` on any host that is
+    not colocated, or when the probe found nothing that moves the panel).
+    Pushed on ``/api/ws`` as ``ApplicationMessage.display`` on every change and on
+    connect, mirroring :class:`PrivacyState`.
+    """
+
+    brightness: int
+    reference_brightness: int
+    night_mode: bool = False
+    mechanism: DisplayMechanism = "none"
+    # True when MISSION_CONTROL_HOST_LOCAL_DISPLAY is set — the backend asserts it
+    # owns the attached panel. ``mechanism`` can still be ``none`` if the probe
+    # failed (surfaced in ``last_error``).
+    colocated: bool = False
+    available: bool = False
+    last_error: str | None = None
+
+
+class DisplayConfigUpdate(BaseModel):
+    """``PUT /api/display`` body. Set ``brightness``, ``night_mode``, or both;
+    an empty body is a 422. An explicit ``brightness`` leaves night mode."""
+
+    brightness: int | None = Field(default=None, ge=0, le=100)
+    night_mode: bool | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> "DisplayConfigUpdate":
+        if self.brightness is None and self.night_mode is None:
+            raise ValueError("set brightness, night_mode, or both")
+        return self
+
+
 class ApplicationMessage(BaseModel):
     type: str
     message: str
@@ -312,6 +371,9 @@ class ApplicationMessage(BaseModel):
     # Privacy mode reuses it too: ``privacy`` is the current PrivacyState, pushed
     # on every lock / unlock and sent on connect for reconciliation.
     privacy: PrivacyState | None = None
+    # The physical display reuses it too: ``display`` is the current DisplayState,
+    # pushed on every brightness / night-mode change and sent on connect.
+    display: DisplayState | None = None
     # Keep ``list`` last: ``list: … = None`` binds the name in the class body, which
     # would shadow the ``list`` builtin for any annotation evaluated after it.
     list: GroceryList | None = None

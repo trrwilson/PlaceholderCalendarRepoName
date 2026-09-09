@@ -250,11 +250,12 @@ def test_websocket_sends_privacy_state_on_connect(client: TestClient) -> None:
         privacy = ws.receive_json()
         assert privacy["type"] == "privacy"
         assert privacy["privacy"]["locked"] is True
+        assert ws.receive_json()["type"] == "display"
 
 
 def test_websocket_broadcasts_on_lock_and_unlock(client: TestClient) -> None:
     with client.websocket_connect("/api/ws") as ws:
-        for _ in range(4):  # connected, timers, lists, privacy
+        for _ in range(5):  # connected, timers, lists, privacy, display
             ws.receive_json()
         client.post("/api/privacy/lock")
         pushed = ws.receive_json()

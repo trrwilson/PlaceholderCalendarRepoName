@@ -19,6 +19,10 @@ are locked into every session grant, and the kiosk mirrors these names in
   privacy mode and summon the on-screen unlock keypad (``/api/privacy``). The
   assistant can only *enter* privacy mode and *ask* for the keypad — it can never
   turn privacy mode off (that needs the PIN typed on screen).
+* ``set_night_mode`` dims the physical wall panel to ~10% (or restores it)
+  through ``/api/display`` — the backend owns real brightness; the browser
+  cannot. Inert unless the backend is colocated with the kiosk
+  (``docs/display-dimming-plan.md``).
 
 The timer and list tools are the state-mutating voice tools — a narrow,
 documented exception to the read-only rule: local, single-household appliance
@@ -320,6 +324,26 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
             "everything else politely."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "set_night_mode",
+        "description": (
+            "Turn the wall display's night mode on or off. On ('night mode', "
+            "'dim the screen for the night', 'it's too bright') drops the panel "
+            "to about a tenth of its current brightness; off ('day mode', 'turn "
+            "off night mode', 'bring the screen back up') restores the brightness "
+            "it had before. Confirm in one short sentence."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "on": {
+                    "type": "BOOLEAN",
+                    "description": "true to dim for night, false to restore.",
+                }
+            },
+            "required": ["on"],
+        },
     },
 ]
 

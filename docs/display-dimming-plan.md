@@ -1,6 +1,6 @@
 ---
 status: future
-summary: Backend-driven idle dimming of the physical panel (dim, not off) between interactions.
+summary: Backend-driven idle dimming of the physical panel (dim, not off) between interactions. Stage 1 (colocation seam + WMI brightness + night mode) is built.
 ---
 
 # Mission Control: idle display dimming — design plan
@@ -18,7 +18,10 @@ owned by [camera-support-plan.md](camera-support-plan.md); this plan shares its
 `DisplayController`, inactivity-policy, and activity-seam design and adds one
 level below `awake`. See [§ Relationship](#relationship-to-presence-work).
 
-Not built. This document is the design target.
+This document is the design target. **Stage 1 is built** — see
+[§ Implemented so far](#implemented-so-far); the inactivity policy, the activity
+seam, the `ddcci` / `gamma` mechanisms, the `asleep` level, and the Settings
+diagnostics block are not.
 
 ---
 
@@ -150,6 +153,39 @@ writable store can shadow env later — same posture as `PresenceSettings`.
 4. **On the kiosk.** Probe which mechanism moves the real panel, tune
    `dim_after` / `dim_level`, measure wake latency, check whether digitizer HID
    jitter spuriously counts as activity, write the deployment notes.
+
+---
+
+## Implemented so far
+
+Stage 1 (the foundations + a human-facing test), shipped:
+
+- **Colocation seam.** `MISSION_CONTROL_HOST_LOCAL_DISPLAY` (default `false`) is
+  the single structural assertion; `app/host.py` + `HostCapabilities` +
+  `GET /api/capabilities` report it. Every OS/device call gates on it. The
+  presence-plan sleep path is expected to consume the same seam.
+- **`DisplayController`** (`app/display.py`) — `NullDisplayController` (`none`,
+  dev/CI/not-colocated) and `WmiDisplayController` (`wmi`, a PowerShell shell-out
+  to `WmiMonitorBrightnessMethods.WmiSetBrightness`, Windows only, no new
+  dependency). `MISSION_CONTROL_DISPLAY_CONTROL_MECHANISM = auto|wmi|none`; `auto`
+  picks `wmi` only when colocated **and** the startup probe verifiably reads the
+  panel. Probe failure ⇒ mechanism reported as `none`, error in
+  `DisplayState.last_error`.
+- **`DisplayStore`** — same mould as `TimerStore` / `PrivacyStore` (injected
+  clock + broadcast, no socket import, process singleton). Holds `brightness`,
+  `reference_brightness`, `night_mode`; "never re-issue an identical level";
+  restore-to-reference on lifespan shutdown.
+- **API** — `GET /api/display`, `PUT /api/display {brightness?, night_mode?}`
+  (`_require_local` + `_require_unlocked`), `DisplayState` on the `/api/ws` hello
+  and pushed as `ApplicationMessage.display` on every change.
+- **Night mode** — `set_night_mode` voice tool (cloud providers; the Local/Hybrid
+  pipeline still answers "can't control the display yet") and a Settings → Display
+  toggle. On captures the current level as the reference and drops to
+  `MISSION_CONTROL_DISPLAY_NIGHT_MODE_LEVEL_PCT` (default 10) % of it; off
+  restores exactly that reference.
+- Frontend `useDisplay` hook (`frontend/src/display/`) reconciles like
+  `usePrivacy`. No perceptual overlay yet — stage 1 assumes the colocated WMI
+  path.
 
 ---
 

@@ -357,6 +357,7 @@ def test_websocket_receives_a_broadcast_when_a_timer_is_created(client: TestClie
         ws.receive_json()  # initial (empty) timers
         ws.receive_json()  # initial lists
         ws.receive_json()  # initial privacy
+        ws.receive_json()  # initial display
         client.post("/api/timers", json={"duration_seconds": 300, "label": "tea"})
         pushed = ws.receive_json()
         assert pushed["type"] == "timer-started"

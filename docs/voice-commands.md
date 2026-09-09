@@ -165,6 +165,21 @@ holds today through the next two weeks; Week and Month hold what is on screen. A
 for an event outside that window and it will say it can't find one in view — move
 to the right week first, then ask.
 
+### "Night mode" / "Day mode"
+
+**Say:** "Night mode." · "Dim the screen for the night." · "It's too bright." ·
+"Day mode." · "Turn off night mode." · "Bring the screen back up."
+
+**Does:** Dims the physical wall panel to about a tenth of its current brightness,
+and restores exactly that brightness when turned off. There is also a **Night
+mode** switch in Settings → Display.
+
+**Limits:** Only works when the panel is driven by the machine running Mission
+Control (a documented kiosk setup — `docs/display-dimming-plan.md`). On a laptop
+or a second screen that is just viewing the dashboard it does nothing. It is a
+manual on/off — there is no automatic idle dimming yet. Voice cannot set an
+arbitrary brightness percentage; that is Settings-only.
+
 ---
 
 ## Kitchen timer
@@ -341,7 +356,8 @@ declined** — including schedule questions, so nothing sensitive is read aloud.
   to and it will say it can't yet. (The kitchen timer and the grocery list are
   the two exceptions; it can also turn *on* privacy mode.)
 - **No account or settings changes** — sign-in, calendar colours, week start,
-  people filters, wake word, etc. are all touch-only.
+  people filters, wake word, etc. are all touch-only. (Night mode is the one
+  display setting voice can toggle.)
 - **No general questions.** It is wired to the household calendars, the timer, and
   the grocery list — not the open web, weather, or maths.
 - **One list only.** A grocery list, not multiple named lists, and no aisle
@@ -368,3 +384,4 @@ declined** — including schedule questions, so nothing sensitive is read aloud.
 | Timer behaviour | `docs/timer-plan.md` |
 | Grocery list behaviour | `docs/lists-plan.md` |
 | Privacy mode | `docs/privacy-mode-plan.md`, `backend/app/privacy.py`, `frontend/src/privacy/` |
+| Night mode / panel brightness | `docs/display-dimming-plan.md`, `backend/app/display.py`, `frontend/src/display/` |

@@ -319,6 +319,7 @@ def test_websocket_receives_a_broadcast_on_add(client: TestClient) -> None:
         ws.receive_json()  # timers
         ws.receive_json()  # lists
         ws.receive_json()  # privacy
+        ws.receive_json()  # display
         client.post("/api/lists/grocery/items", json={"name": "bread"})
         pushed = ws.receive_json()
         assert pushed["type"] == "list-item-added"

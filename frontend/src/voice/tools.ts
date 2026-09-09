@@ -144,6 +144,19 @@ export async function dispatchToolCall(
       ctx.actions.requestPrivacyUnlock()
       return { ok: true, note: 'Ask them to enter the four-digit PIN on the display.' }
     }
+    case 'set_night_mode': {
+      const on = args.on === true || args.on === 'true'
+      const response = await fetch(`${ctx.apiBaseUrl}/api/display`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ night_mode: on }),
+      })
+      if (!response.ok) {
+        return { ok: false, error: `could not change night mode (${response.status})` }
+      }
+      const state = (await response.json()) as { night_mode: boolean; brightness: number }
+      return { ok: true, night_mode: state.night_mode, brightness: state.brightness }
+    }
     case 'show_view': {
       const view = args.view as ViewMode
       if (!['home', 'week', 'month', 'timer', 'lists'].includes(view)) return { ok: false, error: 'unknown view' }

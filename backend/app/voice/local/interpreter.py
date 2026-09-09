@@ -682,7 +682,9 @@ def _plan(
             return base
         if intent.name.startswith("display."):
             base.disposition = Disposition.rejected
-            base.reason = "no DisplayController capability yet (see docs/camera-support-plan.md)"
+            # The cloud path can dim (set_night_mode / app/display.py); the local
+            # interpreter has no display planner yet (docs/display-dimming-plan.md).
+            base.reason = "local pipeline has no display planner yet"
             base.speech = "I can't control the display yet."
             return base
         base.disposition = Disposition.rejected

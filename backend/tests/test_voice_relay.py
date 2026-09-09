@@ -302,6 +302,7 @@ async def test_azure_openai_realtime_grant_and_ticket(azure_openai_env) -> None:
         "get_list",
         "enter_privacy_mode",
         "request_privacy_unlock",
+        "set_night_mode",
     }
     assert "Travis, Sam" in session["instructions"]
     assert "September 6, 2026 at 6:30 PM" in session["instructions"]

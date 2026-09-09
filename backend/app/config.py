@@ -32,6 +32,42 @@ class Settings(BaseSettings):
 
     calendar_provider: Literal["mock", "graph", "outlook_personal"] = "mock"
 
+    # -- Host colocation & the physical display -------------------------------
+    # Formal assertion that this backend process runs on the same physical host
+    # as the kiosk browser and owns the attached wall panel. It is the single
+    # structural gate for every capability that only exists under that topology
+    # (see app/host.py and docs/display-dimming-plan.md -> "Colocation is
+    # explicit"); the future presence / display-sleep path gates on it too.
+    # Every OS / device-API call below is inert unless this is true.
+    host_local_display: bool = False
+
+    # Which mechanism drives panel brightness. ``auto`` selects ``wmi`` when
+    # ``host_local_display`` is set and the startup probe verifiably moves the
+    # panel, otherwise ``none`` (a no-op controller — dev, CI, and any host that
+    # is not colocated). ``ddcci`` / ``gamma`` / ``overlay`` from the plan doc
+    # are later phases.
+    display_control_mechanism: Literal["auto", "wmi", "none"] = "auto"
+    # Assumed full brightness (0-100) when the mechanism cannot read the panel's
+    # real level at startup. The reference the panel is restored to.
+    display_default_brightness: int = 100
+    # Night mode drops the panel to this percentage of the reference brightness
+    # captured when it was switched on. 10 => a 100-bright panel goes to 10.
+    display_night_mode_level_pct: int = 10
+
+    @field_validator("display_default_brightness")
+    @classmethod
+    def _check_default_brightness(cls, value: int) -> int:
+        if not 0 <= value <= 100:
+            raise ValueError("display_default_brightness must be between 0 and 100")
+        return value
+
+    @field_validator("display_night_mode_level_pct")
+    @classmethod
+    def _check_night_mode_level(cls, value: int) -> int:
+        if not 1 <= value <= 100:
+            raise ValueError("display_night_mode_level_pct must be between 1 and 100")
+        return value
+
     graph_tenant_id: str | None = None
     graph_client_id: str | None = None
     graph_client_secret: str | None = None

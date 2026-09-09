@@ -8,13 +8,18 @@ from pydantic import ValidationError
 import app.calendar.personal_auth as personal_auth
 from app.calendar.provider import CalendarProvider, MockCalendarProvider
 from app.config import get_settings
+from app.display import get_display_store
+from app.host import host_capabilities
 from app.lists import get_list_store
 from app.models import (
     ApplicationMessage,
     CalendarAuthStatus,
     CalendarRange,
     CalendarSnapshot,
+    DisplayConfigUpdate,
+    DisplayState,
     GroceryList,
+    HostCapabilities,
     ListClearRequest,
     ListItemCreateRequest,
     ListItemUpdateRequest,
@@ -125,6 +130,15 @@ def _require_unlocked() -> None:
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/capabilities", response_model=HostCapabilities)
+def capabilities(request: Request) -> HostCapabilities:
+    """What this deployment's topology unlocks — today just whether the backend
+    owns the physically attached panel (``MISSION_CONTROL_HOST_LOCAL_DISPLAY``).
+    Always safe to call; LAN-gated like the other config reads."""
+    _require_local(request)
+    return host_capabilities(get_settings())
 
 
 @router.get("/calendar", response_model=CalendarSnapshot)
@@ -795,6 +809,33 @@ async def privacy_unlock_grace(request: Request) -> PrivacyState:
     return store.state()
 
 
+# -- physical display -----------------------------------------------------
+# Backend-owned brightness of the wall panel. The effector only touches the OS
+# when MISSION_CONTROL_HOST_LOCAL_DISPLAY asserts this process owns the attached
+# panel (docs/display-dimming-plan.md); otherwise the state is tracked and
+# broadcast but nothing moves. Gated + broadcast like the other feature stores.
+
+
+@router.get("/display", response_model=DisplayState)
+async def get_display(request: Request) -> DisplayState:
+    _require_local(request)
+    return get_display_store().state()
+
+
+@router.put("/display", response_model=DisplayState)
+async def set_display(request: Request, body: DisplayConfigUpdate) -> DisplayState:
+    """Set the panel brightness (0-100), toggle night mode, or both. Night mode
+    on dims to a fraction of the current level; off restores it."""
+    _require_local(request)
+    _require_unlocked()
+    store = get_display_store()
+    if body.night_mode is not None:
+        await store.set_night_mode(body.night_mode)
+    if body.brightness is not None:
+        await store.set_brightness(body.brightness)
+    return store.state()
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -826,6 +867,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 type="privacy",
                 message="current privacy state",
                 privacy=get_privacy_store().state(),
+            ).model_dump(mode="json", exclude_none=True)
+        )
+        # ...and the current panel brightness / night-mode state.
+        await websocket.send_json(
+            ApplicationMessage(
+                type="display",
+                message="current display state",
+                display=get_display_store().state(),
             ).model_dump(mode="json", exclude_none=True)
         )
         while True:

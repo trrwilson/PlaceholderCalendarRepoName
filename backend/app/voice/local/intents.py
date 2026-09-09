@@ -169,7 +169,9 @@ INTENTS: list[Intent] = [
         ],
         vetoes=[re.compile(r"\b(calendar|week|month|timer|schedule|appointment)\b")],
     ),
-    # -- display power: recognised, no DisplayController yet ------------------
+    # -- display power: recognised, not wired into the local pipeline yet -----
+    # (The cloud path can dim via set_night_mode / app/display.py; giving the
+    # local interpreter its own display planner is a follow-up.)
     Intent(
         name="display.off",
         tier=0,

@@ -18,6 +18,7 @@ import { useLists } from './lists/useLists'
 import type { ListItem } from './lists/types'
 import { usePrivacy } from './privacy/usePrivacy'
 import { PrivacyPad } from './privacy/PrivacyPad'
+import { useDisplay } from './display/useDisplay'
 
 type CalendarSource = 'mock' | 'outlook' | 'google'
 // `name` is the raw account handle; `display_name` is the natural personal name the
@@ -307,6 +308,11 @@ function App() {
   // unlocks it. Backed by usePrivacy → GET /api/privacy + the shared ws push.
   const privacy = usePrivacy(API_URL)
 
+  // The physical wall panel's brightness / night mode. Backend-owned (a browser
+  // tab cannot set Windows brightness); this hook reconciles from GET /api/display
+  // and the shared ws push. See docs/display-dimming-plan.md.
+  const display = useDisplay(API_URL)
+
   function enterPrivacyMode() {
     if (!privacy.available || privacy.locked) return
     void privacy.lock().then((ok) => {
@@ -510,7 +516,7 @@ function App() {
         {mode === 'lists' && <ListsView list={lists.list} recentItems={lists.recentItems} redacted={redacting} onAdd={(name) => { if (!redacting) void lists.add(name) }} onToggle={(id, checked) => { if (!redacting) void lists.toggle(id, checked) }} onRemove={(id) => { if (!redacting) void lists.remove(id) }} onClear={(scope) => { if (!redacting) void lists.clear(scope) }} onReorder={(ids) => { if (!redacting) void lists.reorder(ids) }} />}
       </section>
 
-      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={calendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} audioOutput={audioOutput} voiceConfig={voiceConfig} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onSetWakeGateEnabled={voice.setWakeGateEnabled} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
+      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={calendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} audioOutput={audioOutput} voiceConfig={voiceConfig} display={display} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onSetWakeGateEnabled={voice.setWakeGateEnabled} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
       {selectedEvent && !redacting && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
       {connectOpen && auth && !redacting && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}
       {privacyPadOpen && <PrivacyPad onClose={() => setPrivacyPadOpen(false)} onUnlock={privacy.unlock} onUndo={privacyNotice ? () => { void privacy.undo(); setPrivacyPadOpen(false); setPrivacyNotice(false) } : undefined} cooldownMs={privacy.cooldownMs} />}
@@ -531,7 +537,7 @@ function App() {
 type SettingsCategory = 'display' | 'calendars' | 'voice'
 function SettingsSheet({
   auth, onAddCalendar, colorMode, onColorMode, weekStart, onWeekStart, calendars, onCalendarColor,
-  audioInput, audioOutput, voiceConfig, wake, onSetWakeEnabled, onSetWakeProvider, onSetWakeGateEnabled, onClose,
+  audioInput, audioOutput, voiceConfig, display, wake, onSetWakeEnabled, onSetWakeProvider, onSetWakeGateEnabled, onClose,
 }: {
   auth: CalendarAuth | null
   onAddCalendar: () => void
@@ -544,6 +550,7 @@ function SettingsSheet({
   audioInput: ReturnType<typeof useAudioInput>
   audioOutput: ReturnType<typeof useAudioOutput>
   voiceConfig: ReturnType<typeof useVoiceConfig>
+  display: ReturnType<typeof useDisplay>
   wake: ReturnType<typeof useVoiceSession>['wake']
   onSetWakeEnabled: ReturnType<typeof useVoiceSession>['setWakeEnabled']
   onSetWakeProvider: ReturnType<typeof useVoiceSession>['setWakeProvider']
@@ -598,6 +605,14 @@ function SettingsSheet({
                   <button className={weekStart === 'monday' ? 'selected' : ''} aria-pressed={weekStart === 'monday'} onClick={() => onWeekStart('monday')}>Monday</button>
                   <button className={weekStart === 'sunday' ? 'selected' : ''} aria-pressed={weekStart === 'sunday'} onClick={() => onWeekStart('sunday')}>Sunday</button>
                 </div>
+              </div>
+              <div className="settings-group">
+                <h3>Night mode</h3>
+                <button className="switch-row" role="switch" aria-checked={display.nightMode} onClick={() => { void display.setNightMode(!display.nightMode) }}>
+                  <span>Dim the wall panel to about a tenth</span>
+                  <span className="switch-track" aria-hidden />
+                </button>
+                <p className="settings-note">{display.mechanism === 'none' ? 'This screen isn’t running the display service — night mode has no effect here.' : 'Also try saying “night mode”.'}</p>
               </div>
               {calendars.length > 0 && <div className="settings-group">
                 <h3>Calendar colours</h3>
