@@ -204,6 +204,24 @@ There are two audio contexts on the output side (`AudioSink`'s and
 `AlarmChime`'s) because the chime must work with voice switched off entirely.
 Each builds its own loopback; both are in the AEC reference.
 
+### Which speaker the loopback plays to
+
+The loopback's far end is a bare `<audio>` element. Chromium routes a
+peer-connection `<audio>` with no explicit sink to the output endpoint *paired
+with the active capture device* (same `groupId`) — not the system default. On
+the kiosk the capture device is a VB-CABLE input, whose paired endpoint is the
+VB-CABLE *output*, so without intervention every reply, cue and chime is played
+straight back into the virtual cable and never heard.
+
+`voice/outputSink.ts` holds the chosen sink id and `aecPlayback.ts` calls
+`element.setSinkId()` with it (re-applied on change). An explicit `setSinkId` —
+`''` (system default) included — overrides the pairing. `voice/audioOutput.ts` +
+`voice/useAudioOutput.ts` are the mirror of the input pair: `auto` (the default)
+is the system default output stated explicitly, and steps off a default that is
+itself a VB-CABLE endpoint. Stored per-browser under
+`mission-control.audio-output`. `setSinkId` is unavailable in jsdom and Safari;
+there the selection is inert and playout follows the default.
+
 Playback rate comes from the provider (`outputSampleRate`), not from a constant.
 `AudioSink` schedules each decoded chunk contiguously off a cursor as it arrives;
 there is no jitter buffer (removed — it caused audible clicks), so a stream that
@@ -256,6 +274,7 @@ kiosk UI, by design.
 | `wake.debug` = `off` | Silences the wake peak-score line. |
 | `mission-control.wake-word` | The user's wake-word on/off choice. |
 | `mission-control.audio-input` | The microphone device choice: `"auto"` (default, prefers VB-CABLE) or `{deviceId,label}`. See **Input device selection**. |
+| `mission-control.audio-output` | The speaker device choice: `"auto"` (default, system default, avoids a VB-CABLE default) or `{deviceId,label}`. See **Output → Which speaker the loopback plays to**. |
 
 ## Module map
 
@@ -266,7 +285,10 @@ kiosk UI, by design.
 | `voice/useAudioInput.ts` | Enumerates inputs, keeps the list fresh, pushes the resolved device to `MicSource` |
 | `voice/gain.ts` | `InputGain`, `dbToLinear`, `atReferenceGain`, the reference gain |
 | `voice/pcm.ts` | Format and rate conversion only — PCM16 to/from Float32, downsample, resample, WAV. No gain, no device, no rate assumptions |
-| `voice/aecPlayback.ts` | The echo-cancelled output bus |
+| `voice/aecPlayback.ts` | The echo-cancelled output bus; `setSinkId` on the playout element |
+| `voice/outputSink.ts` | The one owner of the output sink id; notifies live playout elements |
+| `voice/audioOutput.ts` | Pure speaker-choice logic: the persisted selection, resolve-to-`setSinkId`, VB-CABLE avoidance |
+| `voice/useAudioOutput.ts` | Enumerates outputs, keeps the list fresh, pushes the resolved sink id to `outputSink` |
 | `voice/pcm-capture-worklet.js` | Native-rate batching off the audio thread |
 | `voice/wake/ringBuffer.ts` | Wake pre-roll retention; named wrappers over `pcm.ts` |
 | `voice/debugRecorder.ts` | Retains and uploads exactly what reached the provider |
@@ -278,6 +300,8 @@ kiosk UI, by design.
   a second `getUserMedia`.
 - Changing which device is captured means `micSource.setInputDeviceId()` (driven
   by `useAudioInput`). Never a `deviceId` constraint anywhere else.
+- Changing which speaker is played to means `setOutputSinkId()` (driven by
+  `useAudioOutput`). Never a `setSinkId` call anywhere else.
 - Anything that scales samples belongs in `gain.ts`, or it does not belong.
 - Anything that converts format or rate belongs in `pcm.ts`, or it is a duplicate.
 - Anything that makes sound connects to the echo-cancelled output.
