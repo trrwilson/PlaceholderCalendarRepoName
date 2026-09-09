@@ -124,7 +124,7 @@ test('wake word shows a Settings control and degrades safely without a model', a
   await expect(page.locator('.voice-overlay')).toBeVisible()
 })
 
-test('Speaker output picker appears only when an Invoke host is configured', async ({ page }) => {
+test('the Speaker picker offers Invoke (Wi-Fi) when an Invoke host is configured', async ({ page }) => {
   await page.route('**/api/voice/config', (route) =>
     route.fulfill({
       contentType: 'application/json',
@@ -144,9 +144,9 @@ test('Speaker output picker appears only when an Invoke host is configured', asy
   const dialog = page.getByRole('dialog', { name: 'Settings' })
   await dialog.getByRole('button', { name: 'Voice & sound' }).click()
   await dialog.getByRole('button', { name: 'Advanced (bake-off)' }).click()
-  await expect(dialog.getByText('Speaker output')).toBeVisible()
-  await expect(dialog.getByRole('button', { name: 'This screen' })).toHaveAttribute('aria-pressed', 'true')
-  await dialog.getByRole('button', { name: 'Invoke (Wi-Fi)' }).click()
-  await expect(dialog.getByRole('button', { name: 'Invoke (Wi-Fi)' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(dialog.getByRole('heading', { name: 'Speaker' })).toBeVisible()
+  const invoke = dialog.getByRole('button', { name: 'Invoke (Wi-Fi)' })
+  await invoke.click()
+  await expect(invoke).toHaveAttribute('aria-pressed', 'true')
   await expect(dialog.getByText(/Connecting to the Invoke|Streaming to the Invoke/)).toBeVisible()
 })

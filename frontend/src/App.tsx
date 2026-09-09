@@ -437,8 +437,8 @@ function App() {
   const voiceConfig = useVoiceConfig(API_URL)
   const audioInput = useAudioInput()
   const audioOutput = useAudioOutput({
-    available: voiceConfig.config.invoke_speaker_configured,
     apiBaseUrl: API_URL,
+    invokeAvailable: voiceConfig.config.invoke_speaker_configured,
   })
 
   function navigate(amount: number) {
@@ -551,12 +551,15 @@ function SettingsSheet({
   onClose: () => void
 }) {
   const diagnostics = audioInput.diagnostics
-  const speaker = audioOutput.diagnostics
+  const outputDiagnostics = audioOutput.diagnostics
   const linkedAccounts = auth?.accounts ?? (auth?.account ? [auth.account] : [])
   const hasCalendars = auth?.provider === 'outlook_personal' && auth.state === 'connected'
   const hasProviders = voiceConfig.config.enabled && voiceConfig.config.providers.length > 0
   const hasMic = diagnostics.available && (voiceConfig.config.enabled || wake.available)
-  const hasAdvanced = hasProviders || wake.providers.length > 1 || hasMic || speaker.available
+  const hasSpeaker =
+    (outputDiagnostics.available || outputDiagnostics.invokeAvailable) &&
+    (voiceConfig.config.enabled || wake.available)
+  const hasAdvanced = hasProviders || wake.providers.length > 1 || hasMic || hasSpeaker
   const hasVoice = wake.available || hasAdvanced
   const categories: { id: SettingsCategory; label: string }[] = [
     { id: 'display', label: 'Display' },
@@ -668,17 +671,20 @@ function SettingsSheet({
                     </div>
                     <p className="settings-note">{diagnostics.boundLabel ? `Capturing from “${diagnostics.boundLabel}”. ` : ''}Automatic prefers a VB-CABLE input when present.</p>
                   </div>}
-                  {speaker.available && <div className="settings-group">
-                    <h3>Speaker output</h3>
+                  {hasSpeaker && <div className="settings-group">
+                    <h3>Speaker</h3>
                     <div className="settings-provider-list">
-                      <button className={speaker.selection === 'screen' ? 'selected' : ''} aria-pressed={speaker.selection === 'screen'} onClick={() => audioOutput.choose('screen')}>This screen</button>
-                      <button className={speaker.selection === 'invoke' ? 'selected' : ''} aria-pressed={speaker.selection === 'invoke'} onClick={() => audioOutput.choose('invoke')}>Invoke (Wi-Fi)</button>
+                      <button className={outputDiagnostics.selection.mode === 'auto' ? 'selected' : ''} aria-pressed={outputDiagnostics.selection.mode === 'auto'} onClick={() => audioOutput.choose({ mode: 'auto' })}>Automatic</button>
+                      {outputDiagnostics.devices.filter((device) => device.deviceId !== 'default' && device.deviceId !== 'communications').map((device) => (
+                        <button key={device.deviceId} className={outputDiagnostics.selection.mode === 'device' && outputDiagnostics.selection.deviceId === device.deviceId ? 'selected' : ''} aria-pressed={outputDiagnostics.selection.mode === 'device' && outputDiagnostics.selection.deviceId === device.deviceId} onClick={() => audioOutput.choose({ mode: 'device', deviceId: device.deviceId, label: device.label })}>{device.label || 'Unnamed output'}{device.isVbCable ? ' — VB-CABLE, avoid' : ''}</button>
+                      ))}
+                      {outputDiagnostics.invokeAvailable && <button className={outputDiagnostics.selection.mode === 'invoke' ? 'selected' : ''} aria-pressed={outputDiagnostics.selection.mode === 'invoke'} onClick={() => audioOutput.choose({ mode: 'invoke' })}>Invoke (Wi-Fi)</button>}
                     </div>
-                    <p className="settings-note">{speaker.selection === 'invoke'
-                      ? (speaker.status.connected
-                          ? `Streaming to the Invoke — ${speaker.status.streamedSeconds}s sent${speaker.status.reconnects ? `, ${speaker.status.reconnects} reconnect${speaker.status.reconnects === 1 ? '' : 's'}` : ''}${speaker.status.sheds ? `, ${speaker.status.sheds} dropped` : ''}.`
+                    <p className="settings-note">{outputDiagnostics.selection.mode === 'invoke'
+                      ? (outputDiagnostics.invokeStatus.connected
+                          ? `Streaming to the Invoke — ${outputDiagnostics.invokeStatus.streamedSeconds}s sent${outputDiagnostics.invokeStatus.reconnects ? `, ${outputDiagnostics.invokeStatus.reconnects} reconnect${outputDiagnostics.invokeStatus.reconnects === 1 ? '' : 's'}` : ''}${outputDiagnostics.invokeStatus.sheds ? `, ${outputDiagnostics.invokeStatus.sheds} dropped` : ''}. The local screen is muted.`
                           : 'Connecting to the Invoke…')
-                      : 'Replies, the listening cue and the timer chime play on this screen.'}</p>
+                      : `Playing to “${outputDiagnostics.routedLabel}”. The assistant, the listening cue and the timer chime all use this; automatic follows the system default and steps off a VB-CABLE default.`}</p>
                   </div>}
                 </div>}
               </div>}

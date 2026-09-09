@@ -18,6 +18,12 @@
 // box (a debug capture opened in a media player, Windows sounds) needs the
 // backend WASAPI-loopback path — see the AEC plan, phase 2.
 //
+// The far-end `<audio>` element is bound to the selected output device via
+// `setSinkId` (see ./outputSink). Chromium otherwise routes a peer-connection
+// `<audio>` to the endpoint paired with the active capture device — which on the
+// kiosk is the VB-CABLE input, so the reply would play back into the cable and
+// never be heard. An explicit `setSinkId`, `''` included, overrides that.
+//
 // An optional `SpeakerTap` (speakerOut.ts) forks the same bus to the Wi-Fi
 // speaker path: the caller's audio is tapped *before* the local mute, so it can
 // stream to the Invoke while the local playout is silenced (`onRouted`). See
@@ -25,7 +31,32 @@
 //
 // Ref: https://focused.io/lab/echo-cancellation-with-web-audio-api-and-chromium
 
+import { getOutputSinkId, onOutputSinkChange } from './outputSink'
 import type { SpeakerTap } from './speakerOut'
+
+type MediaElementWithSink = HTMLMediaElement & {
+  setSinkId?: (sinkId: string) => Promise<void>
+}
+
+/** True when this runtime can pick the audio output device (`setSinkId`). */
+export function canSelectAudioOutput(): boolean {
+  return (
+    typeof HTMLMediaElement !== 'undefined' &&
+    typeof (HTMLMediaElement.prototype as MediaElementWithSink).setSinkId === 'function'
+  )
+}
+
+/** Route one playout element to `sinkId` (`''` = system default). Best effort. */
+function applySink(element: HTMLMediaElement, sinkId: string): void {
+  const setSinkId = (element as MediaElementWithSink).setSinkId
+  if (typeof setSinkId !== 'function') return
+  void setSinkId.call(element, sinkId).catch((error: unknown) => {
+    console.warn('[voice] could not route echo-cancelled playout to the selected output', {
+      sinkId: sinkId || '(system default)',
+      error,
+    })
+  })
+}
 
 export interface EchoCancelledOutput {
   /** Connect the playout graph into this instead of `context.destination`. */
@@ -60,8 +91,7 @@ export function createEchoCancelledOutput(
 
   let tapNode: AudioWorkletNode | null = null
   let unsubscribeRouted: (() => void) | null = null
-  const canTap =
-    !!tap && !!context.audioWorklet && typeof AudioWorkletNode === 'function'
+  const canTap = !!tap && !!context.audioWorklet && typeof AudioWorkletNode === 'function'
   if (tap && canTap) {
     unsubscribeRouted = tap.onRouted((routed) => {
       localMute.gain.value = routed ? 0 : 1
@@ -115,6 +145,7 @@ export function createEchoCancelledOutput(
   const pcSend = new RTCPeerConnectionCtor()
   const pcRecv = new RTCPeerConnectionCtor()
   let element: HTMLAudioElement | null = null
+  let unsubscribeSink: (() => void) | null = null
   let active = false
 
   localMute.connect(dest)
@@ -127,10 +158,16 @@ export function createEchoCancelledOutput(
   })
   pcRecv.addEventListener('track', (event) => {
     if (disposed) return
-    element = new Audio()
-    element.autoplay = true
-    element.srcObject = new MediaStream([event.track])
-    void element.play().catch((error) => {
+    const audio = new Audio()
+    element = audio
+    audio.autoplay = true
+    audio.srcObject = new MediaStream([event.track])
+    // Pin the sink before play() and keep it in step with later changes, so the
+    // reply is never routed to the capture device's paired endpoint.
+    applySink(audio, getOutputSinkId())
+    unsubscribeSink?.()
+    unsubscribeSink = onOutputSinkChange((sinkId) => applySink(audio, sinkId))
+    void audio.play().catch((error) => {
       console.warn('[voice] echo-cancelled playout element could not start', error)
     })
     active = true
@@ -169,6 +206,8 @@ export function createEchoCancelledOutput(
       disposed = true
       active = false
       unsubscribeRouted?.()
+      unsubscribeSink?.()
+      unsubscribeSink = null
       if (element) {
         element.pause()
         element.srcObject = null

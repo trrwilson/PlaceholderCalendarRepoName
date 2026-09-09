@@ -16,7 +16,9 @@
 
 import { resampleLinear } from './pcm'
 import { SPEAKER_RATE, SpeakerMixer } from './speakerMix'
-import type { AudioOutputSelection } from './audioOutput'
+
+/** Where the output bus is going: the local screen, or the Invoke over Wi-Fi. */
+export type SpeakerRoute = 'screen' | 'invoke'
 
 /** One output context's connection to the network speaker. */
 export interface SpeakerTap {
@@ -29,7 +31,7 @@ export interface SpeakerTap {
 
 /** What Settings shows about the link. */
 export interface SpeakerLinkStatus {
-  selection: AudioOutputSelection
+  selection: SpeakerRoute
   /** The socket is open and audio is flowing. */
   connected: boolean
   /** Last `link` the backend reported (`"up"` / `"down"`), or `""`. */
@@ -48,7 +50,7 @@ const MAX_BUFFERED_BYTES = SPEAKER_RATE * 2 * 0.4 // ~400 ms of PCM16
 const MAX_SEND_SAMPLES = SPEAKER_RATE * 0.1 // 100 ms
 
 class SpeakerOut {
-  private selection: AudioOutputSelection = 'screen'
+  private selection: SpeakerRoute = 'screen'
   private apiBaseUrl = ''
   private ws: WebSocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -63,7 +65,7 @@ class SpeakerOut {
   private reconnects = 0
 
   /** Point the output bus at the screen or the Invoke. Idempotent. */
-  setRoute(selection: AudioOutputSelection, apiBaseUrl: string): void {
+  setRoute(selection: SpeakerRoute, apiBaseUrl: string): void {
     this.apiBaseUrl = apiBaseUrl
     if (selection === this.selection) return
     this.selection = selection

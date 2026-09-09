@@ -212,36 +212,56 @@ arrives slower than real time leaves a gap and logs an underrun.
 
 ## Output device selection
 
-The appliance's output normally plays on the local screen. It can instead be
-routed to a **recovered HK Invoke over Wi-Fi** — the mirror of the VB-CABLE
-*input* path. `createEchoCancelledOutput(context, tap?)` is the one place both
-output contexts pass through, so the `tap` forks the bus there: `AudioSink` (all
-provider reply audio + the cue) and `AlarmChime` (the timer chime) each attach a
-tap, `speakerOut.ts` sums them (`speakerMix.ts`), packs the sum to PCM16, and
-sends it as binary frames on `WS /api/voice/speaker`. The backend
+The appliance's own sounds — the assistant reply, the listening cue, the timer
+chime — can go three ways: the system default speaker, a specific local output
+device, or a **recovered HK Invoke over Wi-Fi**. `voice/audioOutput.ts` +
+`voice/useAudioOutput.ts` are the mirror of the input pair; the choice is
+per-browser (a property of the machine, like the microphone choice), stored under
+`localStorage['mission-control.audio-output']` as `"auto"` (default),
+`{deviceId,label}`, or `"invoke"`. There is no backend setting — the backend only
+reports whether an Invoke host is configured (`invoke_speaker_configured` on
+`GET /api/voice/config`). `useAudioOutput` routes a device pick to
+`voice/outputSink.ts` and an `invoke` pick to `voice/speakerOut.ts`.
+
+### A local speaker (`setSinkId`)
+
+The loopback's far end is a bare `<audio>` element. Chromium routes a
+peer-connection `<audio>` with no explicit sink to the output endpoint *paired
+with the active capture device* (same `groupId`) — not the system default. On
+the kiosk the capture device is a VB-CABLE input, whose paired endpoint is the
+VB-CABLE *output*, so without intervention every reply, cue and chime is played
+straight back into the virtual cable and never heard.
+
+`voice/outputSink.ts` holds the chosen sink id and `aecPlayback.ts` calls
+`element.setSinkId()` with it (re-applied on change). An explicit `setSinkId` —
+`''` (system default) included — overrides the pairing. `auto` (the default) is
+the system default output stated explicitly, and steps off a default that is
+itself a VB-CABLE endpoint. `setSinkId` is unavailable in jsdom and Safari; there
+a device selection is inert and playout follows the default.
+
+### The Invoke over Wi-Fi (`"invoke"`)
+
+`createEchoCancelledOutput(context, tap?)` is the one place both output contexts
+pass through, so the `tap` forks the bus there: `AudioSink` and `AlarmChime` each
+attach a tap, `speakerOut.ts` sums them (`speakerMix.ts`), packs the sum to
+PCM16, and sends it as binary frames on `WS /api/voice/speaker`. The backend
 (`app/voice/speaker.py`) widens each frame to S32LE/48k/2ch and forwards it over
 TCP to the `invoke_speaker_daemon.sh` receiver on the device (separate
 `ReInvoke2026` repo, `output/`). **No OS-wide virtual audio device, no separate
 feeder process** — MC generates its own output and already bridges browser
-sockets to that box (see `app/voice/wake_invoke.py`).
+sockets to that box (see `app/voice/wake_invoke.py`). The host falls back to
+`MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST`; Settings hides the option until one
+is set.
 
-- **The choice is per-browser**, stored in `localStorage['mission-control.audio-output']`
-  as `"screen"` (default) or `"invoke"` — a property of the machine, like the
-  microphone choice. There is no backend setting; the backend only reports
-  whether an Invoke host is configured (`invoke_speaker_configured` on
-  `GET /api/voice/config`, from `MISSION_CONTROL_INVOKE_SPEAKER_HOST`, falling
-  back to `MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST`). Settings hides the
-  picker until then.
-- **`useAudioOutput` owns the choice** and pushes it to the one shared
-  `speakerOut`, mirroring how `useAudioInput` drives `MicSource`.
 - **The local playout is muted while the link is actually up** (`onRouted` sets a
   post-tap gain to 0), so the assistant is not heard from both the screen and the
   Invoke ~0.5 s apart. A dropped link un-mutes until it reconnects.
 - **Echo is handled on the device.** The daemon plays through the stock `music`
   ALSA route, leaving the SHARC DSP running, so its hardware AEC uses the played
   audio as the echo reference — the assistant's own speech does not loop into the
-  `dsp_mic` capture that VB-CABLE carries back. MC's browser-side loopback AEC is
-  redundant for this path (nothing plays locally) but stays wired for `"screen"`.
+  `dsp_mic` capture that VB-CABLE carries back. The browser-side loopback AEC is
+  redundant for this path (nothing plays locally) but stays wired for the other
+  choices.
 - **Clock drift** (browser render clock vs. the Invoke DAC, ~30 ppm) is corrected
   open-loop by `MISSION_CONTROL_INVOKE_SPEAKER_DRIFT_PPM` (default 0), applied in
   the backend bridge as a periodic single-sample slip. Residual drift is an
@@ -265,7 +285,7 @@ and `GET /api/voice/wake-config`.
 | `GEMINI_VOICE`, `AZURE_*_VOICE` | — | Reply timbre, per provider. |
 | `VOICE_DEBUG_CAPTURE_ENABLED` / `_DIR` / `_KEEP` | on / `voice-captures` / `10` | On-disk WAV captures of provider input. |
 | `TIMER_ALARM_MAX_RING_SECONDS` | `300` | How long the chime loops. |
-| `INVOKE_SPEAKER_HOST` / `_AUDIO_PORT` | `""` / `5006` | Wi-Fi speaker output target. Empty ⇒ falls back to `WAKE_WORD_INVOKE_GATE_HOST`; still empty ⇒ Settings offers only "This screen". |
+| `INVOKE_SPEAKER_HOST` / `_AUDIO_PORT` | `""` / `5006` | Wi-Fi speaker output target. Empty ⇒ falls back to `WAKE_WORD_INVOKE_GATE_HOST`; still empty ⇒ Settings omits the "Invoke (Wi-Fi)" speaker option. |
 | `INVOKE_SPEAKER_DRIFT_PPM` | `0` | Open-loop drift slip for the speaker stream (positive ⇒ the Invoke DAC runs fast). |
 
 The Azure relay's own VAD settings (`semantic_vad`, `azure_semantic_vad` with
@@ -299,7 +319,7 @@ kiosk UI, by design.
 | `wake.debug` = `off` | Silences the wake peak-score line. |
 | `mission-control.wake-word` | The user's wake-word on/off choice. |
 | `mission-control.audio-input` | The microphone device choice: `"auto"` (default, prefers VB-CABLE) or `{deviceId,label}`. See **Input device selection**. |
-| `mission-control.audio-output` | The speaker-output choice: `"screen"` (default) or `"invoke"`. See **Output device selection**. |
+| `mission-control.audio-output` | The speaker choice: `"auto"` (default, system default, avoids a VB-CABLE default), `{deviceId,label}`, or `"invoke"` (stream to the Invoke over Wi-Fi). See **Output device selection**. |
 
 ## Module map
 
@@ -310,9 +330,10 @@ kiosk UI, by design.
 | `voice/useAudioInput.ts` | Enumerates inputs, keeps the list fresh, pushes the resolved device to `MicSource` |
 | `voice/gain.ts` | `InputGain`, `dbToLinear`, `atReferenceGain`, the reference gain |
 | `voice/pcm.ts` | Format and rate conversion only — PCM16 to/from Float32, downsample, resample, WAV. No gain, no device, no rate assumptions |
-| `voice/aecPlayback.ts` | The echo-cancelled output bus; the network-speaker tap fork + local mute |
-| `voice/audioOutput.ts` | Pure speaker-output choice logic: the persisted `"screen"` / `"invoke"` selection |
-| `voice/useAudioOutput.ts` | Pushes the choice to `speakerOut`; exposes link status for Settings |
+| `voice/aecPlayback.ts` | The echo-cancelled output bus; `setSinkId` on the playout element; the network-speaker tap fork + local mute |
+| `voice/outputSink.ts` | The one owner of the output sink id; notifies live playout elements |
+| `voice/audioOutput.ts` | Pure speaker-choice logic: the persisted selection (`auto` / device / `invoke`), resolve-to-`setSinkId`, VB-CABLE avoidance |
+| `voice/useAudioOutput.ts` | Enumerates outputs, keeps the list fresh; pushes a device pick to `outputSink` and an `invoke` pick to `speakerOut` |
 | `voice/speakerOut.ts` | `SpeakerOut`: the `WS /api/voice/speaker` client, tap fan-in, local-mute signal |
 | `voice/speakerMix.ts` | `SpeakerMixer`: sums the output-context taps into one mono 48 kHz PCM16 stream |
 | `voice/pcm-capture-worklet.js` | Native-rate batching off the audio thread |
@@ -327,6 +348,8 @@ kiosk UI, by design.
   a second `getUserMedia`.
 - Changing which device is captured means `micSource.setInputDeviceId()` (driven
   by `useAudioInput`). Never a `deviceId` constraint anywhere else.
+- Changing which speaker is played to means `setOutputSinkId()` (driven by
+  `useAudioOutput`). Never a `setSinkId` call anywhere else.
 - Anything that scales samples belongs in `gain.ts`, or it does not belong.
 - Anything that converts format or rate belongs in `pcm.ts`, or it is a duplicate.
 - Anything that makes sound connects to the echo-cancelled output — which is
