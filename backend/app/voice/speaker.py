@@ -11,11 +11,12 @@ The kiosk sends **binary** WebSocket frames of signed 16-bit little-endian mono
 PCM at 48 kHz — the whole echo-cancelled output bus (assistant replies, the
 listening cue, the timer chime), tapped in the browser and summed there (see
 ``frontend/src/voice/speakerOut.ts``). This bridge applies an open-loop
-clock-drift slip, encodes each frame to the wire codec the device receiver
-expects (``invoke_speaker_codec`` — ``s16`` S16LE/48k/2ch by default, ``g711u``
-µ-law, or ``raw`` S32LE; MUST equal the daemon's ``SPK_CODEC`` in
-``ReInvoke2026 output/invoke_speaker_daemon.sh`` — there is no control channel),
-and streams it to ``invoke_speaker_audio_port`` on the Invoke.
+clock-drift slip, encodes each frame to the wire format the device receiver is
+decoding (``invoke_speaker_codec`` — ``raw`` S32LE/48k/2ch by default, or the
+smaller ``s16`` / ``g711u``; MUST equal the daemon's ``SPK_CODEC`` in
+``ReInvoke2026 output/invoke_speaker_daemon.sh`` — there is no control channel,
+so a mismatch plays back garbled and slow), and streams it to
+``invoke_speaker_audio_port`` on the Invoke.
 The device is the TCP server; we dial out, exactly like the ReInvoke2026 feeder.
 
 WHY NOT AN OS VIRTUAL AUDIO DEVICE
@@ -152,13 +153,22 @@ def _encode(pcm16_mono: bytes, slip: _DriftSlip, codec: str) -> bytes:
     mono = slip.apply(mono)
 
     if codec == "raw":
+        # S32LE, sample left-justified (<< 16). On a little-endian host that is
+        # exactly the interleaved int16 pair (0, sample) per channel, so slice
+        # assignment fills it with no per-sample Python loop and the encode adds
+        # no measurable latency to the real-time pump. Big-endian hosts (rare for
+        # this service) keep the explicit widen.
+        if sys.byteorder == "little":
+            stereo16 = array.array("h", bytes(len(mono) * 8))
+            stereo16[1::4] = mono  # left channel, high half
+            stereo16[3::4] = mono  # right channel, high half
+            return stereo16.tobytes()
         stereo = array.array("i")
         for sample in mono:
             wide = sample << 16
             stereo.append(wide)
             stereo.append(wide)
-        if sys.byteorder != "little":
-            stereo.byteswap()
+        stereo.byteswap()
         return stereo.tobytes()
 
     if codec == "s16":
@@ -192,7 +202,9 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
     host = resolve_speaker_host(settings)
     port = settings.invoke_speaker_audio_port
     slip = _DriftSlip(settings.invoke_speaker_drift_ppm)
-    codec = settings.invoke_speaker_codec if settings.invoke_speaker_codec in _OUT_FRAME_BYTES else "s16"
+    codec = settings.invoke_speaker_codec
+    if codec not in _OUT_FRAME_BYTES:  # unknown value → the daemon-native format
+        codec = "raw"
     prime = _SILENCE_BYTE[codec] * (int(_PRIME_SECONDS * RATE) * _OUT_FRAME_BYTES[codec])
 
     buffer = bytearray()
@@ -281,6 +293,11 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
                 separators=(",", ":"),
             ),
         )
+
+    # An immediate frame so the kiosk shows "connecting" (and keeps local playout
+    # audible) from the first moment, not only once the device dial-out resolves
+    # — which can take the full TCP timeout when the Invoke is unreachable.
+    await _send_status("connecting")
 
     tasks = [
         asyncio.create_task(_pump_client()),

@@ -367,14 +367,17 @@ class Settings(BaseSettings):
     # commonly configures both directions.
     invoke_speaker_host: str = ""  # e.g. "192.168.50.67"
     invoke_speaker_audio_port: int = 5006
-    # Wire codec on the :5006 stream. MUST equal the device daemon's ``SPK_CODEC``
-    # (ReInvoke2026 ``output/invoke_speaker_daemon.sh`` / ``invokectl`` config key
-    # ``speaker_codec``) — there is no control channel on this path. ``s16``
-    # (S16LE 48k/2ch, 2× smaller, provably inaudible) is the default; ``g711u``
-    # (µ-law, 4×) is the opt-in "bad link" setting; ``raw`` (S32LE) is the
-    # bit-exact escape hatch. See ReInvoke2026
-    # ``transport/AUDIO_COMPRESSION_FEASIBILITY.md`` §8 (Phase 1b).
-    invoke_speaker_codec: str = "s16"
+    # Wire format on the :5006 stream. There is no control channel here, so this
+    # MUST equal what the device daemon is decoding: ReInvoke2026
+    # ``output/invoke_speaker_daemon.sh`` env ``SPK_CODEC`` / ``invokectl`` key
+    # ``speaker_codec``. A mismatch plays back garbled and badly slowed.
+    #   ``raw``   S32LE 48k/2ch — the daemon's built-in caps, works with a daemon
+    #             of any vintage and no daemon-side config. The default.
+    #   ``s16``   S16LE 48k/2ch — half the bytes, eases the 2.4 GHz airtime
+    #             contention with the mic uplink; provably inaudible.
+    #   ``g711u`` µ-law 48k/2ch — a quarter of the bytes, "bad link" setting.
+    # ``s16`` / ``g711u`` need a daemon new enough to honour ``SPK_CODEC``.
+    invoke_speaker_codec: str = "raw"
     # Open-loop clock-drift correction, parts per million, applied to the stream
     # as a periodic single-sample slip (positive ⇒ the Invoke DAC runs fast, so
     # a sample is dropped every ``1e6 / ppm``; negative ⇒ a sample is repeated).

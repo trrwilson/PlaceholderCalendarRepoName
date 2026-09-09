@@ -59,6 +59,11 @@ class SpeakerOut {
   private readonly routedListeners = new Set<(routed: boolean) => void>()
   private readonly statusListeners = new Set<(status: SpeakerLinkStatus) => void>()
   private backendLink = ''
+  /** The backend's last-reported device link (`"up"` ⇒ audio is actually
+   *  reaching the Invoke). Local playout is only muted once this is true, so a
+   *  socket that is open but not yet forwarding to the device never leaves the
+   *  kiosk silent. */
+  private deviceLinkUp = false
   private detail = ''
   private streamedSeconds = 0
   private sheds = 0
@@ -87,9 +92,17 @@ class SpeakerOut {
     }
   }
 
-  /** True while the Invoke is actually carrying the audio (socket open). */
-  routed(): boolean {
+  /** The socket to the backend bridge is open (audio can be streamed into it). */
+  private socketOpen(): boolean {
     return this.ws?.readyState === WebSocket.OPEN
+  }
+
+  /** True while the Invoke is actually carrying the audio — the socket is open
+   *  *and* the backend says its link to the device daemon is up. Drives the
+   *  local-playout mute, so a dropped or never-established device link keeps the
+   *  assistant audible on the screen. */
+  routed(): boolean {
+    return this.socketOpen() && this.deviceLinkUp
   }
 
   onStatusChange(listener: (status: SpeakerLinkStatus) => void): () => void {
@@ -111,7 +124,10 @@ class SpeakerOut {
   }
 
   private ingest(label: string, frames: Float32Array, sampleRate: number): void {
-    if (this.selection !== 'invoke' || !this.routed()) return
+    // Stream as soon as the socket is open, before the device link is confirmed:
+    // the backend primes and buffers, so audio is already flowing when the link
+    // comes up. `routed()` (local mute) still waits for the confirmed link.
+    if (this.selection !== 'invoke' || !this.socketOpen()) return
     const at48k =
       sampleRate === SPEAKER_RATE ? frames : resampleLinear(frames, sampleRate, SPEAKER_RATE)
     this.mixer.write(label, at48k)
@@ -164,6 +180,11 @@ class SpeakerOut {
         this.detail = frame.detail || this.detail
         if (typeof frame.sheds === 'number') this.sheds = frame.sheds
         if (typeof frame.reconnects === 'number') this.reconnects = frame.reconnects
+        const linkUp = this.backendLink === 'up'
+        if (linkUp !== this.deviceLinkUp) {
+          this.deviceLinkUp = linkUp
+          this.notifyRouted() // un/re-mute the local playout as the device link comes and goes
+        }
         this.emitStatus()
       } catch {
         // ignore a malformed status frame
@@ -173,6 +194,7 @@ class SpeakerOut {
       if (this.ws !== ws) return
       this.ws = null
       this.backendLink = 'down'
+      this.deviceLinkUp = false
       this.notifyRouted()
       this.emitStatus()
       if (this.selection === 'invoke') this.scheduleReconnect()
@@ -210,6 +232,7 @@ class SpeakerOut {
     }
     this.mixer.reset()
     this.backendLink = ''
+    this.deviceLinkUp = false
     this.detail = ''
     this.notifyRouted()
   }

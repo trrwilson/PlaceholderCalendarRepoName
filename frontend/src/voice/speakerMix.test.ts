@@ -32,6 +32,23 @@ describe('SpeakerMixer', () => {
     expect(mixer.available()).toBe(40)
   })
 
+  it('holds the frontier at a lagging second source, then releases it when that source stops', () => {
+    const mixer = new SpeakerMixer()
+    mixer.write('assistant', flat(100, 0.5))
+    mixer.write('chime', flat(40, 0.5)) // chime is a beat behind
+    // only the 40 samples both sources have reached are available yet
+    expect(mixer.available()).toBe(40)
+    mixer.read(40)
+
+    mixer.write('chime', flat(40, 0.5)) // chime catches up to 80
+    expect(mixer.available()).toBe(40) // assistant is at 100, chime at 80
+    mixer.read(40)
+
+    // chime stops for good; assistant keeps going
+    mixer.write('assistant', flat(50, 0.5)) // assistant now at 150, chime frozen at 80
+    expect(mixer.available()).toBe(70) // readAbs 80 has overtaken chime -> assistant-only
+  })
+
   it('resumes a lagging source at the read cursor rather than writing into the past', () => {
     const mixer = new SpeakerMixer()
     mixer.write('a', flat(50, 0.5))

@@ -24,6 +24,7 @@ from app.voice.speaker import _DriftSlip, _encode
 
 _PRIME_SAMPLES = int(0.06 * 48_000)  # silence lead the bridge sends on connect
 _OUT_FRAME_BYTES = {"raw": 8, "s16": 4, "g711u": 2}
+_SILENCE_BYTE_FOR = {"raw": b"\x00", "s16": b"\x00", "g711u": b"\xff"}
 
 
 class FakeDaemon:
@@ -133,6 +134,16 @@ def test_encode_s16_mono_to_interleaved_stereo() -> None:
     assert struct.unpack("<10h", out) == (0, 0, 1, 1, -2, -2, 32767, 32767, -32768, -32768)
 
 
+def test_encode_raw_matches_reference_widen_across_the_range() -> None:
+    # the vectorised little-endian path must equal `sample << 16`, both channels
+    samples = list(range(-32768, 32768, 137)) + [-32768, -1, 0, 1, 32767]
+    mono = array.array("h", samples)
+    out = _encode(mono.tobytes(), _DriftSlip(0.0), "raw")
+    got = struct.unpack(f"<{len(samples) * 2}i", out)
+    expected = tuple(v << 16 for v in samples for _ in (0, 1))
+    assert got == expected
+
+
 def test_encode_g711u_matches_reference_and_is_stereo() -> None:
     import audioop  # noqa: PLC0415 - reference only, test-time
 
@@ -195,6 +206,87 @@ def test_bridge_raw_codec_still_widens_to_s32(
     tail = struct.unpack("<8i", raw[prime_bytes : prime_bytes + 32])
     assert tail == (100 << 16, 100 << 16, -200 << 16, -200 << 16,
                     300 << 16, 300 << 16, -400 << 16, -400 << 16)
+
+
+def _decode_as_daemon(payload: bytes, codec: str) -> array.array:
+    """Interpret the wire bytes exactly as ``invoke_speaker_daemon.sh``'s
+    capsfilter (+ mulawdec) would, and return the left channel as int16 — the
+    mono signal that reaches the DAC. Proves the encoder and the device's
+    declared format agree for real audio, not just 4-sample tails."""
+    if codec == "raw":
+        wide = list(struct.unpack(f"<{len(payload) // 4}i", payload))
+        assert wide[0::2] == wide[1::2], "channels must be identical"
+        return array.array("h", [s >> 16 for s in wide[0::2]])
+    if codec == "s16":
+        stereo = list(struct.unpack(f"<{len(payload) // 2}h", payload))
+        assert stereo[0::2] == stereo[1::2]
+        return array.array("h", stereo[0::2])
+    import audioop  # noqa: PLC0415 - test-time reference decoder, == gst mulawdec
+
+    assert payload[0::2] == payload[1::2]
+    lin = audioop.ulaw2lin(bytes(payload[0::2]), 2)
+    out = array.array("h")
+    out.frombytes(lin)
+    return out
+
+
+@pytest.mark.parametrize("codec", ["raw", "s16", "g711u"])
+def test_bridge_round_trips_a_real_signal_for_the_daemon(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_daemon: FakeDaemon, codec: str
+) -> None:
+    import math  # noqa: PLC0415
+
+    _enable(monkeypatch, fake_daemon.port, codec=codec)
+    prime_bytes = _PRIME_SAMPLES * _OUT_FRAME_BYTES[codec]
+    src = array.array("h", [int(20000 * math.sin(i / 7.0)) for i in range(2400)])
+    want_bytes = prime_bytes + len(src) * _OUT_FRAME_BYTES[codec]
+    with client.websocket_connect("/api/voice/speaker") as ws:
+        assert ws.receive_json()["t"] == "status"
+        fake_daemon.wait_connected()
+        ws.send_bytes(src.tobytes())
+        raw = fake_daemon.wait_bytes(want_bytes)
+    assert raw[:prime_bytes] == _SILENCE_BYTE_FOR[codec] * prime_bytes
+    got = _decode_as_daemon(raw[prime_bytes:want_bytes], codec)
+    assert len(got) == len(src)
+    if codec == "g711u":  # lossy by design — check it is still the same waveform
+        err = sum(abs(a - b) for a, b in zip(got, src, strict=True)) / len(src)
+        assert err < 400  # µ-law step near 20k amplitude, not a broken decode
+    else:
+        assert got.tolist() == src.tolist()  # bit-exact
+
+
+def test_default_codec_is_raw_s32(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_daemon: FakeDaemon
+) -> None:
+    # no MISSION_CONTROL_INVOKE_SPEAKER_CODEC set -> the daemon's built-in S32LE
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", "127.0.0.1")
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_AUDIO_PORT", str(fake_daemon.port))
+    monkeypatch.delenv("MISSION_CONTROL_INVOKE_SPEAKER_CODEC", raising=False)
+    get_settings.cache_clear()
+    prime_bytes = _PRIME_SAMPLES * _OUT_FRAME_BYTES["raw"]
+    payload = array.array("h", [100, -200, 300, -400]).tobytes()
+    with client.websocket_connect("/api/voice/speaker") as ws:
+        assert ws.receive_json()["t"] == "status"
+        fake_daemon.wait_connected()
+        ws.send_bytes(payload)
+        raw = fake_daemon.wait_bytes(prime_bytes + 32)
+    tail = struct.unpack("<8i", raw[prime_bytes : prime_bytes + 32])
+    assert tail == (100 << 16, 100 << 16, -200 << 16, -200 << 16,
+                    300 << 16, 300 << 16, -400 << 16, -400 << 16)
+
+
+def test_first_status_frame_precedes_the_device_dial_out(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # host points at a black hole; the bridge must still greet the kiosk at once
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", "192.0.2.1")  # TEST-NET-1
+    monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_AUDIO_PORT", "5006")
+    get_settings.cache_clear()
+    with client.websocket_connect("/api/voice/speaker") as ws:
+        frame = ws.receive_json()
+    assert frame["t"] == "status" and frame["link"] == "down"
 
 
 def test_status_frame_reports_link_up(

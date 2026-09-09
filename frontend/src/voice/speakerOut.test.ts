@@ -64,16 +64,34 @@ describe('speakerOut', () => {
     expect(last().binaryType).toBe('arraybuffer')
   })
 
-  it('reports the link as carrying audio and mutes local playout once open', () => {
+  it('mutes local playout only once the backend confirms the device link', () => {
     const routed: boolean[] = []
     speakerOut.createTap('assistant').onRouted((r) => routed.push(r))
 
     speakerOut.setRoute('invoke', 'http://api.test')
     expect(speakerOut.status().connected).toBe(false)
     last().open()
+    // Socket open but the daemon link is not confirmed — stay audible locally.
+    expect(speakerOut.status().connected).toBe(false)
+    expect(routed.some((r) => r)).toBe(false)
 
+    last().status({ link: 'up' })
     expect(speakerOut.status().connected).toBe(true)
-    expect(routed).toEqual([false, true]) // initial, then open
+    expect(routed[routed.length - 1]).toBe(true)
+
+    // Device link drops (daemon unreachable) — un-mute so the reply is still heard.
+    last().status({ link: 'down' })
+    expect(speakerOut.status().connected).toBe(false)
+    expect(routed[routed.length - 1]).toBe(false)
+  })
+
+  it('streams into the socket before the device link is confirmed', () => {
+    const tap = speakerOut.createTap('assistant')
+    speakerOut.setRoute('invoke', 'http://api.test')
+    last().open() // no status frame yet
+
+    tap.pushFrames(new Float32Array(2400).fill(0.5), SPEAKER_RATE)
+    expect(last().send).toHaveBeenCalledOnce()
   })
 
   it('streams mixed frames as binary once the socket is open', () => {

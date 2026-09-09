@@ -13,18 +13,21 @@ class PcmSpeakerTapProcessor extends AudioWorkletProcessor {
 
   process(inputs) {
     const channel = inputs[0] && inputs[0][0]
-    if (channel) {
-      for (let i = 0; i < channel.length; i += 1) {
-        this._batch[this._filled] = channel[i]
-        this._filled += 1
-        if (this._filled === this._batch.length) {
-          this.port.postMessage(this._batch.slice(0))
-          this._filled = 0
-        }
+    // Advance the batch by one render quantum every call, filling with silence
+    // when the bus is idle. Between assistant replies nothing upstream is
+    // producing and Chrome hands `process` an empty input list — but the Wi-Fi
+    // speaker daemon needs an unbroken 48 kHz stream or its device-side ALSA
+    // ring underruns in the gap and the next reply starts choppy. `return true`
+    // keeps this processor scheduled every quantum regardless of input.
+    const frames = channel ? channel.length : 128
+    for (let i = 0; i < frames; i += 1) {
+      this._batch[this._filled] = channel ? channel[i] : 0
+      this._filled += 1
+      if (this._filled === this._batch.length) {
+        this.port.postMessage(this._batch.slice(0))
+        this._filled = 0
       }
     }
-    // Keep the processor alive even while the bus is silent, so the stream to
-    // the Invoke stays continuous (silence included) between replies.
     return true
   }
 }

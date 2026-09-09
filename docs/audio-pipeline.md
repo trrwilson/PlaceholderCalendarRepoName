@@ -245,17 +245,27 @@ a device selection is inert and playout follows the default.
 pass through, so the `tap` forks the bus there: `AudioSink` and `AlarmChime` each
 attach a tap, `speakerOut.ts` sums them (`speakerMix.ts`), packs the sum to
 PCM16, and sends it as binary frames on `WS /api/voice/speaker`. The backend
-(`app/voice/speaker.py`) widens each frame to S32LE/48k/2ch and forwards it over
-TCP to the `invoke_speaker_daemon.sh` receiver on the device (separate
-`ReInvoke2026` repo, `output/`). **No OS-wide virtual audio device, no separate
-feeder process** — MC generates its own output and already bridges browser
-sockets to that box (see `app/voice/wake_invoke.py`). The host falls back to
+(`app/voice/speaker.py`) re-encodes each frame to the wire format the device
+daemon expects (`MISSION_CONTROL_INVOKE_SPEAKER_CODEC` — `raw` S32LE/48k/2ch by
+default, matching the daemon's built-in caps; `s16` / `g711u` are smaller but
+need a daemon set to the same `SPK_CODEC`, and there is **no handshake** on the
+port, so a mismatch plays back garbled and slowed) and forwards it over TCP to
+the `invoke_speaker_daemon.sh` receiver on the device (separate `ReInvoke2026`
+repo, `output/`). **No OS-wide virtual audio device, no separate feeder
+process** — MC generates its own output and already bridges browser sockets to
+that box (see `app/voice/wake_invoke.py`). The host falls back to
 `MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST`; Settings hides the option until one
 is set.
 
-- **The local playout is muted while the link is actually up** (`onRouted` sets a
-  post-tap gain to 0), so the assistant is not heard from both the screen and the
-  Invoke ~0.5 s apart. A dropped link un-mutes until it reconnects.
+- **The tap streams continuously, silence included** (`pcm-speaker-tap-worklet.js`
+  fills a render quantum of zeros whenever the output bus is idle), so the
+  device-side ALSA ring stays primed between replies instead of underrunning into
+  the first word of the next one.
+- **The local playout is muted only once the backend confirms the device link is
+  up** (`onRouted` sets a post-tap gain to 0), so a socket that is open but not
+  yet — or no longer — forwarding to the Invoke never leaves the kiosk silent.
+  The assistant is not heard from both the screen and the Invoke ~0.5 s apart; a
+  dropped link un-mutes until it reconnects.
 - **Echo is handled on the device.** The daemon plays through the stock `music`
   ALSA route, leaving the SHARC DSP running, so its hardware AEC uses the played
   audio as the echo reference — the assistant's own speech does not loop into the
@@ -287,6 +297,7 @@ and `GET /api/voice/wake-config`.
 | `TIMER_ALARM_MAX_RING_SECONDS` | `300` | How long the chime loops. |
 | `INVOKE_SPEAKER_HOST` / `_AUDIO_PORT` | `""` / `5006` | Wi-Fi speaker output target. Empty ⇒ falls back to `WAKE_WORD_INVOKE_GATE_HOST`; still empty ⇒ Settings omits the "Invoke (Wi-Fi)" speaker option. |
 | `INVOKE_SPEAKER_DRIFT_PPM` | `0` | Open-loop drift slip for the speaker stream (positive ⇒ the Invoke DAC runs fast). |
+| `INVOKE_SPEAKER_CODEC` | `raw` | Wire format on `:5006`. `raw` = S32LE/48k/2ch (the daemon's built-in caps). `s16` / `g711u` are smaller but need the device daemon's `SPK_CODEC` set to match — no handshake, a mismatch plays back slow and garbled. |
 
 The Azure relay's own VAD settings (`semantic_vad`, `azure_semantic_vad` with
 `silence_duration_ms: 500`, 24 kHz PCM in and out) are pinned in
@@ -379,5 +390,14 @@ kiosk UI, by design.
   wrong `INVOKE_SPEAKER_DRIFT_PPM` still drifts (slowly). The tap is also summed
   per-block with a linear resampler for the rare non-48 kHz output context, which
   can add faint artefacts there — 48 kHz hardware (the norm) is a clean
-  pass-through. The 802.11n ADDBA/AMPDU issue in the `ReInvoke2026` notes hits
-  this stream too; a live full-duplex round trip is verified by hand.
+  pass-through.
+- **The Wi-Fi speaker + Wi-Fi mic full-duplex round trip is not hardware-proven.**
+  The 802.11n ADDBA/AMPDU failure in the `ReInvoke2026` notes stalls TCP for
+  seconds and hits *both* streams at once; the device is 2× Cortex-A7 and a
+  second bulk stream competes for airtime and CPU. `ReInvoke2026`'s own plan
+  gates a usable interactive experience on the `httxcfg 0x0` fix (serial / boot
+  hook, not automatable). Until then, `s16` (`INVOKE_SPEAKER_CODEC`) halves the
+  downlink, and pausing the mic path during TTS sidesteps the contention. The
+  `raw`↔`s16` history: `s16` shipped as the default against a daemon that only
+  decoded S32LE (no handshake), which played back at ~½ speed and distorted;
+  `raw` is now the default and the daemon honours `SPK_CODEC`.

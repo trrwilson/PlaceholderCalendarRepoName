@@ -52,9 +52,16 @@ export class SpeakerMixer {
     if (end > this.maxWrittenAbs) this.maxWrittenAbs = end
   }
 
-  /** Samples ready to send (every source has reached them). */
+  /** Samples ready to send: what *every still-writing* source has reached, so a
+   *  second tap that writes a beat later (the timer chime starting mid-reply) is
+   *  mixed in rather than skipped past. A source that stops — its cursor is
+   *  overtaken by `readAbs` — drops out of the frontier within one `read()`. */
   available(): number {
-    return this.maxWrittenAbs - this.readAbs
+    let frontier = this.maxWrittenAbs
+    for (const writeAbs of this.writeAbs.values()) {
+      if (writeAbs > this.readAbs && writeAbs < frontier) frontier = writeAbs
+    }
+    return frontier - this.readAbs
   }
 
   /**
