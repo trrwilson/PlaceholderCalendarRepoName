@@ -1,6 +1,6 @@
 ---
 status: future
-summary: Backend-driven idle dimming of the physical panel (dim, not off) between interactions. Stage 1 (colocation seam + WMI brightness + night mode) is built.
+summary: Backend-driven idle dimming of the physical panel (dim, not off) between interactions. Stage 1 (colocation seam + WMI/DDC-CI brightness + night mode) is built.
 ---
 
 # Mission Control: idle display dimming — design plan
@@ -20,7 +20,7 @@ level below `awake`. See [§ Relationship](#relationship-to-presence-work).
 
 This document is the design target. **Stage 1 is built** — see
 [§ Implemented so far](#implemented-so-far); the inactivity policy, the activity
-seam, the `ddcci` / `gamma` mechanisms, the `asleep` level, and the Settings
+seam, the `gamma` / `overlay` mechanisms, the `asleep` level, and the Settings
 diagnostics block are not.
 
 ---
@@ -147,9 +147,10 @@ writable store can shadow env later — same posture as `PresenceSettings`.
    policy (pure, fake clock), `POST /api/presence/activity`, config. Unit tests.
 2. **Wire-up.** `GET /api/display`, `ApplicationMessage.display` push, frontend
    activity pings + overlay dimmer + Settings diagnostics block.
-3. **Hardware.** `wmi` / `ddcci` / `gamma` mechanisms behind
-   `HOST_LOCAL_DISPLAY`, `ctypes` bindings, startup probe, restore-to-full on
-   teardown.
+3. **Hardware.** `wmi` / `ddcci` mechanisms behind `HOST_LOCAL_DISPLAY`,
+   `ctypes` bindings, startup probe, restore-to-full on teardown. **Done** for
+   night mode (stage 1); `gamma` and the inactivity policy that drives them are
+   still open.
 4. **On the kiosk.** Probe which mechanism moves the real panel, tune
    `dim_after` / `dim_level`, measure wake latency, check whether digitizer HID
    jitter spuriously counts as activity, write the deployment notes.
@@ -165,12 +166,16 @@ Stage 1 (the foundations + a human-facing test), shipped:
   `GET /api/capabilities` report it. Every OS/device call gates on it. The
   presence-plan sleep path is expected to consume the same seam.
 - **`DisplayController`** (`app/display.py`) — `NullDisplayController` (`none`,
-  dev/CI/not-colocated) and `WmiDisplayController` (`wmi`, a PowerShell shell-out
-  to `WmiMonitorBrightnessMethods.WmiSetBrightness`, Windows only, no new
-  dependency). `MISSION_CONTROL_DISPLAY_CONTROL_MECHANISM = auto|wmi|none`; `auto`
-  picks `wmi` only when colocated **and** the startup probe verifiably reads the
-  panel. Probe failure ⇒ mechanism reported as `none`, error in
-  `DisplayState.last_error`.
+  dev/CI/not-colocated), `WmiDisplayController` (`wmi`, a PowerShell shell-out to
+  `WmiMonitorBrightnessMethods.WmiSetBrightness`) and `DdcCiDisplayController`
+  (`ddcci`, `ctypes` against `dxva2.dll` `GetMonitorBrightness` /
+  `SetMonitorBrightness` — VCP `0x10`, all attached DDC/CI monitors moved
+  together, the 0-100 percentage scaled into each panel's native range). Both
+  Windows only, no new dependency.
+  `MISSION_CONTROL_DISPLAY_CONTROL_MECHANISM = auto|wmi|ddcci|none`; `auto` is a
+  `FallbackDisplayController` that probes `wmi` → `ddcci` when colocated and
+  adopts the first that verifiably reads the panel. Probe failure ⇒ mechanism
+  reported as `none`, collected per-mechanism errors in `DisplayState.last_error`.
 - **`DisplayStore`** — same mould as `TimerStore` / `PrivacyStore` (injected
   clock + broadcast, no socket import, process singleton). Holds `brightness`,
   `reference_brightness`, `night_mode`; "never re-issue an identical level";
@@ -184,8 +189,8 @@ Stage 1 (the foundations + a human-facing test), shipped:
   `MISSION_CONTROL_DISPLAY_NIGHT_MODE_LEVEL_PCT` (default 10) % of it; off
   restores exactly that reference.
 - Frontend `useDisplay` hook (`frontend/src/display/`) reconciles like
-  `usePrivacy`. No perceptual overlay yet — stage 1 assumes the colocated WMI
-  path.
+  `usePrivacy`. No perceptual overlay yet — stage 1 assumes a colocated host that
+  owns the panel (`wmi` or `ddcci`).
 
 ---
 

@@ -41,12 +41,13 @@ class Settings(BaseSettings):
     # Every OS / device-API call below is inert unless this is true.
     host_local_display: bool = False
 
-    # Which mechanism drives panel brightness. ``auto`` selects ``wmi`` when
-    # ``host_local_display`` is set and the startup probe verifiably moves the
-    # panel, otherwise ``none`` (a no-op controller — dev, CI, and any host that
-    # is not colocated). ``ddcci`` / ``gamma`` / ``overlay`` from the plan doc
-    # are later phases.
-    display_control_mechanism: Literal["auto", "wmi", "none"] = "auto"
+    # Which mechanism drives panel brightness. ``auto`` probes ``wmi`` → ``ddcci``
+    # when ``host_local_display`` is set and adopts the first that verifiably
+    # moves the panel, otherwise ``none`` (a no-op controller — dev, CI, and any
+    # host that is not colocated). ``wmi`` is the OS brightness slider (integrated
+    # panels); ``ddcci`` is DDC/CI over the monitor cable (external panels).
+    # ``gamma`` / ``overlay`` from the plan doc are later phases.
+    display_control_mechanism: Literal["auto", "wmi", "ddcci", "none"] = "auto"
     # Assumed full brightness (0-100) when the mechanism cannot read the panel's
     # real level at startup. The reference the panel is restored to.
     display_default_brightness: int = 100
