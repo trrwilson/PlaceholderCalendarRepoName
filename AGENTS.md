@@ -997,7 +997,11 @@ Test meaningful behavior, not a coverage number. At minimum keep coverage for:
   during a turn, repeated/late detections don't stack sessions, disable stops it,
   detector-unavailable leaves push-to-talk working) with the detector + mic mocked
   (`frontend/src/voice/wake/wakeSession.test.ts`); the ring buffer / downsample unit
-  tests. The real ONNX detector is validated on hardware, not in CI.
+  tests; the bake-off evaluation maths — Wilson CIs, exact McNemar, threshold sweep,
+  manifest verification (`tests/test_wake_eval.py`, pure Python). The real ONNX
+  detector and the two-detector comparison are run on hardware
+  (`scripts/gen_wake_corpus.py` + `scripts/benchmark_wake.py`), not in CI —
+  see `docs/wake-word-provider-bakeoff.md`.
 - Playwright: each primary mode fits the kiosk viewport with no document overflow at
   3840x2160 and 1920x1080; the Ask button starts a turn, and a 409 disables it and shows
   the "Voice is turned off" toast. Unit: `VoiceToast` (headline per kind, retry only when

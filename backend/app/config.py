@@ -257,6 +257,23 @@ class Settings(BaseSettings):
     # after minting.
     voice_relay_ticket_ttl_seconds: int = 120
 
+    # -- Azure Speech (benchmark / eval tooling only) ----------------------
+    # Not used by the running app. `scripts/gen_wake_corpus.py --engine
+    # azure-tts` synthesises wake-word evaluation corpora with Azure Neural
+    # TTS. A multi-service Azure AI / Foundry resource includes Speech, so this
+    # reuses the shared Foundry key + its region by default; set the
+    # `MISSION_CONTROL_AZURE_SPEECH_*` vars to point at a dedicated Speech
+    # resource instead.
+    azure_speech_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "MISSION_CONTROL_AZURE_SPEECH_KEY",
+            "FOUNDRY_API_KEY_MC_EASTUS2",
+            "azure_speech_key",
+        ),
+    )
+    azure_speech_region: str = "eastus2"
+
     # -- Wake word (browser-resident local activation) ---------------------
     # Local keyword spotting in the kiosk browser: when it hears the wake
     # phrase it opens a normal voice turn (the same path as tapping Ask). Off
