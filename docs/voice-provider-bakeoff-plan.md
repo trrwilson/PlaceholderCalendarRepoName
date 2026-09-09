@@ -44,6 +44,11 @@ only in the session (with `create_response: false`) because Voice Live requires
 Still to do: the comparative on-kiosk runs with real speech, and the pick.
 Supersedes nothing in `docs/voice-support-plan.md`.
 
+Current default (2026-09-09): `settings.voice_provider` is `azure_voice_live`
+(was `gemini`) — the bake-off runs against Voice Live unless Settings → "Voice
+provider" or `MISSION_CONTROL_VOICE_PROVIDER` picks another. All four contestants
+are implemented; selecting an unconfigured one is a 409, never a fall-back.
+
 ## Goal
 
 Run the same Mission Control voice experience against four integrated cloud

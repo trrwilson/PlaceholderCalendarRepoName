@@ -93,13 +93,16 @@ class Settings(BaseSettings):
     # -- Voice assistant --------------------------------------------------------
     # Which conversational voice provider handles a turn after activation. This
     # is a bake-off (see docs/voice-provider-bakeoff-plan.md); the kiosk chooses
-    # one for good later. Wake-word selection is deliberately orthogonal to this
-    # (see AGENTS.md -> "Voice assistant -> Provider architecture"). The
-    # experimental "local" value selects the on-device STT + intent pipeline in
+    # one for good later. `azure_voice_live` is the current default — a
+    # speech-first product (input noise reduction, server-side echo cancellation,
+    # Azure semantic VAD, HD voices), reached through the `WS /api/voice/live`
+    # relay. Wake-word selection is deliberately orthogonal to this (see
+    # AGENTS.md -> "Voice assistant -> Provider architecture"). The experimental
+    # "local" value selects the on-device STT + intent pipeline in
     # app/voice/local/ (its own knobs are further below). Each provider has its
     # own credential block below and its own `missing_config` check;
     # `voice_enabled` is the master switch.
-    voice_provider: VoiceProviderId = "gemini"
+    voice_provider: VoiceProviderId = "azure_voice_live"
 
     # -- Voice assistant: microphone capture ---------------------------------
     # Capture settings are pipeline-wide, not per provider: one microphone, one

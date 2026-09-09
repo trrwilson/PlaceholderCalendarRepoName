@@ -35,7 +35,7 @@ export interface VoiceConfigResponse {
 
 const EMPTY: VoiceConfigResponse = {
   enabled: false,
-  provider: 'gemini',
+  provider: 'azure_voice_live',
   providers: [],
   mic_input_gain_db: DEFAULT_INPUT_GAIN_DB,
   invoke_speaker_configured: false,

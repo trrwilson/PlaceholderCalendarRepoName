@@ -32,6 +32,9 @@ def voice_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MISSION_CONTROL_VOICE_ENABLED", "true")
     monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
     monkeypatch.setenv("GEMINI_API_KEY_MISSION_CONTROL", "test-key")
+    # These tests exercise the Gemini token-minting path specifically; the app
+    # default is now `azure_voice_live`, so pin the provider here.
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_PROVIDER", "gemini")
     get_settings.cache_clear()
 
 
@@ -66,6 +69,7 @@ def test_token_requires_voice_enabled(client: TestClient, monkeypatch: pytest.Mo
 def test_token_requires_api_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MISSION_CONTROL_VOICE_ENABLED", "true")
     monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_PROVIDER", "gemini")
     monkeypatch.delenv("GEMINI_API_KEY_MISSION_CONTROL", raising=False)
     monkeypatch.delenv("MISSION_CONTROL_GEMINI_API_KEY", raising=False)
     get_settings.cache_clear()
@@ -379,6 +383,7 @@ def test_voice_config_lists_providers_and_the_effective_one(
     monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
     monkeypatch.setenv("MISSION_CONTROL_VOICE_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY_MISSION_CONTROL", "test-key")
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_PROVIDER", "gemini")
     get_settings.cache_clear()
 
     body = client.get("/api/voice/config").json()
