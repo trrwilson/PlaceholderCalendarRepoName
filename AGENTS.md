@@ -665,6 +665,22 @@ push-to-talk, which is always independent of any of this.
     `{type:"wake"}`. Spotting is still on-device (no key, no network) but the
     audio reaches the backend — a **deliberate exception** to "no host process",
     at the same localhost/LAN trust boundary as the Azure voice relay.
+- **On-device Invoke gate — additive, not a provider.** The `invoke-gate` daemon
+  on the Harman Kardon Invoke (`ReInvoke2026 wakeword/`) runs a loose on-device
+  first stage and only streams real room audio after a candidate. When
+  `invoke_gate_enabled` (**default off**; Settings → "On-device audio gate" /
+  `MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_ENABLED` /
+  `PUT {"invoke_gate_enabled": true}`), the backend bridges the daemon's LAN
+  control socket to the kiosk (`WS /api/voice/wake/invoke`, `wake_invoke.py`) and
+  `GatedWakeDetector` (`frontend/src/voice/wake/gatedDetector.ts`) wraps
+  **whichever provider is selected** (openWakeWord or Azure), running it only
+  during a gate-open window: an activation needs the gate *and* the detector to
+  agree, and a gate false accept the detector doesn't confirm produces nothing.
+  The gated audio still reaches the kiosk over VB-CABLE; push-to-talk drives the
+  gate directly (`ptt_start` / `done`). Needs
+  `MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST` (else the toggle is hidden). Run
+  the device side with `wakeword/harness/invoke_gate.sh up|down|status`. See
+  `wakeword/MC_INTEGRATION.md`.
 - **Seam.** `frontend/src/voice/wake/` — `WakeDetector` interface +
   `createWakeDetector()` (picks the impl from `config.provider`);
   `OpenWakeWordDetector` (local ONNX via lazily-imported `onnxruntime-web`, a
@@ -721,15 +737,19 @@ push-to-talk, which is always independent of any of this.
   retention at suspend loses the whole command on a single-shot phrase.
 - **Config.** `MISSION_CONTROL_WAKE_WORD_*` in `config.py` (enabled, phrase,
   threshold, cooldown_ms, model_path, models_base_url, **provider**,
-  **azure_model_path**); `GET /api/voice/wake-config` (`_require_local`-gated)
-  reports `enabled` only when both wake word and voice are on, plus the active
-  `provider` and the selectable `providers[]` (`configured` is false for `azure`
-  until the SDK + `.table` are present). `PUT` swaps the provider. Resolution +
-  labels live in `app/voice/wake.py` (mirrors `app/voice/providers/`).
-- **Settings.** A "Wake word" control (on/off + status/detail/last-latency note)
-  and, when more than one back end is offered, a "Keyword provider" button list —
-  both shown only when the backend permits it. No permanent dashboard space; no
-  debugging console in the kiosk UI.
+  **azure_model_path**, **invoke_gate_host / _audio_port / _control_port /
+  _enabled**); `GET /api/voice/wake-config` (`_require_local`-gated) reports
+  `enabled` only when both wake word and voice are on, plus the active `provider`,
+  the selectable `providers[]` (`configured` is false for `azure` until the SDK +
+  `.table` are present), and `invoke_gate_configured` / `invoke_gate_enabled`.
+  `PUT` swaps the provider and/or the gate switch — both process-memory
+  overrides. Resolution + labels live in `app/voice/wake.py` (mirrors
+  `app/voice/providers/`).
+- **Settings.** A "Wake word" control (on/off + status/detail/last-latency note),
+  a "Keyword provider" button list when more than one back end is offered, and —
+  once an Invoke host is configured — an "On-device audio gate" switch (default
+  off) — all shown only when the backend permits it. No permanent dashboard
+  space; no debugging console in the kiosk UI.
 - Web Speech API is **ruled out** — Chrome sends its audio to Google, breaking
   local-by-default. (The `azure` provider's `.table` spotting is genuinely
   on-device — the audio goes only to our own backend, never to Azure.)

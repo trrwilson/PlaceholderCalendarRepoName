@@ -129,6 +129,21 @@ wake-word activation is integrated but off by default and needs `MISSION_CONTROL
 plus a trained model asset — see `docs/wake-word-plan.md`. `backend/.env.example`
 documents every variable.
 
+The wake detector is a two-way bake-off (`openwakeword` | `azure`), orthogonal to
+the voice provider (`MISSION_CONTROL_WAKE_WORD_PROVIDER` / Settings → "Keyword
+provider").
+
+Independent of that, the **on-device Invoke gate** can be layered in front of the
+selected detector: the `invoke-gate` daemon on a Harman Kardon Invoke
+(`ReInvoke2026 wakeword/`) runs a loose first stage and only streams real audio
+after a candidate; the selected detector then re-checks it and both must agree.
+**Off by default** — turn it on via Settings → "On-device audio gate",
+`MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_ENABLED=true`, or
+`PUT /api/voice/wake-config {"invoke_gate_enabled": true}`. Needs
+`MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST=<ip>`. Run the device side with
+`ReInvoke2026 wakeword/harness/invoke_gate.sh up|down|status`. See
+`docs/wake-word-provider-bakeoff.md` and `ReInvoke2026 wakeword/RUN_END_TO_END.md`.
+
 ## Validation
 
 ```powershell

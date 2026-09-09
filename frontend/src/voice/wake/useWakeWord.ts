@@ -20,6 +20,13 @@ interface WakeConfigResponse {
   providers: WakeProviderInfo[]
   model_path: string
   models_base_url: string
+  /** The additive on-device Invoke gate (in front of the selected provider). */
+  invoke_gate_configured?: boolean
+  invoke_gate_enabled?: boolean
+  /** Informational for Settings diagnostics; the kiosk talks to the backend bridge. */
+  invoke_gate_host?: string
+  invoke_gate_audio_port?: number
+  invoke_gate_control_port?: number
 }
 
 export type WakeState =
@@ -40,7 +47,11 @@ export interface WakeDiagnostics {
   provider: WakeProviderId
   /** Every selectable detection back end, for the Settings picker. */
   providers: WakeProviderInfo[]
-  /** A provider switch is in flight. */
+  /** The additive Invoke gate can be turned on (a host is configured). */
+  invokeGateConfigured: boolean
+  /** The additive Invoke gate is on, in front of the selected provider. Default off. */
+  invokeGateEnabled: boolean
+  /** A provider / gate switch is in flight. */
   busy: boolean
   detail: string | null
   lastScore: number | null
@@ -97,6 +108,17 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
   const available = !!config?.enabled && !configFailed
   const shouldRun = available && userEnabled
 
+  // Build-relevant fields, pulled out as stable primitives for the detector
+  // effect's deps. `shouldRun` already implies `config` exists and is enabled.
+  // Toggling `invokeGateEnabled` DOES rebuild the detector (wrap / unwrap the
+  // gate) — a deliberate, rare mode change.
+  const provider = config?.provider ?? 'openwakeword'
+  const modelPath = config?.model_path ?? ''
+  const modelsBaseUrl = config?.models_base_url ?? ''
+  const threshold = config?.threshold ?? 0.5
+  const cooldownMs = config?.cooldown_ms ?? 2_000
+  const invokeGateEnabled = config?.invoke_gate_enabled ?? false
+
   useEffect(() => {
     let cancelled = false
     fetch(`${apiBaseUrl}/api/voice/wake-config`)
@@ -114,7 +136,7 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
 
   // Bring the detector up / tear it down as the feature is enabled or disabled.
   useEffect(() => {
-    if (!shouldRun || !config) {
+    if (!shouldRun) {
       detectorRef.current?.dispose()
       detectorRef.current = null
       setState('off')
@@ -125,12 +147,13 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
     setDetail(null)
     const detector = createWakeDetector(
       {
-        provider: config.provider,
+        provider,
         apiBaseUrl,
-        modelPath: config.model_path,
-        modelsBaseUrl: config.models_base_url,
-        threshold: config.threshold,
-        cooldownMs: config.cooldown_ms,
+        modelPath,
+        modelsBaseUrl,
+        threshold,
+        cooldownMs,
+        invokeGateEnabled,
       },
       micSource,
     )
@@ -174,7 +197,16 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
       detector.dispose()
       if (detectorRef.current === detector) detectorRef.current = null
     }
-  }, [shouldRun, config, apiBaseUrl])
+  }, [
+    shouldRun,
+    apiBaseUrl,
+    provider,
+    modelPath,
+    modelsBaseUrl,
+    threshold,
+    cooldownMs,
+    invokeGateEnabled,
+  ])
 
   // Suspend during a turn / assistant speech; resume (arm) when idle again.
   useEffect(() => {
@@ -232,9 +264,45 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
     [apiBaseUrl],
   )
 
+  /**
+   * Toggle the additive Invoke gate (default off). PUTs the choice — a
+   * process-memory override — and applies the fresh config, which re-runs the
+   * detector effect to wrap / unwrap the gate around the selected detector.
+   */
+  const setGateEnabled = useCallback(
+    async (next: boolean) => {
+      setProviderBusy(true)
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/voice/wake-config`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ invoke_gate_enabled: next }),
+        })
+        if (response.ok) {
+          setConfig((await response.json()) as WakeConfigResponse)
+        }
+      } catch {
+        // leave the current config in place; the toggle simply didn't take
+      } finally {
+        setProviderBusy(false)
+      }
+    },
+    [apiBaseUrl],
+  )
+
   /** Everything heard since the wake phrase, as base64 PCM16 chunks to flush into the session. */
   const takeRetainedAudio = useCallback((targetRate?: number): string[] => {
     return detectorRef.current?.takeRetainedAudio(targetRate) ?? []
+  }, [])
+
+  /** Tell the wake detector an activated turn has ended (the gate wrapper sends `done`). */
+  const endActivation = useCallback(() => {
+    detectorRef.current?.endActivation?.()
+  }, [])
+
+  /** Forward a raw gate control command (no-op unless the Invoke gate is layered on). */
+  const sendControl = useCallback((cmd: string, fields?: Record<string, unknown>) => {
+    detectorRef.current?.sendControl?.(cmd, fields)
   }, [])
 
   /** Call when the activated turn reaches "Listening" — records wake→ack latency. */
@@ -251,6 +319,8 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
     phrase: config?.phrase ?? 'Mission Control',
     provider: config?.provider ?? 'openwakeword',
     providers: config?.providers ?? [],
+    invokeGateConfigured: config?.invoke_gate_configured ?? false,
+    invokeGateEnabled: config?.invoke_gate_enabled ?? false,
     busy: providerBusy,
     detail,
     lastScore,
@@ -258,5 +328,14 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
     activationLatencyMs,
   }
 
-  return { diagnostics, setEnabled, setProvider, takeRetainedAudio, reportActivated }
+  return {
+    diagnostics,
+    setEnabled,
+    setProvider,
+    setGateEnabled,
+    takeRetainedAudio,
+    reportActivated,
+    endActivation,
+    sendControl,
+  }
 }

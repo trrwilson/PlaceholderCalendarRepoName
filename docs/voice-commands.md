@@ -16,6 +16,16 @@ in `docs/voice-support-plan.md`.
 - Saying **"Mission Control"** to wake it hands-free is built but **dormant** — it
   needs a trained wake-word model and on-hardware tuning before it does anything.
   Until then, every command starts with a tap.
+- **On-device Invoke gate** (experimental, off by default). Settings →
+  "On-device audio gate" adds a first stage *in front of* the normal keyword
+  detector: the Harman Kardon Invoke only sends real room audio to the kiosk
+  after it hears a likely wake phrase — **idle room conversation and TV never
+  leave the Invoke**. The kiosk's own "Mission Control" check (openWakeWord or
+  Azure — unchanged) then runs on that audio, and both must agree before
+  anything happens, so a false trigger on the device produces no visible
+  activation. The Ask button always works regardless (it opens the gate for a
+  manual turn), and turning the switch off makes the Invoke stream continuously
+  again. See `docs/wake-word-provider-bakeoff.md`.
 - It **replies out loud in one or two sentences** and, for anything about the
   schedule, **moves the display** to show you the answer. The screen is the real
   answer; the speech is the summary.

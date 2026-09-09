@@ -1,15 +1,23 @@
-"""Compare the two wake-word detectors on the same real audio.
+"""Compare the wake-word detectors on the same real audio.
 
     python -m scripts.benchmark_wake \
         --positives voice-captures --negatives voice-samples
 
-Runs both back ends over a shared corpus and reports, per detector:
+Runs each back end over a shared corpus and reports, per detector:
 
 * **recall** — fraction of positive clips (a spoken "Mission Control …") detected
 * **false accepts** — fraction of negative clips (a bare command, no wake phrase)
   that fired anyway
 * **latency** — seconds from clip start to the detection
 * openWakeWord score separation (peak score on positives vs negatives)
+
+The ``invoke_gate`` column is the *selected detector's* re-check (openWakeWord
+here) run over audio as the on-device gate would hand it up: each clip is trimmed
+to ``[speech_onset - gate_preroll_ms, end]`` and the model is reset at that
+OFF→OPEN edge, approximating the preroll burst + live handoff. The gate is
+additive — it sits in front of whichever provider is selected — so this measures
+whether that provider still fires when it only sees the gated window. It is an
+approximation: no device, no ``mock_invoke_gate`` process.
 
 This is a *small-corpus* check (see `docs/wake-word-provider-bakeoff.md` →
 "Measured comparison" for the caveats): it needs no network and no GPU, and the
@@ -68,9 +76,7 @@ def load_clips(directory: Path) -> list[tuple[str, np.ndarray]]:
 # -- openWakeWord ------------------------------------------------------------
 
 
-def eval_openwakeword(
-    clips: list[tuple[str, np.ndarray]], threshold: float
-) -> list[dict]:
+def eval_openwakeword(clips: list[tuple[str, np.ndarray]], threshold: float) -> list[dict]:
     from openwakeword.model import Model
 
     model = Model(
@@ -94,6 +100,29 @@ def eval_openwakeword(
                 fired_at = (start + OWW_STEP) / 16_000
         out.append({"clip": name, "peak": round(float(peak), 4), "fired_at": fired_at})
     return out
+
+
+# -- invoke_gate (selected detector's re-check over the gated window) ------
+
+
+def _speech_onset(audio: np.ndarray, floor_dbfs: float = -45.0) -> int:
+    """First sample index whose ~20 ms frame RMS crosses ``floor_dbfs``."""
+    win = 320  # 20 ms at 16 kHz
+    a = audio.astype(np.float32)
+    for start in range(0, max(0, len(a) - win) + 1, win):
+        frame = a[start : start + win]
+        rms = float(np.sqrt(np.mean(frame * frame))) if len(frame) else 0.0
+        if rms > 1.0 and 20.0 * np.log10(rms / 32768.0) > floor_dbfs:
+            return start
+    return 0
+
+
+def eval_invoke_gate(
+    clips: list[tuple[str, np.ndarray]], threshold: float, gate_preroll_ms: int
+) -> list[dict]:
+    preroll = int(gate_preroll_ms * 16)  # samples at 16 kHz
+    trimmed = [(name, audio[max(0, _speech_onset(audio) - preroll) :]) for name, audio in clips]
+    return eval_openwakeword(trimmed, threshold)
 
 
 # -- Azure custom keyword ---------------------------------------------------
@@ -168,7 +197,13 @@ def main() -> None:
         action="append",
         help="openWakeWord score threshold(s) to report (repeatable; default 0.3 and 0.5)",
     )
-    parser.add_argument("--detectors", default="openwakeword,azure")
+    parser.add_argument("--detectors", default="openwakeword,azure,invoke_gate")
+    parser.add_argument(
+        "--gate-preroll-ms",
+        type=int,
+        default=2000,
+        help="invoke_gate: preroll kept before speech onset (default 2000, the daemon default)",
+    )
     args = parser.parse_args()
     thresholds = args.oww_threshold or [0.3, 0.5]
     detectors = args.detectors.split(",")
@@ -195,6 +230,25 @@ def main() -> None:
                 print(f"  missed: {', '.join(miss)}")
             if fa:
                 print(f"  false accepts: {', '.join(fa)}")
+            print()
+
+    if "invoke_gate" in detectors:
+        for th in thresholds:
+            pos = eval_invoke_gate(positives, th, args.gate_preroll_ms)
+            neg = eval_invoke_gate(negatives, th, args.gate_preroll_ms)
+            print(
+                f"invoke_gate: selected detector over the gated window (openWakeWord, "
+                f"preroll {args.gate_preroll_ms} ms, threshold {th})"
+            )
+            print(_summarise(pos, "positives", True))
+            print(_summarise(neg, "negatives", False))
+            miss = [r["clip"] for r in pos if r["fired_at"] is None]
+            fa = [r["clip"] for r in neg if r["fired_at"] is not None]
+            if miss:
+                print(f"  missed: {', '.join(miss)}")
+            if fa:
+                print(f"  false accepts: {', '.join(fa)}")
+            print("  (approximation — no device / mock_invoke_gate in the loop)")
             print()
 
     if "azure" in detectors:

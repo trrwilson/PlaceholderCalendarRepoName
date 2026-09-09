@@ -119,8 +119,8 @@ def build_system_instruction(
             "",
             "Every turn is one self-contained exchange — there is no back-and-forth. "
             "Answer exactly what was asked and stop. Do NOT tack on a follow-up offer or "
-            "question: no \"Do you want me to…\", \"Should I…\", \"Would you like…\", "
-            "\"Let me know if…\". If something genuinely cannot be done, say so plainly "
+            'question: no "Do you want me to…", "Should I…", "Would you like…", '
+            '"Let me know if…". If something genuinely cannot be done, say so plainly '
             "in the same sentence and stop.",
             "",
             "When you need a tool, call it immediately — do not say 'let me check', 'one "

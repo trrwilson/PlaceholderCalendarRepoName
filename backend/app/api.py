@@ -55,8 +55,11 @@ from app.voice.providers import (
 from app.voice.relay import redeem_ticket, run_relay
 from app.voice.wake import (
     WAKE_PROVIDER_LABELS,
+    effective_invoke_gate_enabled,
     effective_wake_provider,
     implemented_wake_providers,
+    invoke_gate_configured,
+    set_invoke_gate_enabled_override,
     set_wake_provider_override,
     wake_provider_configured,
 )
@@ -291,6 +294,11 @@ def _wake_config() -> WakeWordConfig:
         ],
         model_path=settings.wake_word_model_path,
         models_base_url=settings.wake_word_models_base_url,
+        invoke_gate_configured=invoke_gate_configured(settings),
+        invoke_gate_enabled=effective_invoke_gate_enabled(settings),
+        invoke_gate_host=settings.wake_word_invoke_gate_host,
+        invoke_gate_audio_port=settings.wake_word_invoke_gate_audio_port,
+        invoke_gate_control_port=settings.wake_word_invoke_gate_control_port,
     )
 
 
@@ -310,17 +318,22 @@ def voice_wake_config(request: Request) -> WakeWordConfig:
 
 @router.put("/voice/wake-config", response_model=WakeWordConfig)
 def set_voice_wake_config(request: Request, body: WakeConfigUpdate) -> WakeWordConfig:
-    """Point every subsequent activation at ``body.provider`` (bake-off A/B
-    control, orthogonal to the conversational-provider switch).
+    """Adjust the wake-word bake-off at runtime (orthogonal to the
+    conversational-provider switch). A request may set the detection
+    ``provider``, the ``invoke_gate_gating`` switch, or both.
 
-    Process-memory only — a restart reverts to ``MISSION_CONTROL_WAKE_WORD_PROVIDER``.
+    Process-memory only — a restart reverts to the ``MISSION_CONTROL_WAKE_WORD_*``
+    defaults.
     """
     _require_local(request)
     _require_unlocked()
-    try:
-        set_wake_provider_override(body.provider)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if body.provider is not None:
+        try:
+            set_wake_provider_override(body.provider)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if body.invoke_gate_enabled is not None:
+        set_invoke_gate_enabled_override(body.invoke_gate_enabled)
     return _wake_config()
 
 
@@ -347,6 +360,33 @@ async def voice_wake_azure(websocket: WebSocket) -> None:
 
     try:
         await run_wake_relay(websocket)
+    except WebSocketDisconnect:
+        return
+
+
+@router.websocket("/voice/wake/invoke")
+async def voice_wake_invoke(websocket: WebSocket) -> None:
+    """Bridge the on-device ``invoke-gate`` control socket to the kiosk for the
+    additive Invoke gate (``app/voice/wake_invoke.py``). The daemon's audio
+    still reaches the kiosk over VB-CABLE; only the control channel is relayed.
+    Loopback / LAN only, like every other voice route.
+    """
+    host = websocket.client.host if websocket.client else ""
+    if not _is_local_client(host):
+        await websocket.close(code=4403)
+        return
+    settings = get_settings()
+    if not (settings.wake_word_enabled and settings.voice_enabled):
+        await websocket.close(code=4404)
+        return
+    if not invoke_gate_configured(settings):
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    from app.voice.wake_invoke import run_invoke_wake_relay
+
+    try:
+        await run_invoke_wake_relay(websocket)
     except WebSocketDisconnect:
         return
 

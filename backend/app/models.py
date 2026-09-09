@@ -375,6 +375,10 @@ VoiceProviderId = Literal[
 # ONNX detector that runs entirely in the kiosk browser (the default);
 # ``azure`` streams 16 kHz mic audio to the backend, which spots the phrase
 # offline with the native Speech SDK against an Azure custom-keyword ``.table``.
+#
+# The on-device **Invoke gate** is NOT one of these — it is an *additive* first
+# stage that sits in front of whichever detector is selected (see
+# ``invoke_gate_enabled`` on :class:`WakeWordConfig` and ``wakeword/MC_INTEGRATION.md``).
 WakeProviderId = Literal["openwakeword", "azure"]
 
 
@@ -472,12 +476,30 @@ class WakeWordConfig(BaseModel):
     # loads its ``.table`` on the backend and never hands a model to the kiosk.
     model_path: str
     models_base_url: str
+    # The on-device **Invoke gate** — an *additive* first stage in front of the
+    # selected ``provider`` (not a provider itself). ``invoke_gate_enabled``
+    # (**default off**) turns it on: the kiosk opens the control bridge
+    # (``WS /api/voice/wake/invoke``), the Invoke only streams real room audio
+    # after its loose on-device KWS fires, and the selected detector re-checks
+    # that audio before an activation. ``invoke_gate_configured`` is true once
+    # ``MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST`` is set (else the toggle is
+    # hidden). Host / ports are informational for Settings diagnostics.
+    invoke_gate_configured: bool = False
+    invoke_gate_enabled: bool = False
+    invoke_gate_host: str = ""
+    invoke_gate_audio_port: int = 5004
+    invoke_gate_control_port: int = 5005
 
 
 class WakeConfigUpdate(BaseModel):
-    """``PUT /api/voice/wake-config`` body (parallels :class:`VoiceConfigUpdate`)."""
+    """``PUT /api/voice/wake-config`` body (parallels :class:`VoiceConfigUpdate`).
 
-    provider: WakeProviderId
+    A request may set the detection ``provider``, the ``invoke_gate_enabled``
+    switch, or both. Both are process-memory overrides (revert on restart).
+    """
+
+    provider: WakeProviderId | None = None
+    invoke_gate_enabled: bool | None = None
 
 
 class VoiceDebugCapture(BaseModel):

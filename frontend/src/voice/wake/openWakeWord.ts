@@ -187,7 +187,7 @@ export class OpenWakeWordDetector implements WakeDetector {
     this.suspended = true
   }
 
-  resume(): void {
+  resume(opts?: { resetCooldown?: boolean }): void {
     this.suspended = false
     this.retaining = true
     this.preroll.clear()
@@ -201,8 +201,11 @@ export class OpenWakeWordDetector implements WakeDetector {
     this.embBuffer = []
     this.debugPeak = 0
     // ...and force a fresh cooldown after every turn — the assistant's tail audio
-    // can still be echoing in the room.
-    this.lastFireAt = performance.now()
+    // can still be echoing in the room. `InvokeGateDetector` opts out
+    // (`resetCooldown: false`): the on-device gate already de-bounced the
+    // candidate and the buffers are cleared here, so a wallclock cooldown would
+    // only delay the re-verify past the phrase that opened the gate.
+    if (opts?.resetCooldown !== false) this.lastFireAt = performance.now()
   }
 
   takeRetainedAudio(targetRate: number = WAKE_SAMPLE_RATE): string[] {

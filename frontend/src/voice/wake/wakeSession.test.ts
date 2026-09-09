@@ -25,6 +25,8 @@ const h = vi.hoisted(() => {
     startBehavior: (() => Promise.resolve()) as () => Promise<void>,
     onWake: (() => {}) as (event: { score: number; at: number }) => void,
     retained: [] as string[],
+    endActivationCalls: 0,
+    controls: [] as string[],
   }
   return {
     VoiceUnavailableError,
@@ -125,6 +127,12 @@ vi.mock('./detector', async () => {
         h.detector.suspended = false
       },
       takeRetainedAudio: () => h.detector.retained.splice(0),
+      endActivation: () => {
+        h.detector.endActivationCalls += 1
+      },
+      sendControl: (cmd: string) => {
+        h.detector.controls.push(cmd)
+      },
       dispose: () => {
         h.detector.disposed = true
         h.detector.running = false
@@ -145,6 +153,8 @@ const WAKE_CONFIG = {
   ],
   model_path: '/models/wake/mission_control.onnx',
   models_base_url: '/models/wake',
+  invoke_gate_configured: false,
+  invoke_gate_enabled: false,
 }
 
 const actions = {
@@ -177,6 +187,8 @@ beforeEach(() => {
   h.detector.running = false
   h.detector.startBehavior = () => Promise.resolve()
   h.detector.retained = []
+  h.detector.endActivationCalls = 0
+  h.detector.controls = []
   h.session.connect.mockClear()
   h.session.startActivity.mockClear()
   h.session.endActivity.mockClear()
@@ -354,6 +366,25 @@ describe('wake-word / voice state machine', () => {
     })
     expect(put).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(result.current.wake.provider).toBe('azure'))
+  })
+
+  it('invoke gate on: a wake drives connecting → listening, and the gate is told `done` at turn end', async () => {
+    // The provider stays openWakeWord; the Invoke gate is layered on top.
+    stubWakeConfig({ ...WAKE_CONFIG, invoke_gate_configured: true, invoke_gate_enabled: true })
+    const { result } = await renderArmed()
+    expect(result.current.wake.provider).toBe('openwakeword')
+    expect(result.current.wake.invokeGateEnabled).toBe(true)
+
+    await act(async () => {
+      h.fireWake()
+    })
+    await waitFor(() => expect(result.current.status).toBe('listening'))
+    expect(h.session.connect).toHaveBeenCalledTimes(1)
+
+    act(() => result.current.stopTurn())
+    act(() => h.emit({ type: 'turn-complete' }))
+    await waitFor(() => expect(result.current.status).toBe('armed'))
+    expect(h.detector.endActivationCalls).toBeGreaterThan(0)
   })
 
   it('does not arm when the backend reports wake word disabled', async () => {

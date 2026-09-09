@@ -224,8 +224,13 @@ export function useVoiceSession({
   const wakeApiRef = useRef<{
     takeRetainedAudio: (targetRate?: number) => string[]
     reportActivated: () => void
+    endActivation: () => void
+    sendControl: (cmd: string, fields?: Record<string, unknown>) => void
+    diagnostics: { invokeGateEnabled: boolean }
   } | null>(null)
   const viaWakeRef = useRef(false)
+  /** True once a gate control command has been sent this turn, so we always send the matching close. */
+  const gateTurnRef = useRef(false)
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) {
@@ -245,6 +250,15 @@ export function useVoiceSession({
     sinkRef.current?.flush()
     turnCompleteRef.current = false
     sinkBusyRef.current = false
+    // If this turn drove the on-device Invoke gate (push-to-talk or a wake
+    // activation), tell it the turn — including playback — is over so it returns
+    // to OFF. Harmless no-ops for every other wake provider and for a
+    // kws-opened gate that never saw `ptt_start`.
+    if (gateTurnRef.current) {
+      wakeApiRef.current?.sendControl('ptt_stop')
+      wakeApiRef.current?.endActivation()
+      gateTurnRef.current = false
+    }
     voiceDebugRecorder.endTurn()
   }, [clearWatchdog])
 
@@ -601,6 +615,12 @@ export function useVoiceSession({
     if (!viaWake && (status === 'listening' || status === 'connecting')) return
     if (status === 'unavailable' && errorRef.current?.kind === 'disabled') return
     teardown()
+    // Push-to-talk with the on-device Invoke gate layered on: open the gate for
+    // this manual turn (a wake activation opened it already). The matching close
+    // goes out from `teardown()`.
+    const usingGate = wakeApiRef.current?.diagnostics.invokeGateEnabled === true
+    gateTurnRef.current = usingGate
+    if (usingGate && !viaWake) wakeApiRef.current?.sendControl('ptt_start')
     const timeline = new VoiceTimeline()
     timelineRef.current = timeline
     timeline.mark('tap')
@@ -739,6 +759,15 @@ export function useVoiceSession({
     else if (status === 'armed' && wake.diagnostics.state !== 'armed') setStatus('idle')
   }, [status, wake.diagnostics.state])
 
+  // Keep the Invoke gate open through the assistant's reply so a barge-in can
+  // interrupt it. `teardown()` sends `done` once the turn (playback included) is
+  // fully over, which ends the lease.
+  useEffect(() => {
+    if (status === 'speaking' && gateTurnRef.current) {
+      wakeApiRef.current?.sendControl('hold', { seconds: 30 })
+    }
+  }, [status])
+
   useEffect(() => {
     // Pull the lazy SDK chunk and the mic worklet into cache before the first
     // tap so their download is not on the turn's critical path.
@@ -761,5 +790,6 @@ export function useVoiceSession({
     wake: wake.diagnostics,
     setWakeEnabled: wake.setEnabled,
     setWakeProvider: wake.setProvider,
+    setWakeGateEnabled: wake.setGateEnabled,
   }
 }

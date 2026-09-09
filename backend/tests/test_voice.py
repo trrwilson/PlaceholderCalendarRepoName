@@ -486,6 +486,10 @@ def test_wake_config_defaults_to_disabled(
     assert ids == {"openwakeword", "azure"}
     oww = next(p for p in body["providers"] if p["id"] == "openwakeword")
     assert oww["implemented"] is True and oww["configured"] is True
+    # The additive Invoke gate: not a provider; unavailable + off until a host
+    # is set.
+    assert body["invoke_gate_configured"] is False
+    assert body["invoke_gate_enabled"] is False
 
 
 def test_wake_config_put_switches_provider(
@@ -507,6 +511,35 @@ def test_wake_config_put_gated_to_local_network(
     monkeypatch.delenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", raising=False)
     get_settings.cache_clear()
     assert client.put("/api/voice/wake-config", json={"provider": "azure"}).status_code == 403
+
+
+def test_wake_config_invoke_gate_configured_with_host(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    monkeypatch.setenv("MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST", "192.168.50.67")
+    get_settings.cache_clear()
+    body = client.get("/api/voice/wake-config").json()
+    # Still two providers — the gate is not one of them.
+    assert {p["id"] for p in body["providers"]} == {"openwakeword", "azure"}
+    assert body["invoke_gate_configured"] is True
+    assert body["invoke_gate_host"] == "192.168.50.67"
+    assert body["invoke_gate_control_port"] == 5005
+
+
+def test_wake_config_put_toggles_invoke_gate(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    get_settings.cache_clear()
+    assert client.get("/api/voice/wake-config").json()["invoke_gate_enabled"] is False
+    switched = client.put("/api/voice/wake-config", json={"invoke_gate_enabled": True})
+    assert switched.status_code == 200
+    assert switched.json()["invoke_gate_enabled"] is True
+    # Process-memory override — a fresh GET sees it, the provider is unchanged.
+    reread = client.get("/api/voice/wake-config").json()
+    assert reread["invoke_gate_enabled"] is True
+    assert reread["provider"] == "openwakeword"
 
 
 def test_wake_azure_ws_refused_when_not_configured(

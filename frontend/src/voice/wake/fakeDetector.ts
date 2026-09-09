@@ -53,6 +53,10 @@ export class FakeWakeDetector implements WakeDetector {
     return []
   }
 
+  // Invoke-gate seam — no-ops for the fake (Playwright drives `fireWake`).
+  endActivation(): void {}
+  sendControl(): void {}
+
   dispose(): void {
     this.running = false
     this.onWake = null

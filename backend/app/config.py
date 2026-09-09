@@ -297,6 +297,26 @@ class Settings(BaseSettings):
         "../frontend/public/models/wake/azure_mission_control_basic_med.table"
     )
 
+    # -- Wake word: the on-device Invoke gate (additive) ------------------
+    # The ``invoke-gate`` daemon on the Harman Kardon Invoke (``wakeword/`` in
+    # the ReInvoke2026 repo) runs a loose first-stage KWS + an audio egress
+    # gate. It is NOT a wake provider — it sits *in front of* whichever provider
+    # (``openwakeword`` / ``azure``) is selected. The gated audio reaches the
+    # kiosk over VB-CABLE exactly as today; the backend only bridges the
+    # daemon's control channel (``WS /api/voice/wake/invoke`` -> the daemon's
+    # TCP ``control_port``), mirroring the ``azure`` wake relay.
+    #
+    # Empty host ⇒ the feature is unavailable (Settings hides the toggle).
+    wake_word_invoke_gate_host: str = ""  # e.g. "192.168.50.67"
+    wake_word_invoke_gate_audio_port: int = 5004
+    wake_word_invoke_gate_control_port: int = 5005
+    # Turn the additive gate on. **Off by default.** On ⇒ the kiosk opens the
+    # bridge, tells the daemon to gate its egress (``gate_enabled:true``), and
+    # AND-gates activation on the gate window *and* the selected detector's
+    # confirmation. Toggle at runtime from Settings
+    # (``PUT /api/voice/wake-config {"invoke_gate_enabled": true}``, process-memory).
+    wake_word_invoke_gate_enabled: bool = False
+
     # -- Voice debug audio capture ----------------------------------------
     # The kiosk keeps the last N activations' provider-input audio in the
     # browser; when this is on it also POSTs each finished capture to

@@ -9,7 +9,7 @@ from app.voice import reset_voice_token_cache
 from app.voice.local.session import reset_local_tickets, reset_recognizer
 from app.voice.providers import reset_provider_override
 from app.voice.relay import reset_relay_tickets
-from app.voice.wake import reset_wake_provider_override
+from app.voice.wake import reset_invoke_gate_enabled_override, reset_wake_provider_override
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +34,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     reset_voice_token_cache()
     reset_provider_override()
     reset_wake_provider_override()
+    reset_invoke_gate_enabled_override()
     reset_relay_tickets()
     reset_local_tickets()
     reset_recognizer()
@@ -46,6 +47,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     reset_voice_token_cache()
     reset_provider_override()
     reset_wake_provider_override()
+    reset_invoke_gate_enabled_override()
     reset_relay_tickets()
     reset_local_tickets()
     reset_recognizer()

@@ -94,7 +94,7 @@ describe('RelayVoiceProvider', () => {
       "when's the dentist",
       "when's the dentist appointment",
     ])
-    expect(events.at(-1)).toEqual({
+    expect(events[events.length - 1]).toEqual({
       type: 'user-transcript',
       text: "when's the dentist appointment",
       final: true,

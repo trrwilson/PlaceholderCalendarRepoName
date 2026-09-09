@@ -13,6 +13,9 @@ rather than the conversational turn — the two are chosen independently
   the recogniser (:mod:`app.voice.wake_azure`). Keyword spotting is still
   on-device — no Azure credentials, no network — but the audio does reach the
   backend (localhost / LAN, the same trust boundary as the Azure voice relay).
+The on-device **Invoke gate** is not a third contestant — it is an *additive*
+first stage in front of whichever of the two is selected (``invoke_gate_enabled``
+/ ``WS /api/voice/wake/invoke``, :mod:`app.voice.wake_invoke`).
 
 ``effective_wake_provider`` resolves a process-memory override set via
 ``PUT /api/voice/wake-config`` (the bake-off A/B affordance — a restart reverts
@@ -29,9 +32,13 @@ from app.models import WakeProviderId
 __all__ = [
     "WAKE_PROVIDER_LABELS",
     "azure_wake_available",
+    "effective_invoke_gate_enabled",
     "effective_wake_provider",
     "implemented_wake_providers",
+    "invoke_gate_configured",
+    "reset_invoke_gate_enabled_override",
     "reset_wake_provider_override",
+    "set_invoke_gate_enabled_override",
     "set_wake_provider_override",
     "wake_provider_configured",
 ]
@@ -46,6 +53,7 @@ WAKE_PROVIDER_LABELS: dict[WakeProviderId, str] = {
 _IMPLEMENTED: tuple[WakeProviderId, ...] = ("openwakeword", "azure")
 
 _override: WakeProviderId | None = None
+_gate_enabled_override: bool | None = None
 
 
 def implemented_wake_providers() -> tuple[WakeProviderId, ...]:
@@ -64,8 +72,7 @@ def set_wake_provider_override(provider: WakeProviderId | None) -> None:
     global _override
     if provider is not None and provider not in _IMPLEMENTED:
         raise ValueError(
-            f"wake provider {provider!r} is not implemented "
-            f"(available: {', '.join(_IMPLEMENTED)})"
+            f"wake provider {provider!r} is not implemented (available: {', '.join(_IMPLEMENTED)})"
         )
     _override = provider
 
@@ -73,6 +80,35 @@ def set_wake_provider_override(provider: WakeProviderId | None) -> None:
 def reset_wake_provider_override() -> None:
     global _override
     _override = None
+
+
+def invoke_gate_configured(settings: Settings) -> bool:
+    """True once an Invoke host is set — the additive gate can then be turned on.
+    Reachability of the daemon's control socket is surfaced at connect time as an
+    ``error`` frame, exactly like the azure relay.
+    """
+    return bool(settings.wake_word_invoke_gate_host)
+
+
+def effective_invoke_gate_enabled(settings: Settings) -> bool:
+    """Whether the additive on-device Invoke gate is on (in front of the selected
+    provider), honouring the process-memory override from
+    ``PUT /api/voice/wake-config`` before ``settings``. **Off by default.**
+    """
+    if _gate_enabled_override is not None:
+        return _gate_enabled_override
+    return settings.wake_word_invoke_gate_enabled
+
+
+def set_invoke_gate_enabled_override(on: bool | None) -> None:
+    """Process-memory override for the Invoke-gate switch (or clear it)."""
+    global _gate_enabled_override
+    _gate_enabled_override = on
+
+
+def reset_invoke_gate_enabled_override() -> None:
+    global _gate_enabled_override
+    _gate_enabled_override = None
 
 
 def azure_wake_available() -> bool:

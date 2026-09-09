@@ -93,6 +93,22 @@ Output" device carrying that feed. `useAudioInput`
 - **Settings → Microphone** lists the inputs and the Automatic option (shown when
   voice or wake word is available). No UI when `enumerateDevices` is unavailable.
 
+### The VB-CABLE input can be gated upstream (the on-device Invoke gate)
+
+Nothing in the capture chain changes, but the bytes on "CABLE Output" are no
+longer necessarily continuous. When the additive Invoke gate is on
+(`invoke_gate_enabled`, default off — see `docs/wake-word-provider-bakeoff.md`),
+the on-device `invoke-gate` daemon on the Invoke only streams real room audio
+after a candidate; between activations the Windows feeder
+(`ReInvoke2026 wakeword/feeder/invoke_gate_feeder.py`) writes **synthesised
+digital silence** to "CABLE Input". So "CABLE Output" stays a valid, running,
+silent input — `MicSource` sees an unbroken stream of zero samples, the selected
+wake detector (openWakeWord / Azure) scores ~0, and no turn starts. On an
+activation the daemon prefixes a ~2 s preroll burst; the feeder re-primes its
+resampler from it. With the gate **off** the feed is continuous as before.
+`MicSource` / `useAudioInput` need no changes — this is entirely upstream of the
+kiosk.
+
 ## Gain: the one knob, and what must not compete with it
 
 `MISSION_CONTROL_MIC_INPUT_GAIN_DB` -> `VoiceConfig.mic_input_gain_db` on
