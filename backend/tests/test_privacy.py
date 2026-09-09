@@ -175,14 +175,18 @@ def test_grace_undo_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch
     assert undone.status_code == 200
     assert undone.json()["locked"] is False
 
-    # Past the window: 410 Gone.
+    # Past the window: 410 Gone. Drive the singleton store off a fake clock so the
+    # lock stamp and the undo check cannot land on the same coarse OS tick.
     monkeypatch.setenv("MISSION_CONTROL_PRIVACY_UNDO_GRACE_SECONDS", "0")
     get_settings.cache_clear()
-    from app.privacy import reset_privacy_store
+    from app.privacy import get_privacy_store, reset_privacy_store
 
     reset_privacy_store()
     local = TestClient(app)
+    clock = FakeClock(BASE)
+    get_privacy_store()._clock = clock
     local.post("/api/privacy/lock")
+    clock.advance(1)
     assert local.post("/api/privacy/unlock/grace").status_code == 410
 
 
