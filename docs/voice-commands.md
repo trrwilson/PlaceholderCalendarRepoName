@@ -20,7 +20,10 @@ in `docs/voice-support-plan.md`.
   Either way there is a 15-second maximum.
 - Saying **"Mission Control"** to wake it hands-free is built but **dormant** — it
   needs a trained wake-word model and on-hardware tuning before it does anything.
-  Until then, every command starts with a tap.
+  Until then, every command starts with a tap. When it is live it is meant to work
+  whether you pause after the phrase ("Mission Control… what's tomorrow?") or run
+  straight through it ("Mission Control, what's tomorrow?") — see
+  `docs/voice-activation-ux-plan.md`.
 - **On-device Invoke gate** (experimental, off by default). Settings →
   "On-device audio gate" adds a first stage *in front of* the normal keyword
   detector: the Harman Kardon Invoke only sends real room audio to the kiosk

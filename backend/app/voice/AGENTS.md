@@ -149,3 +149,14 @@ backend degrades silently to push-to-talk, which is always independent of all of
   `deviceId` constraint anywhere but `useAudioInput`. (`docs/audio-pipeline.md`.)
 - Web Speech API is ruled out — Chrome sends its audio to Google, breaking
   local-by-default.
+
+### Activation styles — a keyword turn is not push-to-talk (`docs/voice-activation-ux-plan.md`, proposed)
+
+- **Leading silence is expected.** A wake turn is not end-of-speech- or
+  answer-eligible until *content* speech (after the keyword, on the live mic) is
+  heard — a provider `speech-stopped` before that is the keyword; ignore it.
+- **The keyword is not content.** Keep it out of the transcript; never speak a
+  reply to a turn whose only content is the wake phrase — dismiss it silently.
+- **Acknowledge on detection, not on connect** — visual at `handleWake`; the cue
+  plays at detection or not at all, never mid-command. Wake grants never run pure
+  `provider` endpointing (the client must own the answer trigger to withhold it).

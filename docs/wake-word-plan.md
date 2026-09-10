@@ -50,6 +50,12 @@ Mission Control already has a functional tap/push-to-talk voice path using the b
 >   response watchdog + client-side silence detection.
 > - Pre-roll: retain from the detection instant forward, 4 s cap, flushed to the
 >   session before the live mic. Phrase-trimming left as a hardware-tuning knob.
+>
+> **Follow-up (2026-09-09):** the staged- vs one-shot-activation experience — leading
+> silence after the keyword, cue timing, keeping the phrase out of the transcript, and
+> dismissing empty turns — is specced in
+> [`voice-activation-ux-plan.md`](voice-activation-ux-plan.md). It supersedes the open
+> questions in *Wake-to-Command Audio Handoff* and *End-of-Utterance Handling* below.
 
 The primary deployment host is likely Windows, but Linux remains possible. Do not assume a specific wake-word engine, microphone architecture, or OS integration before inspecting the repository and corroborating current options.
 
