@@ -428,6 +428,20 @@ kiosk UI, by design.
   regular — was a pacing bug on the MC side (a downstream wall-clock pacer padding
   normal delivery lag; removed). If either recurs, check `sheds` / `reconnects`
   in the Settings panel and whether the mic uplink is contending for the radio.
+- **Periodic choppiness is usually the Wi-Fi link, not this code.** On the
+  2026-09-09 kiosk runs the reply audio broke up every ~2 minutes in discrete
+  bursts. The cause is device-side: the Invoke's vendor `connection-manager`
+  fires full-band scans that pull the radio off-channel for ~1–3 s
+  (ReInvoke2026 `transport/AMPDU_FIX_PLAN.md` §6.4). The link RSSI/SNR were
+  healthy (−58 dBm / ~31 dB), so this is not an RF-margin problem and moving the
+  Invoke closer will not fix it — the fix is device-side. **What MC makes
+  worse:** `app/voice/speaker.py` currently escalates a transient send stall
+  into a full device-socket teardown (`writer` close → the daemon's
+  `tcpserversrc` EOFs → `gst` reprime, ~1 s), so a 2 s blackout becomes a ~4 s
+  gap. Planned mitigation (next session): a stall grace period + TCP keepalive
+  so the socket rides a ~3 s blackout, and a deeper device-side jitter buffer so
+  *reply* audio (already fully buffered) plays through one scan. The mic uplink
+  cannot ride forward — that audio is lost during a scan regardless.
 - **The device daemon crash-loops for a few seconds on an unlucky start.**
   `output/invoke_speaker_daemon.sh` on GStreamer 1.10.2 sometimes hits a
   `gst_adapter` CRITICAL in the `rndbuffersize` reblock and `alsasink` then

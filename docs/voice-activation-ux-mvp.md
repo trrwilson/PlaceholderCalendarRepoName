@@ -5,10 +5,18 @@ summary: MVP slice of the keyword-activation UX fix — content gate for leading
 
 # Keyword-activation UX — MVP
 
-Status: **implemented** (deterministic state-machine tests only; not yet
-exercised on kiosk hardware). Decisions taken at go-ahead: visual-only ack (no
-at-detection earcon), `activationStyle` as a separate hook field, flat
-`'kiosk-wake'` surface string, `WAKE_CONTENT_TIMEOUT_MS` = 3500 ms.
+Status: **implemented, validated on kiosk hardware 2026-09-09.** Decisions taken
+at go-ahead: visual-only ack (no at-detection earcon), `activationStyle` as a
+separate hook field, flat `'kiosk-wake'` surface string,
+`WAKE_CONTENT_TIMEOUT_MS` = 3500 ms.
+
+The first hardware run found the content gate's RMS trigger too eager — a fixed
+`SPEECH_RMS` (0.01), open-on-one-frame check was tripped immediately by the
+Invoke far-field mic's ~0.008–0.02 RMS noise floor, so every staged turn
+endpointed on the keyword and empty turns got a spoken reply. Hardened to a
+floor-relative, sustained-run gate (see "New constants / config"); re-tested on
+the kiosk: a staged "Mission Control … *pause* … command" now holds through the
+pause and answers the command, and a bare "Mission Control" abandons silently.
 
 Narrows `docs/voice-activation-ux-plan.md` to the
 smallest slice that makes staged + one-shot wake activation shippable for one
@@ -65,11 +73,15 @@ On a wake activation, set `awaitingContentRef = true` at `startTurn`. While it i
   `awaitingContentRef` is set, skip the silence-hold / no-speech / backstop
   branches. Only `MAX_LISTEN_MS` and the new `WAKE_CONTENT_TIMEOUT_MS` apply.
 - The gate **clears** on the first of:
-  1. sustained live-mic RMS ≥ the speech gate (`SPEECH_RMS`), measured past
-     `AEC_SETTLE_MS` on the live mic — reuse the existing arming logic in
-     `handleLevel`; or
-  2. the first `user-transcript` event whose text, normalised and stripped of a
-     leading `^(hey |ok |okay )?mission control[\s,.]*`, is non-empty.
+  1. `WAKE_CONTENT_FRAMES` consecutive live-mic frames past `AEC_SETTLE_MS`
+     at RMS ≥ `max(WAKE_CONTENT_RMS, floor × WAKE_CONTENT_FLOOR_MULT)`, where
+     `floor` is the quietest frame sampled over the first `WAKE_FLOOR_WINDOW_MS`
+     (clamped to `[SPEECH_RMS, WAKE_FLOOR_CEILING]`). A plain `SPEECH_RMS`
+     open-on-one-frame gate was defeated by the kiosk's far-field mic floor —
+     see "New constants / config"; or
+  2. the first **final** `user-transcript` event whose text, normalised and
+     stripped of a leading `^(hey |ok |okay )?mission control[\s,.]*`, is
+     non-empty (interim hypotheses are ignored — a partial "mission…" opened it).
 - On clear: `awaitingContentRef = false`, `timeline.mark('wake-content-detected')`,
   and normal endpointing resumes from that instant (`hybrid` backstop / semantic
   VAD). The keyword→command gap has been ridden out.
@@ -200,6 +212,7 @@ branch → `finishTurn()` with no `endActivity`):
 | Name | Where | Value | Notes |
 | --- | --- | --- | --- |
 | `WAKE_CONTENT_TIMEOUT_MS` | `useVoiceSession.ts` | `3500` | Gate-open deadline on a wake turn (a separate `setTimeout`, plus a `MAX_LISTEN_MS` check in `handleLevel`). Over the 2 s P0 floor with margin; bounds false-wake cloud exposure. |
+| `WAKE_CONTENT_RMS` / `WAKE_CONTENT_FLOOR_MULT` / `WAKE_FLOOR_CEILING` / `WAKE_CONTENT_FRAMES` / `WAKE_FLOOR_WINDOW_MS` | `useVoiceSession.ts` | `0.03` / `2.5` / `0.02` / `3` / `600` | The mic-RMS content-gate bar (see below). Added after the first hardware test: a fixed `SPEECH_RMS` (0.01) open-on-one-frame gate was tripped immediately by the Invoke far-field mic's ~0.008–0.02 RMS noise floor, so every staged turn endpointed on the keyword. The gate now needs `WAKE_CONTENT_FRAMES` consecutive frames ≥ `max(WAKE_CONTENT_RMS, floor × WAKE_CONTENT_FLOOR_MULT)`, where `floor` is the quietest frame over the first `WAKE_FLOOR_WINDOW_MS` clamped to `[SPEECH_RMS, WAKE_FLOOR_CEILING]`. The transcript-token trigger now also requires `event.final` (an interim "mission…" of the keyword was opening it). |
 | `WAKE_PREROLL_LEAD_MS` | `wake/preroll.ts` (+ `openWakeWord.ts` inline copy) | `1200` | Names the existing magic number. **No behaviour change in the MVP.** |
 | `_is_wake_surface(surface)` | `app/voice/base.py` | — | `surface in {"kiosk-wake"}`. |
 | wake surface string | `useVoiceSession.startTurn` | `'kiosk-wake'` | Per-turn override of the `'kiosk'` default for `viaWake` turns. |
@@ -305,12 +318,15 @@ Timeline marks added: `wake-content-detected`, `turn-abandoned-empty`, and
 4. **`WAKE_CONTENT_TIMEOUT_MS` = 3500 ms** (6 s was judged too long a room-audio
    window for a false wake on the basic keyword tier).
 
-## First hardware check
+## First hardware check — results (2026-09-09)
 
-None of the pre-roll / fire-position assumptions are verified on the kiosk mic
-(`docs/audio-pipeline.md` known gaps). On first hardware:
-- confirm a staged "Mission Control" … pause … command answers the command, not
-  an empty turn;
-- confirm a barrelled one-shot is not clipped and its answer omits the keyword;
-- if the keyword still bleeds into answers, that is the signal to revisit
-  `WAKE_PREROLL_LEAD_MS` (down from 1200) — the deferred knob.
+- **Staged "Mission Control" … pause … command** — after the content-gate
+  hardening (above), holds through the pause and answers the command. ✅
+- **Bare "Mission Control" / false wake** — abandons silently, no spoken reply. ✅
+- **Barrelled one-shot** — answers, keyword out of the transcript (belt + strip). ✅
+- **Pre-roll lead** — left at `WAKE_PREROLL_LEAD_MS` = 1200; the keyword is not
+  bleeding into answers, so the deferred trim is still not needed.
+- The Invoke far-field mic's noise floor (≈ −40 dBFS, spikes to −34 between
+  words) is what forced the floor-relative gate; a near-field mic would not have
+  hit this. If the mic is repositioned or its gate re-tuned, re-check the gate
+  still opens promptly on a normal command.

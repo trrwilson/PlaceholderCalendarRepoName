@@ -119,6 +119,25 @@ const AEC_SETTLE_MS = 250
  * basic keyword tier only briefly opens the mic to the cloud.
  * See docs/voice-activation-ux-mvp.md. */
 const WAKE_CONTENT_TIMEOUT_MS = 3_500
+/** Wake turn content gate — the live-mic RMS that means the *command* has
+ * actually started, as distinct from the keyword tail, a cough, or a far-field
+ * mic's own noise floor. Deliberately well above `SPEECH_RMS`: a wake turn asks
+ * "have they started talking yet?" against a wide-open far-field mic, where room
+ * noise and an on-device passthrough gate routinely sit around 0.01–0.02 RMS and
+ * would trip the ordinary speech gate on the keyword→command silence. */
+const WAKE_CONTENT_RMS = 0.03
+/** …and the bar is also at least this multiple of the room floor sampled over
+ * the opening window, so a loud room can't open the gate on its own noise. The
+ * sampled floor is clamped to [`SPEECH_RMS`, `WAKE_FLOOR_CEILING`] first. */
+const WAKE_CONTENT_FLOOR_MULT = 2.5
+const WAKE_FLOOR_CEILING = 0.02
+/** Consecutive ~100 ms mic frames that must clear the bar before the gate opens.
+ * A door slam or one hot frame is one frame; a spoken word is several. */
+const WAKE_CONTENT_FRAMES = 3
+/** How long after the pre-roll handoff to keep sampling the room floor. Longer
+ * than `AEC_SETTLE_MS` so a keyword tail bleeding into the first frames does not
+ * dominate the estimate (the sample is a per-frame minimum). */
+const WAKE_FLOOR_WINDOW_MS = 600
 /** Token requests for a wake turn carry this surface so the backend clamps the
  * grant to `hybrid` endpointing — the client must own the answer trigger to
  * withhold it for an empty turn. */
@@ -265,6 +284,12 @@ export function useVoiceSession({
    *  ends with this still false never carried a command — abandon it silently. */
   const contentSpeechSeenRef = useRef(false)
   const contentTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Wake turn only: quietest live-mic frame seen over the first
+   *  `WAKE_FLOOR_WINDOW_MS` (the room/mic noise floor the content gate is judged
+   *  against), and the count of consecutive frames currently clearing that bar.
+   *  Both reset per turn in `startTurn`. */
+  const wakeFloorRef = useRef(Infinity)
+  const wakeContentRunRef = useRef(0)
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) {
@@ -287,6 +312,7 @@ export function useVoiceSession({
     if (!awaitingContentRef.current) return
     awaitingContentRef.current = false
     contentSpeechSeenRef.current = true
+    wakeContentRunRef.current = 0
     // Content speech was heard — the user has started talking. Arm the normal
     // end-of-speech state so a provider `speech-stopped` (or the mic-RMS hold)
     // from here can finalise the turn; the keyword→command gap is behind us.
@@ -399,10 +425,15 @@ export function useVoiceSession({
           // from `endUserTurn` while the model was demonstrably working, and a
           // turn that transcribed late but was otherwise fine got killed.
           if (statusRef.current === 'thinking' || statusRef.current === 'speaking') armWatchdog()
-          // First real words past the wake phrase open the content gate — the
+          // First settled words past the wake phrase open the content gate — the
           // keyword→command silence has been ridden out. (The mic-RMS path in
-          // `handleLevel` is the other trigger.)
-          if (awaitingContentRef.current && withoutWakePhrase(event.text).length > 0) {
+          // `handleLevel` is the other trigger.) Interim hypotheses are ignored:
+          // a partial "mission…" of the keyword itself would otherwise open it.
+          if (
+            awaitingContentRef.current &&
+            event.final &&
+            withoutWakePhrase(event.text).length > 0
+          ) {
             clearContentGate()
           }
           if (event.final) {
@@ -637,6 +668,15 @@ export function useVoiceSession({
 
       peakRmsRef.current = Math.max(peakRmsRef.current, rms)
 
+      // Wake turn: sample the room/mic noise floor (per-frame minimum) over the
+      // opening window, so the content gate below can be judged relative to it.
+      // A far-field mic's floor and an on-device passthrough gate's room audio
+      // routinely sit near a fixed 0.01 gate; the keyword→command silence must
+      // not read as the command starting.
+      if (awaitingContentRef.current && listenedMs < WAKE_FLOOR_WINDOW_MS) {
+        wakeFloorRef.current = Math.min(wakeFloorRef.current, rms)
+      }
+
       // While the echo canceller converges, keep the silence clock fresh but
       // don't trust the level enough to arm `spoke` or grow the speech-level
       // estimate — residual cue/echo is still leaking through.
@@ -645,21 +685,30 @@ export function useVoiceSession({
         return
       }
 
-      // Wake turn, keyword→command gap still open: watch only for content speech
-      // starting. No endpointing here — the provider VAD and the silence hold
-      // would both trip on the keyword sitting in the flushed pre-roll. Only the
-      // hard cap and `WAKE_CONTENT_TIMEOUT_MS` (a separate timer) end the turn.
+      // Wake turn, keyword→command gap still open: watch only for the *command*
+      // starting — a sustained run of frames clearly above the sampled floor. No
+      // endpointing here: the provider VAD and the silence hold would both trip
+      // on the keyword sitting in the flushed pre-roll. Only the hard cap and
+      // `WAKE_CONTENT_TIMEOUT_MS` (a separate timer) end the turn.
       if (awaitingContentRef.current) {
-        if (rms >= SPEECH_RMS) {
-          // clearContentGate() arms `spoke` / `lastVoiceAt`; seed the speaker's
-          // running speech level too so the relative "still talking" gate works.
-          speechLevelRef.current = Math.min(
-            Math.max(rms, speechLevelRef.current),
-            SPEECH_LEVEL_CEILING,
-          )
-          clearContentGate()
-        } else if (listenedMs >= MAX_LISTEN_MS) {
-          endUserTurn('wake-content-timeout')
+        const floor = Number.isFinite(wakeFloorRef.current)
+          ? Math.min(Math.max(wakeFloorRef.current, SPEECH_RMS), WAKE_FLOOR_CEILING)
+          : SPEECH_RMS
+        const bar = Math.max(WAKE_CONTENT_RMS, floor * WAKE_CONTENT_FLOOR_MULT)
+        if (rms >= bar) {
+          wakeContentRunRef.current += 1
+          if (wakeContentRunRef.current >= WAKE_CONTENT_FRAMES) {
+            // clearContentGate() arms `spoke` / `lastVoiceAt`; seed the speaker's
+            // running speech level too so the relative "still talking" gate works.
+            speechLevelRef.current = Math.min(
+              Math.max(rms, speechLevelRef.current),
+              SPEECH_LEVEL_CEILING,
+            )
+            clearContentGate()
+          }
+        } else {
+          wakeContentRunRef.current = 0
+          if (listenedMs >= MAX_LISTEN_MS) endUserTurn('wake-content-timeout')
         }
         return
       }
@@ -732,6 +781,8 @@ export function useVoiceSession({
     setActivationStyle(viaWake ? 'wake' : 'ptt')
     awaitingContentRef.current = viaWake
     contentSpeechSeenRef.current = !viaWake
+    wakeFloorRef.current = Infinity
+    wakeContentRunRef.current = 0
     // Push-to-talk with the on-device Invoke gate layered on: open the gate for
     // this manual turn (a wake activation opened it already). The matching close
     // goes out from `teardown()`.

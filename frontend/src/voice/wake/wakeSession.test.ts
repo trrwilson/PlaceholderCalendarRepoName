@@ -430,15 +430,37 @@ describe('wake-word / voice state machine', () => {
     })
     await waitFor(() => expect(result.current.status).toBe('listening'))
 
-    // Past AEC settle, a run of speech-level frames.
+    // Past AEC settle, a sustained run of clear speech-level frames (well above
+    // both the fixed content bar and any plausible room floor).
     await act(async () => {
       await new Promise((r) => setTimeout(r, 300))
-      for (let i = 0; i < 5; i += 1) h.level(0.05)
+      for (let i = 0; i < 6; i += 1) h.level(0.09)
     })
     expect(result.current.status).toBe('listening')
     // The gate is open now: an explicit stop submits the turn.
     act(() => result.current.stopTurn())
     await waitFor(() => expect(h.session.endActivity).toHaveBeenCalledTimes(1))
+  })
+
+  it('steady far-field room noise does not open the content gate', async () => {
+    const { result } = await renderArmed()
+    await act(async () => {
+      h.fireWake()
+    })
+    await waitFor(() => expect(result.current.status).toBe('listening'))
+
+    // A far-field mic on an open passthrough gate sits around 0.012–0.018 RMS
+    // between words — above the ordinary SPEECH_RMS (0.01), below the wake
+    // content bar. The keyword→command silence must not read as the command.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300))
+      for (let i = 0; i < 20; i += 1) h.level(i % 2 ? 0.017 : 0.012)
+    })
+    expect(result.current.status).toBe('listening')
+    // Gate never opened → an explicit stop abandons, never asks for a reply.
+    act(() => result.current.stopTurn())
+    await waitFor(() => expect(result.current.status).toBe('armed'))
+    expect(h.session.endActivity).not.toHaveBeenCalled()
   })
 
   it('requests the wake surface so the backend can clamp endpointing', async () => {

@@ -158,11 +158,13 @@ pre-roll lead, and warm sessions are still parent-plan follow-ups
 
 - **Leading silence is expected.** `useVoiceSession` carries an `activationStyle`
   (`ptt` | `wake`) and an `awaitingContent` gate. A wake turn is not
-  end-of-speech- or answer-eligible until *content* speech is heard — a run of
-  live-mic frames ≥ `SPEECH_RMS`, or a `user-transcript` token past the wake
-  phrase. Until then provider `speech-started` / `speech-stopped` are ignored
-  (they fire on the keyword in the flushed pre-roll) and only
-  `WAKE_CONTENT_TIMEOUT_MS` (3.5 s) / `MAX_LISTEN_MS` apply → silent abandon.
+  end-of-speech- or answer-eligible until *content* speech is heard — a
+  sustained run of live-mic frames clearly above the sampled room floor (a fixed
+  `SPEECH_RMS` gate was defeated by the Invoke far-field mic's noise floor), or a
+  final `user-transcript` token past the wake phrase. Until then provider
+  `speech-started` / `speech-stopped` are ignored (they fire on the keyword in
+  the flushed pre-roll) and only `WAKE_CONTENT_TIMEOUT_MS` (3.5 s) /
+  `MAX_LISTEN_MS` apply → silent abandon.
 - **The keyword is not content.** `WAKE_PHRASE_RE` strips a leading
   "hey/ok Mission Control" before the gate + empty checks; `prompt.py` has a
   matching belt line. The pre-roll still carries the keyword audio
