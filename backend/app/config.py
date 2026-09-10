@@ -358,6 +358,10 @@ class Settings(BaseSettings):
     wake_word_invoke_gate_enabled: bool = False
 
     # -- Voice output: the Wi-Fi speaker path to the Invoke (additive) ----
+    # ON HOLD (2026-09): the Wi-Fi speaker reliability work is tabled and the
+    # kiosk uses Bluetooth for output. Empty ``invoke_speaker_host`` (the
+    # default) is the intended state; the on-device daemon is never auto-started
+    # — only an explicit ``invokectl speaker-daemon up`` brings it up.
     # The ``invoke_speaker_daemon.sh`` receiver on the Harman Kardon Invoke
     # (ReInvoke2026 ``output/``) plays raw PCM it receives on a LAN TCP port out
     # the speakers, via the stock ``music`` ALSA route so the SHARC DSP's

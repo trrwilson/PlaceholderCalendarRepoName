@@ -222,7 +222,10 @@ arrives slower than real time leaves a gap and logs an underrun.
 
 The appliance's own sounds — the assistant reply, the listening cue, the timer
 chime — can go three ways: the system default speaker, a specific local output
-device, or a **recovered HK Invoke over Wi-Fi**. `voice/audioOutput.ts` +
+device, or a **recovered HK Invoke over Wi-Fi**. The third is **on hold as of
+2026-09** (see the callout under "The Invoke over Wi-Fi" below) — the kiosk uses
+Bluetooth for output, `invoke_speaker_host` is empty by default, and the picker
+only offers the option when a host is explicitly configured. `voice/audioOutput.ts` +
 `voice/useAudioOutput.ts` are the mirror of the input pair; the choice is
 per-browser (a property of the machine, like the microphone choice), stored under
 `localStorage['mission-control.audio-output']` as `"auto"` (default),
@@ -248,6 +251,15 @@ itself a VB-CABLE endpoint. `setSinkId` is unavailable in jsdom and Safari; ther
 a device selection is inert and playout follows the default.
 
 ### The Invoke over Wi-Fi (`"invoke"`)
+
+> **Status: on hold (2026-09).** The reliability investigation into this path
+> (periodic Wi-Fi-scan choppiness, half-open-socket wedges — see the reliability
+> notes below) is tabled. The kiosk now plays its output over **Bluetooth**.
+> `invoke_speaker_host` is empty by default; the on-device
+> `invoke_speaker_daemon.sh` is started **only** by an explicit
+> `invokectl speaker-daemon up` (the ReInvoke2026 host-side watcher no longer
+> reconciles it). The code below is retained and still accurate for if the path
+> is re-enabled; the MC frontend keeps the picker option.
 
 `createEchoCancelledOutput(context, tap?)` is the one place both output contexts
 pass through, so the `tap` forks the bus there: `AudioSink` and `AlarmChime` each
@@ -320,7 +332,7 @@ and `GET /api/voice/wake-config`.
 | `GEMINI_VOICE`, `AZURE_*_VOICE` | — | Reply timbre, per provider. |
 | `VOICE_DEBUG_CAPTURE_ENABLED` / `_DIR` / `_KEEP` | on / `voice-captures` / `10` | On-disk WAV captures of provider input. |
 | `TIMER_ALARM_MAX_RING_SECONDS` | `300` | How long the chime loops. |
-| `INVOKE_SPEAKER_HOST` / `_AUDIO_PORT` | `""` / `5006` | Wi-Fi speaker output target. Empty ⇒ falls back to `WAKE_WORD_INVOKE_GATE_HOST`; still empty ⇒ Settings omits the "Invoke (Wi-Fi)" speaker option. |
+| `INVOKE_SPEAKER_HOST` / `_AUDIO_PORT` | `""` / `5006` | Wi-Fi speaker output target. **Path on hold (2026-09) — leave empty.** Empty ⇒ falls back to `WAKE_WORD_INVOKE_GATE_HOST`; still empty ⇒ Settings omits the "Invoke (Wi-Fi)" speaker option. Setting it also needs a manual `invokectl speaker-daemon up`. |
 | `INVOKE_SPEAKER_DRIFT_PPM` | `0` | Open-loop drift slip for the speaker stream (positive ⇒ the Invoke DAC runs fast). |
 | `INVOKE_SPEAKER_CODEC` | `s16` | ReInvoke2026 Phase-1b wire codec on `:5006`: `s16` (S16LE/48k/2ch, half the bytes) / `g711u` (µ-law) / `raw` (S32LE). No handshake — MUST equal the daemon's `SPK_CODEC`, `invokectl`'s `speaker_codec`, and the feeder's `--codec`, or playback is slow and garbled. |
 
@@ -416,6 +428,9 @@ kiosk UI, by design.
   per-block with a linear resampler for the rare non-48 kHz output context, which
   can add faint artefacts there — 48 kHz hardware (the norm) is a clean
   pass-through.
+- **This path is on hold (2026-09).** The remaining reliability items below were
+  not worth chasing further; the kiosk moved to Bluetooth output. Kept here as
+  the record if it is ever picked back up.
 - **The MC → daemon speaker path is hardware-proven end to end** as of
   2026-09-09: `s16` on every end (MC `INVOKE_SPEAKER_CODEC`, `invokectl`
   `speaker_codec`, the daemon's `SPK_CODEC`), continuous worklet fill, and the
@@ -438,10 +453,13 @@ kiosk UI, by design.
   worse:** `app/voice/speaker.py` currently escalates a transient send stall
   into a full device-socket teardown (`writer` close → the daemon's
   `tcpserversrc` EOFs → `gst` reprime, ~1 s), so a 2 s blackout becomes a ~4 s
-  gap. Planned mitigation (next session): a stall grace period + TCP keepalive
-  so the socket rides a ~3 s blackout, and a deeper device-side jitter buffer so
-  *reply* audio (already fully buffered) plays through one scan. The mic uplink
-  cannot ride forward — that audio is lost during a scan regardless.
+  gap. Partial mitigation landed before the path was tabled: `speaker.py` now
+  sets aggressive TCP keepalive on the device socket and caps `writer.drain()`
+  at `_SEND_STALL_S` (`_enable_keepalive` / `_drain_or_raise`), so a wedged
+  half-open socket is caught in ~8 s instead of hanging forever. Not done: a
+  stall grace period that rides a ~3 s blackout without tearing down, and a
+  deeper device-side jitter buffer so *reply* audio plays through one scan. The
+  mic uplink cannot ride forward — that audio is lost during a scan regardless.
 - **The device daemon crash-loops for a few seconds on an unlucky start.**
   `output/invoke_speaker_daemon.sh` on GStreamer 1.10.2 sometimes hits a
   `gst_adapter` CRITICAL in the `rndbuffersize` reblock and `alsasink` then
