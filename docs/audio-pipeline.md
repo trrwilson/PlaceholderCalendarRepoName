@@ -205,6 +205,14 @@ There are two audio contexts on the output side (`AudioSink`'s and
 `AlarmChime`'s) because the chime must work with voice switched off entirely.
 Each builds its own loopback; both are in the AEC reference.
 
+The "I'm listening" cue plays post-connect for a **push-to-talk** turn only. A
+**wake** turn is acknowledged visually (the "● Listening" overlay, shown from the
+moment of detection) and plays no cue — a barrelled "Mission Control, what's
+tomorrow?" would otherwise get a tone landing mid-command, seconds in
+(`useVoiceSession.ts`, `docs/voice-activation-ux-mvp.md`). An audible
+at-detection ack for the pause-first style is a parked follow-up
+(`docs/voice-activation-ux-plan.md` §B).
+
 Playback rate comes from the provider (`outputSampleRate`), not from a constant.
 `AudioSink` schedules each decoded chunk contiguously off a cursor as it arrives;
 there is no jitter buffer (removed — it caused audible clicks), so a stream that

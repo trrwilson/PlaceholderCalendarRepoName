@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.config import Settings
 from app.models import VoiceProviderId, VoiceToken
-from app.voice.base import VoiceUnavailable
+from app.voice.base import VoiceUnavailable, is_wake_surface
 from app.voice.prompt import build_system_instruction
 from app.voice.relay import (
     UpstreamConfig,
@@ -63,6 +63,13 @@ class AzureVoiceLiveAdapter:
 
         model = settings.azure_voice_live_model
         endpointing = settings.azure_voice_live_endpointing
+        # A keyword-activated turn must keep the answer trigger client-side so an
+        # empty / keyword-only turn can be dropped silently — never let the
+        # provider VAD answer on its own endpoint. `azure_semantic_vad` still
+        # runs (its echo canceller needs it); only `create_response` is forced
+        # off. See docs/voice-activation-ux-mvp.md.
+        if is_wake_surface(surface):
+            endpointing = "hybrid"
         url = (
             f"{to_wss(settings.azure_voice_live_endpoint)}/voice-live/realtime"
             f"?api-version={settings.azure_voice_live_api_version}&model={model}"

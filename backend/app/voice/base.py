@@ -22,13 +22,28 @@ from app.models import Endpointing, VoiceProviderId, VoiceToken
 
 __all__ = [
     "PROVIDER_LABELS",
+    "WAKE_SURFACES",
     "Endpointing",
     "VoiceProviderAdapter",
     "VoiceProviderId",
     "VoiceToken",
     "VoiceUnavailable",
+    "is_wake_surface",
     "local_now",
 ]
+
+#: Request ``surface`` values that mark a turn as keyword-activated rather than
+#: push-to-talk. The kiosk sends one of these for a wake turn so an adapter can
+#: clamp the grant — a wake turn must keep the client in charge of the answer
+#: trigger (``hybrid`` at most, never pure ``provider``) so an empty / keyword-only
+#: turn can be dismissed with no spoken reply. See
+#: ``docs/voice-activation-ux-mvp.md``.
+WAKE_SURFACES: frozenset[str] = frozenset({"kiosk-wake"})
+
+
+def is_wake_surface(surface: str | None) -> bool:
+    """True when ``surface`` marks a keyword-activated turn (see :data:`WAKE_SURFACES`)."""
+    return surface in WAKE_SURFACES
 
 # Friendly names for the Settings picker and diagnostics. Keyed by every known
 # provider id (implemented or not) so the UI can label a contestant that is not

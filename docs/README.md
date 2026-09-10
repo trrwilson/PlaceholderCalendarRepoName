@@ -34,6 +34,7 @@ you can triage without opening it.
 | [voice-token-caching-notes.md](voice-token-caching-notes.md) | Token + snapshot caching and freshness rules. |
 | [wake-word-plan.md](wake-word-plan.md) | The wake-word activation build. |
 | [wake-word-provider-bakeoff.md](wake-word-provider-bakeoff.md) | openWakeWord vs Azure `.table`, the Invoke gate, and the recall-eval harness. |
+| [voice-activation-ux-mvp.md](voice-activation-ux-mvp.md) | Keyword-activation UX MVP: content gate for leading silence, cue suppression, silent empty dismissal. Scoped to Azure Custom Keyword (basic) + Azure Voice Live. |
 | [timer-plan.md](timer-plan.md) | The Timer tab build. |
 | [timer-implementation-notes.md](timer-implementation-notes.md) | Timer build notes captured for review. |
 | [lists-plan.md](lists-plan.md) | The grocery-list build. |
@@ -44,7 +45,7 @@ you can triage without opening it.
 
 | Doc | Summary |
 |---|---|
-| [voice-activation-ux-plan.md](voice-activation-ux-plan.md) | Fixing staged + one-shot keyword activation: leading-silence tolerance, cue timing, keyword-free transcript, silent dismissal of empty queries. |
+| [voice-activation-ux-plan.md](voice-activation-ux-plan.md) | Fixing staged + one-shot keyword activation: leading-silence tolerance, cue timing, keyword-free transcript, silent dismissal of empty queries. MVP slice built (see below); earcon classifier / shorter pre-roll lead / warm sessions still parked here. |
 | [camera-support-plan.md](camera-support-plan.md) | Local webcam presence detection — designed, not started. |
 | [display-dimming-plan.md](display-dimming-plan.md) | Backend-driven idle dimming of the physical panel (dim, not off); shares the presence-plan display seam. |
 | [eufy-sdk-integration.md](eufy-sdk-integration.md) | Eufy camera events — blocked on an upstream SDK release. |

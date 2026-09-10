@@ -520,7 +520,7 @@ function App() {
       {selectedEvent && !redacting && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
       {connectOpen && auth && !redacting && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}
       {privacyPadOpen && <PrivacyPad onClose={() => setPrivacyPadOpen(false)} onUnlock={privacy.unlock} onUndo={privacyNotice ? () => { void privacy.undo(); setPrivacyPadOpen(false); setPrivacyNotice(false) } : undefined} cooldownMs={privacy.cooldownMs} />}
-      <VoiceOverlay status={voice.status} transcript={voice.transcript} error={voice.error} onStop={voice.stopTurn} onDismissError={voice.dismissError} />
+      <VoiceOverlay status={voice.status} activationStyle={voice.activationStyle} transcript={voice.transcript} error={voice.error} onStop={voice.stopTurn} onDismissError={voice.dismissError} />
       {voice.status === 'unavailable' && voice.error && <VoiceToast error={voice.error} onRetry={voice.startTurn} onDismiss={voice.dismissError} />}
       {timerNotice && <div className="timer-notice" role="status">{timerNotice}<button aria-label="Dismiss" onClick={() => setTimerNotice(null)}>×</button></div>}
       {listNotice && <div className="timer-notice list-notice" role="status">{listNotice.text}{listNotice.restore && <button className="list-notice-undo" onClick={() => { void lists.restore(listNotice.restore!); setListNotice(null) }}>Undo</button>}<button aria-label="Dismiss" onClick={() => setListNotice(null)}>×</button></div>}

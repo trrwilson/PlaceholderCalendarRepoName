@@ -59,7 +59,7 @@ def store_capture(settings: Settings, capture: VoiceDebugCapture) -> Path:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
     kind = "wake" if capture.via_wake else "ptt"
     provider = _slug(capture.provider) or "unknown"
-    stem = f"{stamp}-{kind}-{provider}"
+    stem = _free_stem(directory, f"{stamp}-{kind}-{provider}")
 
     wav_path = directory / f"{stem}.wav"
     wav_path.write_bytes(wav)
@@ -75,6 +75,21 @@ def store_capture(settings: Settings, capture: VoiceDebugCapture) -> Path:
 
 def _slug(value: str | None) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in (value or "")).strip("_")
+
+
+def _free_stem(directory: Path, stem: str) -> str:
+    """``stem``, or ``stem-2`` / ``stem-3`` / … if a ``.wav`` already has it.
+
+    The stamp is only millisecond-resolution, so a burst of captures inside one
+    millisecond (or on a coarse system clock) would otherwise collide and
+    overwrite each other — leaving fewer files than turns.
+    """
+    if not (directory / f"{stem}.wav").exists():
+        return stem
+    for n in range(2, 1000):
+        if not (directory / f"{stem}-{n}.wav").exists():
+            return f"{stem}-{n}"
+    return f"{stem}-{datetime.now().microsecond}"
 
 
 def _prune(directory: Path, keep: int) -> None:

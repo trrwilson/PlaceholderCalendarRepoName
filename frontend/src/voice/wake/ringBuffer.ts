@@ -18,6 +18,21 @@ import { downsampleTo, resampleLinear } from '../pcm'
  */
 export const WAKE_SAMPLE_RATE = 16_000
 
+/**
+ * How far *before* the detector fire instant the pre-roll read-back starts, on
+ * top of the time already elapsed since the fire. Covers keyword co-articulation
+ * and a person who starts the command early. Shared by `WakePreroll` and
+ * `openWakeWord.ts`'s inline copy so the two stay identical.
+ *
+ * NOTE: this still re-includes the keyword audio itself (openWakeWord fires
+ * ~1.2 s into the clip; the Azure recogniser fires at the end of the phrase).
+ * Keeping the keyword out of the transcript is done downstream — the content
+ * gate's phrase strip and a prompt belt line (docs/voice-activation-ux-mvp.md).
+ * Shortening this below ~1.2 s risks clipping the first command word on a fast
+ * one-shot and is deferred until it can be tuned against real kiosk hardware.
+ */
+export const WAKE_PREROLL_LEAD_MS = 1_200
+
 export class AudioRingBuffer {
   private readonly data: Float32Array
   private readonly capacity: number
