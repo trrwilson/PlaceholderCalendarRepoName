@@ -40,7 +40,12 @@ const h = vi.hoisted(() => {
       sendAudio: vi.fn(),
       close: vi.fn(),
       respondTool: vi.fn(),
+      surface: null as string | null,
     },
+    // The active turn's mic-level callback, so a test can feed content speech.
+    level: (() => {}) as (rms: number) => void,
+    // The "I'm listening" cue — suppressed for wake turns, kept for push-to-talk.
+    playTestTone: vi.fn(),
     emit: (() => {}) as (event: VoiceEvent) => void,
   }
 })
@@ -48,12 +53,18 @@ const h = vi.hoisted(() => {
 vi.mock('../providers', () => ({
   VoiceUnavailableError: h.VoiceUnavailableError,
   VoiceSessionError: h.VoiceSessionError,
-  createVoiceProvider: async (_url: string, onEvent: (event: VoiceEvent) => void) => {
+  createVoiceProvider: async (
+    _url: string,
+    onEvent: (event: VoiceEvent) => void,
+    surface: string | null,
+  ) => {
     h.emit = onEvent
+    h.session.surface = surface
     return {
       timeline: { mark: vi.fn() },
       inputSampleRate: 16_000,
       outputSampleRate: 24_000,
+      endpointing: 'hybrid',
       connect: h.session.connect,
       startActivity: h.session.startActivity,
       endActivity: h.session.endActivity,
@@ -68,7 +79,10 @@ vi.mock('../audio', () => ({
   micSource: {},
   MicCapture: class {
     activate = vi.fn()
-    start = () => Promise.resolve()
+    start = (_chunk: (b: string) => void, onLevel?: (rms: number) => void) => {
+      if (onLevel) h.level = onLevel
+      return Promise.resolve()
+    }
     stop = vi.fn()
   },
   AudioSink: class {
@@ -76,7 +90,7 @@ vi.mock('../audio', () => ({
     setOutputSampleRate = vi.fn()
     state = vi.fn(() => 'running')
     pending = vi.fn(() => false)
-    playTestTone = vi.fn(() => 450)
+    playTestTone = h.playTestTone
     enqueue = vi.fn(() => true)
     finalizeStream = vi.fn()
     arrivalStats = vi.fn(() => ({}))
@@ -189,6 +203,8 @@ beforeEach(() => {
   h.detector.retained = []
   h.detector.endActivationCalls = 0
   h.detector.controls = []
+  h.level = () => {}
+  h.session.surface = null
   h.session.connect.mockClear()
   h.session.startActivity.mockClear()
   h.session.endActivity.mockClear()
@@ -321,24 +337,137 @@ describe('wake-word / voice state machine', () => {
     expect(h.session.connect).toHaveBeenCalledTimes(1)
   })
 
-  it('an abandoned activation times out instead of hanging', async () => {
+  it('a wake turn with no content speech is dismissed silently, never asking for a reply', async () => {
+    const { result } = await renderArmed()
+    await act(async () => {
+      h.fireWake()
+    })
+    await waitFor(() => expect(result.current.status).toBe('listening'))
+
+    // The person walked away / it was a false wake — Stop with nothing said.
+    act(() => result.current.stopTurn())
+    await waitFor(() => expect(result.current.status).toBe('armed'))
+    // No `activity-end` → the provider is never asked to answer an empty turn.
+    expect(h.session.endActivity).not.toHaveBeenCalled()
+    expect(h.detector.suspended).toBe(false)
+  })
+
+  it('a long pause between keyword and command does not end the turn (content gate)', async () => {
     vi.useFakeTimers()
     try {
-      h.session.connect.mockImplementationOnce(() => Promise.resolve())
       const hook = renderHook(() => useVoiceSession(options))
       await vi.waitFor(() => expect(h.detector.started).toBe(true))
       await act(async () => {
         h.fireWake()
         await Promise.resolve()
       })
-      act(() => hook.result.current.stopTurn())
+      await vi.waitFor(() => expect(hook.result.current.status).toBe('listening'))
+
+      // 2.5 s of silence after "Mission Control" — provider VAD would endpoint
+      // here, but the content gate holds the turn open.
       await act(async () => {
-        vi.advanceTimersByTime(20_000)
+        vi.advanceTimersByTime(2_500)
+        h.emit({ type: 'speech-stopped' })
       })
-      expect(hook.result.current.status).toBe('error')
+      expect(hook.result.current.status).toBe('listening')
+      expect(h.session.endActivity).not.toHaveBeenCalled()
+
+      // The command finally arrives — the gate opens and a later end-of-speech
+      // now finalises the turn.
+      await act(async () => {
+        h.emit({ type: 'user-transcript', text: "Mission Control, what's tomorrow?", final: true })
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(700)
+        h.emit({ type: 'speech-stopped' })
+      })
+      await vi.waitFor(() => expect(h.session.endActivity).toHaveBeenCalledTimes(1))
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('abandons silently when no content arrives within the content-gate timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const hook = renderHook(() => useVoiceSession(options))
+      await vi.waitFor(() => expect(h.detector.started).toBe(true))
+      await act(async () => {
+        h.fireWake()
+        await Promise.resolve()
+      })
+      await vi.waitFor(() => expect(hook.result.current.status).toBe('listening'))
+
+      await act(async () => {
+        vi.advanceTimersByTime(3_500)
+      })
+      await vi.waitFor(() => expect(hook.result.current.status).toBe('armed'))
+      expect(h.session.endActivity).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a wake turn whose only transcript is the keyword is abandoned', async () => {
+    const { result } = await renderArmed()
+    await act(async () => {
+      h.fireWake()
+    })
+    await waitFor(() => expect(result.current.status).toBe('listening'))
+
+    await act(() => {
+      h.emit({ type: 'user-transcript', text: 'Mission Control', final: true })
+    })
+    act(() => result.current.stopTurn())
+    await waitFor(() => expect(result.current.status).toBe('armed'))
+    expect(h.session.endActivity).not.toHaveBeenCalled()
+  })
+
+  it('content speech on the live mic opens the gate', async () => {
+    const { result } = await renderArmed()
+    await act(async () => {
+      h.fireWake()
+    })
+    await waitFor(() => expect(result.current.status).toBe('listening'))
+
+    // Past AEC settle, a run of speech-level frames.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300))
+      for (let i = 0; i < 5; i += 1) h.level(0.05)
+    })
+    expect(result.current.status).toBe('listening')
+    // The gate is open now: an explicit stop submits the turn.
+    act(() => result.current.stopTurn())
+    await waitFor(() => expect(h.session.endActivity).toHaveBeenCalledTimes(1))
+  })
+
+  it('requests the wake surface so the backend can clamp endpointing', async () => {
+    const { result } = await renderArmed()
+    await act(async () => {
+      h.fireWake()
+    })
+    await waitFor(() => expect(result.current.status).toBe('listening'))
+    expect(h.session.surface).toBe('kiosk-wake')
+  })
+
+  it('suppresses the listening cue for a wake turn but keeps it for push-to-talk', async () => {
+    const { result } = await renderArmed()
+    await act(async () => {
+      h.fireWake()
+    })
+    await waitFor(() => expect(result.current.status).toBe('listening'))
+    expect(h.playTestTone).not.toHaveBeenCalled()
+    expect(result.current.activationStyle).toBe('wake')
+
+    act(() => result.current.stopTurn())
+    act(() => h.emit({ type: 'turn-complete' }))
+    await waitFor(() => expect(result.current.status).toBe('armed'))
+
+    await act(async () => {
+      await result.current.startTurn()
+    })
+    expect(h.playTestTone).toHaveBeenCalledTimes(1)
+    expect(result.current.activationStyle).toBe('ptt')
   })
 
   it('disabling wake word disposes the detector and stops detection', async () => {

@@ -234,6 +234,9 @@
 .voice-overlay-head strong { font-size: clamp(15px, .9vw, 30px); }
 .voice-pulse { width: 14px; height: 14px; border-radius: 50%; background: var(--muted); }
 .voice-connecting .voice-pulse { background: #d29c43; }
+/* A wake turn's mic is live from detection — show the live "listening" pulse
+   straight away, even while the provider socket is still opening. */
+.voice-connecting.voice-wake .voice-pulse { background: var(--coral); animation: voice-blink 1s steps(2, start) infinite; }
 .voice-listening .voice-pulse, .voice-speaking .voice-pulse { background: var(--coral); animation: voice-blink 1s steps(2, start) infinite; }
 .voice-thinking .voice-pulse { background: #347878; animation: voice-blink 1.4s ease-in-out infinite; }
 .voice-error .voice-pulse { background: #ca5b50; }

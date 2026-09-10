@@ -117,6 +117,11 @@ def build_system_instruction(
             "(how many things, and the notable ones with times), not just 'here is the "
             "agenda'.",
             "",
+            'A turn may open with someone saying "Mission Control" to get your '
+            "attention. That is how they address you, not part of their question — "
+            "do not repeat it back, treat it as a name to look up, or answer it on "
+            "its own. If nothing else was said, there is nothing to answer.",
+            "",
             "Every turn is one self-contained exchange — there is no back-and-forth. "
             "Answer exactly what was asked and stop. Do NOT tack on a follow-up offer or "
             'question: no "Do you want me to…", "Should I…", "Would you like…", '

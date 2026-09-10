@@ -662,11 +662,26 @@ def test_debug_capture_prunes_to_the_keep_limit(
     monkeypatch.setenv("MISSION_CONTROL_VOICE_DEBUG_CAPTURE_KEEP", "2")
     get_settings.cache_clear()
 
+    # A tight burst — several land inside the same millisecond stamp, so the
+    # write path must uniquify the filename or captures overwrite each other.
     for _ in range(4):
         assert client.post("/api/voice/debug/capture", json=_capture_payload()).status_code == 200
 
     assert len(list(capture_env.glob("*.wav"))) == 2
     assert len(list(capture_env.glob("*.json"))) == 2
+
+
+def test_debug_capture_keeps_every_capture_in_a_same_millisecond_burst(
+    client: TestClient, capture_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_DEBUG_CAPTURE_KEEP", "50")
+    get_settings.cache_clear()
+
+    for _ in range(6):
+        assert client.post("/api/voice/debug/capture", json=_capture_payload()).status_code == 200
+
+    assert len(list(capture_env.glob("*.wav"))) == 6
+    assert len(list(capture_env.glob("*.json"))) == 6
 
 
 def test_debug_capture_requires_voice_enabled(

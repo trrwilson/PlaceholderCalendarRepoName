@@ -34,6 +34,7 @@ import {
   downsampleTo16k,
   floatToPcm16Base64,
   resampleFrom16k,
+  WAKE_PREROLL_LEAD_MS,
   WAKE_SAMPLE_RATE,
 } from './ringBuffer'
 
@@ -212,7 +213,7 @@ export class OpenWakeWordDetector implements WakeDetector {
     // Read back from a bit before the fire through now: covers the wake phrase
     // itself, detection latency, and the person starting the command early.
     const sinceFire = this.fireAt ? (performance.now() - this.fireAt) / 1000 : 0
-    const seconds = Math.min(PREROLL_SECONDS, sinceFire + 1.2)
+    const seconds = Math.min(PREROLL_SECONDS, sinceFire + WAKE_PREROLL_LEAD_MS / 1000)
     let samples = this.preroll.readLast(seconds)
     this.preroll.clear()
     // The turn owns the mic from here; stop filling the ring until `resume()`

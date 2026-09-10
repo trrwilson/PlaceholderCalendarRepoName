@@ -241,13 +241,13 @@ def test_relay_ticket_is_single_use_and_expires() -> None:
 # -- adapter grants ------------------------------------------------------------
 
 
-async def _grant(calendar_names: list[str] | None = None):
+async def _grant(calendar_names: list[str] | None = None, *, surface: str = "kitchen"):
     settings = get_settings()
     adapter = get_adapter(settings)
     return adapter, await adapter.create_grant(
         settings,
         calendar_names=calendar_names or ["Travis", "Sam"],
-        surface="kitchen",
+        surface=surface,
         now_local=datetime(2026, 9, 6, 18, 30),
         timezone="America/Los_Angeles",
     )
@@ -393,6 +393,34 @@ async def test_azure_voice_live_grant_carries_the_speech_extras(
     assert session["turn_detection"]["create_response"] is False
     assert session["input_audio_noise_reduction"] == {"type": "azure_deep_noise_suppression"}
     assert session["input_audio_echo_cancellation"] == {"type": "server_echo_cancellation"}
+
+
+async def test_azure_voice_live_wake_surface_is_clamped_to_hybrid_endpointing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A keyword-activated turn must keep `create_response` client-side even when
+    the operator set `provider` endpointing — otherwise an empty / keyword-only
+    turn cannot be dismissed silently (docs/voice-activation-ux-mvp.md)."""
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_ENABLED", "true")
+    monkeypatch.setenv("MISSION_CONTROL_VOICE_PROVIDER", "azure_voice_live")
+    monkeypatch.setenv(
+        "MISSION_CONTROL_AZURE_VOICE_LIVE_ENDPOINT", "https://westus.api.cognitive.microsoft.com"
+    )
+    monkeypatch.setenv("MISSION_CONTROL_AZURE_VOICE_LIVE_API_KEY", "vlkey")
+    monkeypatch.setenv("MISSION_CONTROL_AZURE_VOICE_LIVE_ENDPOINTING", "provider")
+    get_settings.cache_clear()
+
+    # Push-to-talk turn: the operator's `provider` choice stands.
+    _, ptt = await _grant(surface="kitchen")
+    assert ptt.endpointing == "provider"
+    assert redeem_ticket(ptt.token).session_update["turn_detection"]["create_response"] is True
+
+    # Wake turn: clamped back to `hybrid`, response trigger stays with the client.
+    _, wake = await _grant(surface="kiosk-wake")
+    assert wake.endpointing == "hybrid"
+    wake_session = redeem_ticket(wake.token).session_update
+    assert wake_session["turn_detection"]["type"] == "azure_semantic_vad"
+    assert wake_session["turn_detection"]["create_response"] is False
 
 
 def test_relay_grants_are_never_cached_so_each_turn_gets_a_fresh_ticket(

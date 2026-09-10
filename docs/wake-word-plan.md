@@ -216,6 +216,16 @@ Avoid duplicating microphone capture stacks merely because implementation is con
 
 # Wake-to-Command Audio Handoff
 
+> **Resolved (MVP): `docs/voice-activation-ux-mvp.md`.** A 4 s rolling
+> `AudioRingBuffer` per detector; on activation `useVoiceSession` flushes from
+> `firedAt − WAKE_PREROLL_LEAD_MS` (1.2 s, still includes the keyword audio) up
+> to now, then hands to the live mic. The keyword is kept out of the *answer*
+> downstream — a phrase-strip regex on the transcript plus a `prompt.py` belt
+> line — not by trimming the audio (openWakeWord's fire position varies; trimming
+> harder risks clipping the first command word — deferred until kiosk hardware).
+> Ambient pre-wake audio is bounded by the ring cap and the 3.5 s content-gate
+> timeout.
+
 Treat this as an explicit engineering problem.
 
 Natural speech may be:
@@ -275,6 +285,16 @@ During response, the display remains the primary output medium where useful.
 ---
 
 # End-of-Utterance Handling
+
+> **Resolved (MVP): `docs/voice-activation-ux-mvp.md`.** A wake turn is not
+> end-of-speech-eligible until *content* speech past the keyword is seen (live-mic
+> RMS, or a non-wake-phrase transcript token) — an `awaitingContent` gate in
+> `useVoiceSession` that ignores provider `speech-*` until then (they fire on the
+> keyword in the flushed pre-roll). After the gate opens, end-of-speech is the
+> normal negotiated path (`grant.endpointing`; Azure Voice Live = `hybrid`
+> semantic VAD + mic-RMS backstop). No content within 3.5 s, or `MAX_LISTEN_MS`,
+> → silent abandon and the detector re-arms; an empty / keyword-only turn is torn
+> down before `activity-end` so nothing is spoken. Manual Stop is retained.
 
 Wake-word activation eventually needs hands-free completion of the voice turn.
 

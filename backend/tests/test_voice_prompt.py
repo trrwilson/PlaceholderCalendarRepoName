@@ -154,3 +154,9 @@ def test_system_instruction_tells_the_model_to_match_title_and_location() -> Non
 def test_system_instruction_without_a_schedule_says_so() -> None:
     text = build_system_instruction(NOW, ["Travis"], None)
     assert "not loaded right now" in text
+
+
+def test_system_instruction_treats_the_wake_phrase_as_address_not_content() -> None:
+    text = build_system_instruction(NOW, ["Travis"], None)
+    assert '"Mission Control" to get your attention' in text
+    assert "not part of their question" in text

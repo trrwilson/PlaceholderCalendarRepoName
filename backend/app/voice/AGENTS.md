@@ -150,13 +150,30 @@ backend degrades silently to push-to-talk, which is always independent of all of
 - Web Speech API is ruled out — Chrome sends its audio to Google, breaking
   local-by-default.
 
-### Activation styles — a keyword turn is not push-to-talk (`docs/voice-activation-ux-plan.md`, proposed)
+### Activation styles — a keyword turn is not push-to-talk
 
-- **Leading silence is expected.** A wake turn is not end-of-speech- or
-  answer-eligible until *content* speech (after the keyword, on the live mic) is
-  heard — a provider `speech-stopped` before that is the keyword; ignore it.
-- **The keyword is not content.** Keep it out of the transcript; never speak a
-  reply to a turn whose only content is the wake phrase — dismiss it silently.
-- **Acknowledge on detection, not on connect** — visual at `handleWake`; the cue
-  plays at detection or not at all, never mid-command. Wake grants never run pure
-  `provider` endpointing (the client must own the answer trigger to withhold it).
+MVP shipped (`docs/voice-activation-ux-mvp.md`); the earcon classifier, a shorter
+pre-roll lead, and warm sessions are still parent-plan follow-ups
+(`docs/voice-activation-ux-plan.md`).
+
+- **Leading silence is expected.** `useVoiceSession` carries an `activationStyle`
+  (`ptt` | `wake`) and an `awaitingContent` gate. A wake turn is not
+  end-of-speech- or answer-eligible until *content* speech is heard — a run of
+  live-mic frames ≥ `SPEECH_RMS`, or a `user-transcript` token past the wake
+  phrase. Until then provider `speech-started` / `speech-stopped` are ignored
+  (they fire on the keyword in the flushed pre-roll) and only
+  `WAKE_CONTENT_TIMEOUT_MS` (3.5 s) / `MAX_LISTEN_MS` apply → silent abandon.
+- **The keyword is not content.** `WAKE_PHRASE_RE` strips a leading
+  "hey/ok Mission Control" before the gate + empty checks; `prompt.py` has a
+  matching belt line. The pre-roll still carries the keyword audio
+  (`WAKE_PREROLL_LEAD_MS`, unchanged at 1.2 s). Never speak a reply to a turn
+  that never gated in content — `endUserTurn` drops it before `activity-end`.
+- **Acknowledge on detection, not on connect** — `handleWake` flips
+  `activationStyle` + `status` synchronously; `VoiceOverlay` shows "● Listening"
+  through `connecting` for a wake turn (the mic is already live). The listening
+  cue is suppressed for wake turns (visual only). PTT is unchanged.
+- Wake grants request `surface: 'kiosk-wake'`; adapters clamp such a grant to
+  `hybrid` endpointing (`app.voice.base.is_wake_surface`) — never pure
+  `provider`, so the client keeps the answer trigger and can withhold it. Only
+  `AzureVoiceLiveAdapter` clamps today (single-use ticket, so no cache concern);
+  reusable-grant providers need the surface in the cache key first.

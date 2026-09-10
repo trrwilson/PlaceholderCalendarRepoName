@@ -111,6 +111,26 @@ const AUTO_ABANDON_REASONS = new Set(['no-speech', 'max-listen-silent'])
  * fresh (treat the window as "voice active") so the hold isn't already spent
  * when the window lifts. */
 const AEC_SETTLE_MS = 250
+/** A wake turn tolerates a wide gap between "Mission Control" and the command
+ * (staged activation: keyword … wait for the ack … speak). Until *content*
+ * speech is heard on the live mic the turn is not end-of-speech- or
+ * answer-eligible; this is the ceiling on that wait before the turn is abandoned
+ * silently. Well under `MAX_LISTEN_MS`, and short enough that a false wake on the
+ * basic keyword tier only briefly opens the mic to the cloud.
+ * See docs/voice-activation-ux-mvp.md. */
+const WAKE_CONTENT_TIMEOUT_MS = 3_500
+/** Token requests for a wake turn carry this surface so the backend clamps the
+ * grant to `hybrid` endpointing — the client must own the answer trigger to
+ * withhold it for an empty turn. */
+const WAKE_SURFACE = 'kiosk-wake'
+/** Leading vocative on a wake turn — "hey/ok Mission Control," — stripped before
+ * the "is there a real command here?" checks (the pre-roll still carries the
+ * keyword audio; the prompt has a matching belt line). */
+const WAKE_PHRASE_RE = /^\s*(?:hey\s+|ok\s+|okay\s+)?mission[\s-]*control[\s,.!?]*/i
+
+function withoutWakePhrase(text: string): string {
+  return text.replace(WAKE_PHRASE_RE, '').trim()
+}
 
 const FALLBACK_MESSAGE: Record<VoiceErrorKind, string> = {
   disabled: 'Voice support is turned off.',
@@ -231,6 +251,20 @@ export function useVoiceSession({
   const viaWakeRef = useRef(false)
   /** True once a gate control command has been sent this turn, so we always send the matching close. */
   const gateTurnRef = useRef(false)
+  /** `ptt` (button) vs `wake` (keyword). A wake turn tolerates leading silence,
+   *  suppresses the listening cue, and dismisses an empty / keyword-only result
+   *  silently — see docs/voice-activation-ux-mvp.md. */
+  const activationStyleRef = useRef<'ptt' | 'wake'>('ptt')
+  const [activationStyle, setActivationStyle] = useState<'ptt' | 'wake'>('ptt')
+  /** Wake turn only: true from activation until *content* speech (past the
+   *  keyword) is seen — on the live mic, or as a non-wake-phrase transcript
+   *  token. While set, provider VAD events and the mic-RMS endpointer are
+   *  ignored: they fire on the keyword sitting in the flushed pre-roll. */
+  const awaitingContentRef = useRef(false)
+  /** Wake turn only: set once content speech has been gated in. A wake turn that
+   *  ends with this still false never carried a command — abandon it silently. */
+  const contentSpeechSeenRef = useRef(false)
+  const contentTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) {
@@ -239,8 +273,34 @@ export function useVoiceSession({
     }
   }, [])
 
+  const clearContentTimeout = useCallback(() => {
+    if (contentTimeoutRef.current) {
+      clearTimeout(contentTimeoutRef.current)
+      contentTimeoutRef.current = null
+    }
+  }, [])
+
+  /** Content speech (past the keyword) is now flowing on a wake turn: stop
+   *  ignoring provider VAD and the mic-RMS endpointer, and let the turn endpoint
+   *  normally from here. */
+  const clearContentGate = useCallback(() => {
+    if (!awaitingContentRef.current) return
+    awaitingContentRef.current = false
+    contentSpeechSeenRef.current = true
+    // Content speech was heard — the user has started talking. Arm the normal
+    // end-of-speech state so a provider `speech-stopped` (or the mic-RMS hold)
+    // from here can finalise the turn; the keyword→command gap is behind us.
+    spokeRef.current = true
+    lastVoiceAtRef.current = performance.now()
+    clearContentTimeout()
+    timelineRef.current?.mark('wake-content-detected')
+  }, [clearContentTimeout])
+
   const teardown = useCallback(() => {
     clearWatchdog()
+    clearContentTimeout()
+    awaitingContentRef.current = false
+    setActivationStyle('ptt')
     lagRef.current?.stop()
     sessionRef.current?.close()
     sessionRef.current = null
@@ -260,7 +320,7 @@ export function useVoiceSession({
       gateTurnRef.current = false
     }
     voiceDebugRecorder.endTurn()
-  }, [clearWatchdog])
+  }, [clearWatchdog, clearContentTimeout])
 
   const finishTurn = useCallback(() => {
     if (timelineRef.current) {
@@ -339,6 +399,12 @@ export function useVoiceSession({
           // from `endUserTurn` while the model was demonstrably working, and a
           // turn that transcribed late but was otherwise fine got killed.
           if (statusRef.current === 'thinking' || statusRef.current === 'speaking') armWatchdog()
+          // First real words past the wake phrase open the content gate — the
+          // keyword→command silence has been ridden out. (The mic-RMS path in
+          // `handleLevel` is the other trigger.)
+          if (awaitingContentRef.current && withoutWakePhrase(event.text).length > 0) {
+            clearContentGate()
+          }
           if (event.final) {
             // Full transcript-so-far from the provider — replace, don't append,
             // so a revised hypothesis supersedes the earlier one.
@@ -465,6 +531,13 @@ export function useVoiceSession({
           timelineRef.current?.mark('escalation', { reason: event.reason, tier: event.tier })
           break
         case 'speech-started':
+          // On a wake turn the flushed pre-roll carries the keyword; the
+          // provider VAD hears *that* first. Ignore it until real content speech
+          // has opened the gate (docs/voice-activation-ux-mvp.md).
+          if (awaitingContentRef.current) {
+            timelineRef.current?.mark('server-speech-started', { ignored: 'awaiting-content' })
+            break
+          }
           // The provider VAD (`endpointing: hybrid` / `provider`) heard the user
           // begin. Trust it to endpoint the turn; the mic-level check relaxes to
           // a long backstop from here (SERVER_VAD_BACKSTOP_MS).
@@ -479,6 +552,12 @@ export function useVoiceSession({
           // raw-energy backstop. In `hybrid` mode `endActivity` still goes out
           // from `endUserTurn` to finalise; in `provider` mode it is a no-op and
           // the reply is already on its way.
+          // Same as `speech-started`: while the keyword→command gap is open this
+          // fires on the keyword in the pre-roll, not on an actual end of turn.
+          if (awaitingContentRef.current) {
+            timelineRef.current?.mark('server-speech-stopped', { ignored: 'awaiting-content' })
+            break
+          }
           serverVadSeenRef.current = true
           timelineRef.current?.mark('server-speech-stopped')
           if (
@@ -493,7 +572,7 @@ export function useVoiceSession({
           break
       }
     },
-    [apiBaseUrl, armWatchdog, clearWatchdog, finishTurn, maybeFinish, recordFailure],
+    [apiBaseUrl, armWatchdog, clearContentGate, clearWatchdog, finishTurn, maybeFinish, recordFailure],
   )
 
   const endUserTurn = useCallback(
@@ -506,6 +585,19 @@ export function useVoiceSession({
       micRef.current?.stop()
       micRef.current = null
       setMicActive(false)
+      clearContentTimeout()
+      // A wake turn that never gated in content speech (keyword only, a false
+      // wake on the TV, a walk-away) has nothing for the model to answer. Drop
+      // it without asking for a response — no spoken non-answer on top of a
+      // missed activation. Once content *was* heard, an explicit Stop tap still
+      // submits, threshold or not. See docs/voice-activation-ux-mvp.md.
+      if (activationStyleRef.current === 'wake' && !contentSpeechSeenRef.current) {
+        awaitingContentRef.current = false
+        timelineRef.current?.mark('turn-abandoned-empty', { reason })
+        voiceDebugRecorder.note({ outcome: 'abandoned' })
+        finishTurn()
+        return
+      }
       // Nothing above the speech threshold was ever heard *and* nobody asked us
       // to submit, so there is nothing for the model to answer. Asking anyway and
       // then failing on the response watchdog blames the assistant for an empty
@@ -524,7 +616,7 @@ export function useVoiceSession({
       setStatus('thinking')
       armWatchdog()
     },
-    [armWatchdog, finishTurn],
+    [armWatchdog, clearContentTimeout, finishTurn],
   )
 
   const stopTurn = useCallback(() => endUserTurn('tap'), [endUserTurn])
@@ -550,6 +642,25 @@ export function useVoiceSession({
       // estimate — residual cue/echo is still leaking through.
       if (listenedMs < AEC_SETTLE_MS) {
         lastVoiceAtRef.current = now
+        return
+      }
+
+      // Wake turn, keyword→command gap still open: watch only for content speech
+      // starting. No endpointing here — the provider VAD and the silence hold
+      // would both trip on the keyword sitting in the flushed pre-roll. Only the
+      // hard cap and `WAKE_CONTENT_TIMEOUT_MS` (a separate timer) end the turn.
+      if (awaitingContentRef.current) {
+        if (rms >= SPEECH_RMS) {
+          // clearContentGate() arms `spoke` / `lastVoiceAt`; seed the speaker's
+          // running speech level too so the relative "still talking" gate works.
+          speechLevelRef.current = Math.min(
+            Math.max(rms, speechLevelRef.current),
+            SPEECH_LEVEL_CEILING,
+          )
+          clearContentGate()
+        } else if (listenedMs >= MAX_LISTEN_MS) {
+          endUserTurn('wake-content-timeout')
+        }
         return
       }
 
@@ -606,7 +717,7 @@ export function useVoiceSession({
         endUserTurn(spokeRef.current ? 'max-listen' : 'max-listen-silent')
       }
     },
-    [endUserTurn],
+    [clearContentGate, endUserTurn],
   )
 
   const startTurn = useCallback(async (opts?: { viaWake?: boolean }) => {
@@ -615,6 +726,12 @@ export function useVoiceSession({
     if (!viaWake && (status === 'listening' || status === 'connecting')) return
     if (status === 'unavailable' && errorRef.current?.kind === 'disabled') return
     teardown()
+    // `teardown()` resets these to the push-to-talk defaults; set the turn's
+    // real activation style right after it.
+    activationStyleRef.current = viaWake ? 'wake' : 'ptt'
+    setActivationStyle(viaWake ? 'wake' : 'ptt')
+    awaitingContentRef.current = viaWake
+    contentSpeechSeenRef.current = !viaWake
     // Push-to-talk with the on-device Invoke gate layered on: open the gate for
     // this manual turn (a wake activation opened it already). The matching close
     // goes out from `teardown()`.
@@ -647,7 +764,12 @@ export function useVoiceSession({
     timeline.mark('gesture-setup-done', { sinkState: sinkRef.current.state() })
 
     try {
-      const session = await createVoiceProvider(apiBaseUrl, handleEvent, surface, timeline)
+      const session = await createVoiceProvider(
+        apiBaseUrl,
+        handleEvent,
+        viaWake ? WAKE_SURFACE : surface,
+        timeline,
+      )
       sessionRef.current = session
       endpointingRef.current = session.endpointing
       await session.connect()
@@ -671,9 +793,13 @@ export function useVoiceSession({
       speechLevelRef.current = 0
       serverVadSeenRef.current = false
       listenStartRef.current = performance.now()
-      // The cue routes through the echo-cancelled output, so the open mic no
-      // longer hears it as speech — just play it.
-      playListeningCue(sinkRef.current)
+      // Visual-only acknowledgement for a wake turn (docs/voice-activation-ux-mvp.md
+      // §B): the "● Listening" overlay is the whole ack. A cue here routes
+      // through the echo-cancelled output so the mic won't hear it — but on a
+      // one-shot "Mission Control, what's tomorrow?" it still lands *over* the
+      // command, seconds in. Push-to-talk keeps it (wide leading silence, no
+      // command in flight yet).
+      if (!viaWake) playListeningCue(sinkRef.current)
       // Open the user's turn before any audio frame. Only `client` end-of-speech
       // actually sends an activity marker; `hybrid` / `provider` no-op here.
       session.startActivity()
@@ -706,6 +832,20 @@ export function useVoiceSession({
       }
       setMicActive(true)
       timeline.mark('mic-started')
+
+      if (viaWake) {
+        // The pre-roll (keyword + lead) has been flushed; the live mic owns the
+        // turn now. Measure the AEC settle and the content-gate deadline from
+        // this handoff, not from connect.
+        listenStartRef.current = performance.now()
+        // Don't re-arm `awaitingContentRef` here — a fast provider transcript
+        // during connect / mic start may already have opened the gate.
+        if (awaitingContentRef.current) {
+          contentTimeoutRef.current = setTimeout(() => {
+            if (awaitingContentRef.current) endUserTurnRef.current('wake-content-timeout')
+          }, WAKE_CONTENT_TIMEOUT_MS)
+        }
+      }
 
       failuresRef.current = 0
       // Sync so the mic callback's `statusRef` guard is already open.
@@ -742,6 +882,8 @@ export function useVoiceSession({
   const handleWake = useCallback(() => {
     if (statusRef.current !== 'armed') return
     statusRef.current = 'connecting'
+    activationStyleRef.current = 'wake'
+    setActivationStyle('wake')
     setStatus('connecting')
     void startTurnRef.current({ viaWake: true })
   }, [])
@@ -781,6 +923,10 @@ export function useVoiceSession({
 
   return {
     status,
+    /** `wake` while a keyword-activated turn is connecting / listening, else
+     *  `ptt`. The overlay uses it to show an honest "● Listening" from the
+     *  instant of detection (the mic is already live on a wake turn). */
+    activationStyle,
     transcript,
     error,
     micActive,
