@@ -38,6 +38,19 @@ type MediaElementWithSink = HTMLMediaElement & {
   setSinkId?: (sinkId: string) => Promise<void>
 }
 
+type ContextWithSink = AudioContext & {
+  setSinkId?: (sinkId: string) => Promise<void>
+}
+
+/** How long the loopback peer connection has to reach `connected` before we give
+ *  up on it and route the raw output instead. The SDP offer/answer completes in
+ *  a few ms; ICE for a same-process loopback is normally immediate, but on some
+ *  Windows kiosks it never connects at all (mDNS candidate resolution, a locked
+ *  network stack). When that happens the far-end `<audio>` element plays a track
+ *  that carries no media — every kiosk sound goes silent with no error and no
+ *  fallback. This watchdog is that fallback. */
+const LOOPBACK_CONNECT_TIMEOUT_MS = 4_000
+
 /** True when this runtime can pick the audio output device (`setSinkId`). */
 export function canSelectAudioOutput(): boolean {
   return (
@@ -147,8 +160,73 @@ export function createEchoCancelledOutput(
   let element: HTMLAudioElement | null = null
   let unsubscribeSink: (() => void) | null = null
   let active = false
+  let routedRaw = false
+  let connectTimer: ReturnType<typeof setTimeout> | null = null
 
   localMute.connect(dest)
+
+  /**
+   * The loopback never carried media (ICE didn't connect, or dropped). Route the
+   * caller's audio straight at the hardware instead: AEC is lost, but the kiosk
+   * is audible, which is the priority. `context.setSinkId` (Chrome 110+) keeps
+   * the selected output device honoured even without the `<audio>` element.
+   */
+  function routeRaw(reason: string): void {
+    if (routedRaw || disposed) return
+    routedRaw = true
+    active = false
+    if (connectTimer) {
+      clearTimeout(connectTimer)
+      connectTimer = null
+    }
+    console.warn(`[voice] echo-cancelled playout ${reason} — routing raw output (AEC disabled)`)
+    try {
+      localMute.disconnect()
+    } catch {
+      // not connected yet
+    }
+    localMute.connect(context.destination)
+    const setContextSink = (context as ContextWithSink).setSinkId
+    if (typeof setContextSink === 'function') {
+      void setContextSink.call(context, getOutputSinkId()).catch(() => {})
+      unsubscribeSink?.()
+      unsubscribeSink = onOutputSinkChange((sinkId) => {
+        void setContextSink.call(context, sinkId).catch(() => {})
+      })
+    }
+    if (element) {
+      try {
+        element.pause()
+      } catch {
+        // already stopped
+      }
+      element.srcObject = null
+      element.remove?.()
+      element = null
+    }
+    try {
+      pcSend.close()
+    } catch {
+      // already closed
+    }
+    try {
+      pcRecv.close()
+    } catch {
+      // already closed
+    }
+  }
+
+  pcRecv.addEventListener('iceconnectionstatechange', () => {
+    const state = pcRecv.iceConnectionState
+    if (state === 'connected' || state === 'completed') {
+      if (connectTimer) {
+        clearTimeout(connectTimer)
+        connectTimer = null
+      }
+    } else if (state === 'failed') {
+      routeRaw('loopback ICE failed')
+    }
+  })
 
   pcSend.addEventListener('icecandidate', (event) => {
     if (event.candidate) void pcRecv.addIceCandidate(event.candidate).catch(() => {})
@@ -161,6 +239,17 @@ export function createEchoCancelledOutput(
     const audio = new Audio()
     element = audio
     audio.autoplay = true
+    // Chrome on Windows will not reliably route a WebRTC playout element — nor
+    // honour `setSinkId` on it — while the element is detached from the document.
+    // Keep it in the DOM, silent and hidden, for the life of the output.
+    try {
+      audio.hidden = true
+      audio.setAttribute?.('aria-hidden', 'true')
+      document.body?.appendChild(audio)
+    } catch {
+      // no document / not a real element (tests, exotic runtimes) — detached is
+      // fine there; the DOM attach only matters for real Windows Chrome.
+    }
     audio.srcObject = new MediaStream([event.track])
     // Pin the sink before play() and keep it in step with later changes, so the
     // reply is never routed to the capture device's paired endpoint.
@@ -183,17 +272,24 @@ export function createEchoCancelledOutput(
       const answer = await pcRecv.createAnswer()
       await pcRecv.setLocalDescription(answer)
       await pcSend.setRemoteDescription(answer)
-      console.info('[voice] echo-cancelled playout loopback established')
-    } catch (error) {
-      console.warn('[voice] echo-cancelled playout loopback failed — using the raw output', error)
-      if (!disposed) {
-        try {
-          localMute.disconnect()
-        } catch {
-          // not connected yet
-        }
-        localMute.connect(context.destination)
+      console.info('[voice] echo-cancelled playout loopback negotiated — waiting for ICE')
+      // The SDP exchange succeeding does not mean media flows: ICE still has to
+      // connect. Give it a bounded window, then fall back to the raw output so a
+      // wedged loopback can never leave the kiosk silent. (If ICE already
+      // reported connected during the exchange, the watchdog isn't needed.)
+      const iceState = pcRecv.iceConnectionState
+      if (!disposed && !routedRaw && iceState !== 'connected' && iceState !== 'completed') {
+        connectTimer = setTimeout(() => {
+          connectTimer = null
+          const state = pcRecv.iceConnectionState
+          if (state !== 'connected' && state !== 'completed') {
+            routeRaw('loopback did not connect')
+          }
+        }, LOOPBACK_CONNECT_TIMEOUT_MS)
       }
+    } catch (error) {
+      console.warn('[voice] echo-cancelled playout loopback failed', error)
+      routeRaw('loopback negotiation failed')
     }
   })()
 
@@ -205,12 +301,17 @@ export function createEchoCancelledOutput(
     dispose() {
       disposed = true
       active = false
+      if (connectTimer) {
+        clearTimeout(connectTimer)
+        connectTimer = null
+      }
       unsubscribeRouted?.()
       unsubscribeSink?.()
       unsubscribeSink = null
       if (element) {
         element.pause()
         element.srcObject = null
+        element.remove?.()
         element = null
       }
       try {

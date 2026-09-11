@@ -9,12 +9,19 @@ import { resetOutputSink, setOutputSinkId } from './outputSink'
 class FakeRTCPeerConnection {
   static instances: FakeRTCPeerConnection[] = []
   static addedTracks: unknown[] = []
+  /** When false, the receiver never signals `iceconnectionstatechange` — the
+   *  loopback negotiates but no media flows (the wedged-kiosk case). */
+  static autoConnect = true
   private listeners: Record<string, ((event: unknown) => void)[]> = {}
+  iceConnectionState = 'new'
   constructor() {
     FakeRTCPeerConnection.instances.push(this)
   }
   addEventListener(type: string, cb: (event: unknown) => void) {
     ;(this.listeners[type] ??= []).push(cb)
+  }
+  private fire(type: string, event: unknown) {
+    for (const cb of this.listeners[type] ?? []) cb(event)
   }
   addTrack(track: unknown) {
     FakeRTCPeerConnection.addedTracks.push(track)
@@ -30,9 +37,18 @@ class FakeRTCPeerConnection {
     // The receiver is the 2nd instance; deliver the sender's tracks to it.
     if (this === FakeRTCPeerConnection.instances[1]) {
       for (const track of FakeRTCPeerConnection.addedTracks) {
-        for (const cb of this.listeners.track ?? []) cb({ track })
+        this.fire('track', { track })
+      }
+      if (FakeRTCPeerConnection.autoConnect) {
+        this.iceConnectionState = 'connected'
+        this.fire('iceconnectionstatechange', {})
       }
     }
+  }
+  /** Test hook: drive the receiver's ICE state after negotiation. */
+  simulateIce(state: string) {
+    this.iceConnectionState = state
+    this.fire('iceconnectionstatechange', {})
   }
   async addIceCandidate() {}
   close() {}
@@ -41,19 +57,25 @@ class FakeRTCPeerConnection {
 class FakeAudio {
   static last: FakeAudio | null = null
   autoplay = false
+  hidden = false
   srcObject: unknown = null
   setSinkId = vi.fn(async (id: string) => {
     void id
   })
   play = vi.fn(async () => {})
   pause = vi.fn()
+  remove = vi.fn()
+  setAttribute = vi.fn()
   constructor() {
     FakeAudio.last = this
   }
 }
 
 class FakeContext {
-  destination = {}
+  destination = { __role: 'destination' }
+  setSinkId = vi.fn(async (id: string) => {
+    void id
+  })
   createMediaStreamDestination() {
     return { stream: { getAudioTracks: () => [{ kind: 'audio' }] }, connect: vi.fn(), disconnect: vi.fn() }
   }
@@ -69,6 +91,7 @@ beforeEach(() => {
   resetOutputSink()
   FakeRTCPeerConnection.instances = []
   FakeRTCPeerConnection.addedTracks = []
+  FakeRTCPeerConnection.autoConnect = true
   FakeAudio.last = null
   vi.stubGlobal('RTCPeerConnection', FakeRTCPeerConnection)
   vi.stubGlobal('Audio', FakeAudio)
@@ -127,5 +150,42 @@ describe('createEchoCancelledOutput sink routing', () => {
     createEchoCancelledOutput(new FakeContext() as unknown as AudioContext)
     await flush()
     expect(FakeAudio.last?.setSinkId).toHaveBeenCalledWith('')
+  })
+})
+
+describe('createEchoCancelledOutput loopback fallback', () => {
+  it('routes the raw output (via context.setSinkId) when the loopback never connects', async () => {
+    vi.useFakeTimers()
+    try {
+      FakeRTCPeerConnection.autoConnect = false
+      setOutputSinkId('speakers-1')
+      const context = new FakeContext()
+      const output = createEchoCancelledOutput(context as unknown as AudioContext)
+      await vi.advanceTimersByTimeAsync(0) // let the negotiation IIFE arm the watchdog
+      expect(output.active).toBe(true) // optimistic until the watchdog fires
+
+      await vi.advanceTimersByTimeAsync(5_000)
+
+      expect(output.active).toBe(false)
+      // The raw output now honours the selected device via context.setSinkId...
+      expect(context.setSinkId).toHaveBeenCalledWith('speakers-1')
+      // ...and keeps following later device changes.
+      context.setSinkId.mockClear()
+      setOutputSinkId('headphones-2')
+      expect(context.setSinkId).toHaveBeenCalledWith('headphones-2')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('falls back immediately when ICE reports failed', async () => {
+    FakeRTCPeerConnection.autoConnect = false
+    const context = new FakeContext()
+    const output = createEchoCancelledOutput(context as unknown as AudioContext)
+    await flush()
+    const receiver = FakeRTCPeerConnection.instances[1]
+    receiver.simulateIce('failed')
+    expect(output.active).toBe(false)
+    expect(context.setSinkId).toHaveBeenCalled()
   })
 })

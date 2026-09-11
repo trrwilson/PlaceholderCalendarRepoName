@@ -161,6 +161,28 @@ Two consequences worth knowing:
   compensate for a gain change.
 - Changing `LEVEL_REFERENCE_GAIN_DB` invalidates all of them at once.
 
+### The end-of-speech gate adapts to a noisy far-field feed
+
+`SPEECH_RMS_FLOOR` is an absolute "below this is never speech" floor, and it
+assumes the room goes quieter than a voice between phrases. The kiosk's VB-CABLE
+feed from the Invoke far-field mic does not — its noise floor sits around
+0.015–0.02 RMS (the same fact that drove `WAKE_CONTENT_RMS` on the wake path). So
+once speech had been heard the "still talking?" gate never fell back under the
+incoming level, the silence clock was refreshed every frame, and a turn only ever
+ended at `MAX_LISTEN_MS` — the "spoken input sits unfinalized for up to 15 s,
+worst on the VB-CABLE input" symptom.
+
+`useVoiceSession` now samples the room's own noise floor from the quiet *before*
+the first speech of a turn (per-frame minimum, post-AEC-settle, only frames below
+`NOISE_FLOOR_SAMPLE_CEILING` so an eager talker's first word can't seed it) and
+lifts both the first-arm gate and the end-of-speech floor to
+`NOISE_FLOOR_MULT` × that, capped at `NOISE_FLOOR_CEILING`. A clean mic, or a
+turn begun with no leading pause, is unchanged — the sample stays unset and the
+absolute floors apply as before. It is a floor, not a full VAD: a room whose
+noise reaches a speaking level is past what this or any single-mic gate can
+separate, and wants the on-device Invoke gate (digital silence between
+activations) instead.
+
 ### What the gain still legitimately affects
 
 Not everything can be normalised away, and these are expected to need a re-check
@@ -193,9 +215,19 @@ through a plain `AudioContext` destination is never in the AEC reference, so wit
 the mic and speakers a foot apart on a wall panel, the appliance hears itself at
 full level. `aecPlayback.ts` implements the documented loopback workaround:
 render into a `MediaStreamAudioDestinationNode`, pipe it through a local
-`RTCPeerConnection` pair, play the far end through an `<audio>` element. It
-degrades to `context.destination` where `RTCPeerConnection` is unavailable
-(jsdom, a locked-down runtime), so audio always plays — it just is not cancelled.
+`RTCPeerConnection` pair, play the far end through an `<audio>` element (kept
+attached to the document, hidden — a detached WebRTC playout element is not
+reliably routed on Windows Chrome and does not honour `setSinkId`).
+
+**The loopback must never be a single point of silence.** It degrades to
+`context.destination` where `RTCPeerConnection` is unavailable (jsdom, a
+locked-down runtime), *and also* when the loopback negotiates but its ICE never
+reaches `connected` within `LOOPBACK_CONNECT_TIMEOUT_MS`, or later fails — seen
+on kiosks where mDNS candidate resolution is blocked, where the far-end `<audio>`
+then plays a track carrying no media and every kiosk sound goes silent with no
+error. On that fallback AEC is lost but the appliance stays audible, and the
+selected output device is still honoured through `AudioContext.setSinkId`
+(Chrome 110+) since the `<audio>` element is gone.
 
 Echo cancellation is a whole-appliance requirement, not a voice-module one: the
 timer chime rings *while* someone says "Mission Control, stop the timer", so
@@ -347,7 +379,7 @@ per install. Change them with a capture in hand.
 | Where | Constants |
 | --- | --- |
 | `voice/gain.ts` | `DEFAULT_INPUT_GAIN_DB` (fallback when the backend is unreachable — keep in step with `config.py`), `LEVEL_REFERENCE_GAIN_DB` |
-| `voice/useVoiceSession.ts` | `SPEECH_RMS`, `SPEECH_LEVEL_FRACTION`, `SPEECH_RMS_FLOOR`, `SPEECH_LEVEL_CEILING`, `SILENCE_HOLD_MS`, `SERVER_VAD_BACKSTOP_MS`, `MIN_LISTEN_MS`, `MAX_LISTEN_MS`, `NO_SPEECH_TIMEOUT_MS`, `AEC_SETTLE_MS`, `PLAYOUT_GRACE_MS`, `RESPONSE_TIMEOUT_MS` |
+| `voice/useVoiceSession.ts` | `SPEECH_RMS`, `SPEECH_LEVEL_FRACTION`, `SPEECH_RMS_FLOOR`, `SPEECH_LEVEL_CEILING`, `NOISE_FLOOR_MULT`, `NOISE_FLOOR_CEILING`, `NOISE_FLOOR_SAMPLE_CEILING`, `SILENCE_HOLD_MS`, `SERVER_VAD_BACKSTOP_MS`, `MIN_LISTEN_MS`, `MAX_LISTEN_MS`, `NO_SPEECH_TIMEOUT_MS`, `AEC_SETTLE_MS`, `PLAYOUT_GRACE_MS`, `RESPONSE_TIMEOUT_MS` |
 | `voice/audio.ts` | default capture / playback rates, `GAIN_LOG_INTERVAL_MS`, sink lead and cue tone |
 | `voice/speakerOut.ts` | `MAX_BUFFERED_BYTES` (WS stall threshold), `MAX_SEND_SAMPLES`, reconnect backoff |
 | `voice/speakerMix.ts` | ring seconds (how far a fast tap may run ahead) |
