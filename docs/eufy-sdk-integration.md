@@ -1136,3 +1136,49 @@ above.
   during this investigation specifically so a future session doesn't have to
   re-derive "did anything even run" from silence, the ambiguity that cost
   real time here.
+
+### 16.6 Playback: HEVC video decoded by nobody — fixed via transcode, hardware decode deferred
+
+First real-hardware clip playback on the 4K kiosk (2026-09-11): the modal
+player showed audio with a **black video frame** — sound was audible and
+correct, picture never appeared. Root cause: `eufy-bridge/src/ffmpeg.js`
+muxed with `-c:v copy`, and this household's real clips are HEVC/H.265
+(§5.1). `scripts/kiosk-start.ps1` opens the kiosk in stock Chrome or Edge;
+Chrome ships with no HEVC decoder at all (licensing), so the browser opened
+the muxed MP4, decoded the AAC audio track fine (universally supported), and
+silently failed to decode the HEVC video track — no error surfaced anywhere,
+since decode failure inside `<video>` doesn't throw, it just renders nothing.
+
+**Fix applied:** `muxClip` now always transcodes video to H.264
+(`-c:v libx264 -preset veryfast -crf 23`) instead of copying the bitstream.
+This costs real CPU per clip retrieval (encode time, not a free remux) but
+guarantees playback in both Chrome and Edge with no dependency on OS codec
+packages.
+
+**Deferred, not done:** hardware/OS-level HEVC decode (e.g. Windows' "HEVC
+Video Extensions" package) would avoid the transcode cost entirely, but only
+helps Edge — Chrome does not use OS/Media-Foundation decoders for HEVC
+regardless of what's installed, and `Find-Browser` in
+`scripts/kiosk-start.ps1` tries Chrome before Edge, so this only pays off if
+the kiosk is also switched to preferring Edge. Revisit if per-clip transcode
+latency or kiosk CPU load becomes a real problem.
+
+**Operational note for whoever hits this again:** the eufy-bridge Node
+process only reads `ffmpeg.js` (and any other bridge source file) once, at
+its own startup — editing the file on disk does nothing to an already-running
+bridge, and `retrieveClip` separately caches the muxed output on disk
+(`eufy_clip_cache_dir`, keyed by a hash of the clip id) and skips ffmpeg
+entirely on a cache hit. A backend restart is required to load bridge code
+changes (it respawns the bridge as a fresh child process), and any clip
+already muxed under the old behaviour stays cached and stale until its TTL
+(`eufy_clip_cache_ttl_seconds`, default 600s) evicts it or the cache file is
+deleted by hand — both are needed to actually exercise a bridge-side fix.
+
+**Loading feedback added alongside this fix:** clip retrieval is a real P2P
+download + decrypt + transcode, not a cheap fetch — several seconds of
+`<video>` sitting there with nothing to show, which looks identical to the
+black-screen bug above but for an unrelated reason (still loading, not a
+codec failure). `CameraClipModal` (`frontend/src/App.tsx`) now shows a
+spinner overlay ("Loading clip…") from the moment the modal opens until the
+video reports `canplay`/`playing`, and a plain "Couldn't load this clip."
+message if the request errors instead of spinning forever.
