@@ -29,8 +29,14 @@ eufy-bridge/node_modules/
 # eufy-security-client persisted session (cloud tokens, push credentials — see
 # docs/eufy-sdk-integration.md "Session persistence"). Reusing it skips a fresh
 # cloud login, which matters for staying under eufy's abuse-cooldown threshold.
+# The literal filename varies with whatever MISSION_CONTROL_EUFY_SESSION_FILE
+# resolves to on a given host (the code default is .eufy_persistent.json, but
+# e.g. the 2026-09-11 hardware bring-up landed on backend/persistent.json) --
+# ignore both spellings rather than assume the default is what's on disk.
 .eufy_persistent.json
 *.eufy_persistent.json
+persistent.json
+backend/persistent.json
 
 # Eufy clip gallery: short-lived decrypted clip cache
 # (MISSION_CONTROL_EUFY_CLIP_CACHE_DIR) — never durable, evicted on a TTL by
