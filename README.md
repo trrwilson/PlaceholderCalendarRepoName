@@ -36,6 +36,10 @@ questions, drives the display, and controls the timer — but never writes the c
   local pipeline (`WS /api/voice/local`). `backend/app/voice/local/` is the on-device
   STT + intent/entity pipeline; `frontend/src/voice/` holds the session, audio, wake
   word, and tools. `docs/audio-pipeline.md` is the authority on capture/playout.
+- `backend/app/eufy/` + `eufy-bridge/`: the camera clip gallery. A Node sidecar
+  (`eufy-security-client`) does the cloud login + local P2P work; `app/eufy/`
+  supervises it and exposes `GET /api/household` + thumbnail/video endpoints.
+  See `docs/eufy-sdk-integration.md`.
 - `backend/tests/`: focused provider, model, Graph-mapping, timer, and voice tests.
 - `AGENTS.md`: durable architecture, product constraints, conventions, and definition of
   done for coding-agent work — with nested `frontend/AGENTS.md`, `backend/AGENTS.md`,
@@ -142,6 +146,19 @@ selected detector then re-checks. **Off by default**; needs
 `MISSION_CONTROL_WAKE_WORD_INVOKE_GATE_HOST=<ip>` and Settings → "On-device audio
 gate". See `docs/wake-word-provider-bakeoff.md`.
 
+### Enabling the eufy camera clip gallery
+
+Off by default — replaces the home view's placeholder "Needs attention" card with a
+tappable thumbnail review of recent eufy camera clips when on. Set
+`MISSION_CONTROL_EUFY_ENABLED=true` plus `MISSION_CONTROL_EUFY_EMAIL` /
+`_PASSWORD` in `backend/.env`; `backend/.env.example` documents the rest (region,
+station LAN IP/serial, gallery sizing). Needs a **Node >= 24.0.0** runtime available
+to the backend (set `MISSION_CONTROL_EUFY_BRIDGE_NODE_PATH` if the system `node` is
+older) and `npm install` run once in `eufy-bridge/`. The backend spawns and
+supervises that Node sidecar itself — no separate process to start. First-time
+sign-in (only if no valid session is cached yet): `python -m app.eufy login` from
+`backend/`. See `docs/eufy-sdk-integration.md`.
+
 ## Validation
 
 ```powershell
@@ -155,6 +172,9 @@ npm run test
 npm run lint
 npm run build
 npm run test:e2e   # Playwright; when frontend behavior or layout changed
+
+cd ..\eufy-bridge
+npm test           # node:test against a stubbed eufy-security-client, no real SDK/network
 ```
 
 The frontend targets pointer/touch interaction and does not depend on keyboard input.

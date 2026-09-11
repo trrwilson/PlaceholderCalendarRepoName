@@ -15,6 +15,7 @@ frontend/dist/
 frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
+eufy-bridge/node_modules/
 
 # Local configuration
 .env
@@ -30,6 +31,13 @@ frontend/blob-report/
 # cloud login, which matters for staying under eufy's abuse-cooldown threshold.
 .eufy_persistent.json
 *.eufy_persistent.json
+
+# Eufy clip gallery: short-lived decrypted clip cache
+# (MISSION_CONTROL_EUFY_CLIP_CACHE_DIR) — never durable, evicted on a TTL by
+# the bridge itself. This is the one place this feature writes decrypted
+# media to disk, however briefly (docs/eufy-sdk-integration.md).
+.eufy_clip_cache/
+backend/.eufy_clip_cache/
 
 # Voice debug audio captures (MISSION_CONTROL_VOICE_DEBUG_CAPTURE_DIR)
 backend/voice-captures/

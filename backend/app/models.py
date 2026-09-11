@@ -457,6 +457,45 @@ class PresenceDiagnostics(BaseModel):
     display_mechanism_available: bool
 
 
+# -- Eufy camera clip gallery ------------------------------------------------
+# On-demand review of recent eufy camera clips — thumbnails in recency order,
+# tap to play. Provider-neutral: the `eufy-security-client` vocabulary (device
+# serials, `record_id`, `storage_path`/`cipher_id`) is mapped to `StoredClip` at
+# the `app/eufy/` boundary and never reaches this model or the frontend. See
+# docs/eufy-sdk-integration.md. Ambient events (motion/person/doorbell banners,
+# contact-sensor exceptions) are a separate, not-yet-built capability the same
+# doc designs — this is only the clip-review surface.
+
+EufySourceStatus = Literal["connected", "connecting", "needs_signin", "disabled", "error"]
+
+
+class StoredClip(BaseModel):
+    """One retrievable local-storage recording, newest-first in the gallery.
+
+    ``clip_id`` is opaque to every caller outside ``app/eufy/`` (it wraps the
+    device serial + the station's local ``record_id``); the frontend never
+    parses it, only round-trips it to the thumbnail/video endpoints.
+    ``approx_duration_seconds`` is estimated from the station's frame count at
+    an assumed frame rate (the true rate is only known once a download starts)
+    — treat it as a rough label, not a precise duration.
+    """
+
+    clip_id: str = Field(min_length=1)
+    camera_id: str = Field(min_length=1)  # opaque; the device serial
+    camera_name: str = Field(min_length=1)
+    occurred_at: datetime  # naive local time — converted at the app/eufy boundary
+    approx_duration_seconds: float | None = None
+    has_thumbnail: bool = True
+
+
+class CameraGallerySnapshot(BaseModel):
+    """``GET /api/household`` response: the clip-review gallery's current state."""
+
+    clips: list[StoredClip] = Field(default_factory=list)  # newest first, bounded
+    source_status: EufySourceStatus
+    cameras_online: bool
+
+
 class ApplicationMessage(BaseModel):
     type: str
     message: str
@@ -479,6 +518,11 @@ class ApplicationMessage(BaseModel):
     # The physical display reuses it too: ``display`` is the current DisplayState,
     # pushed on every brightness / night-mode change and sent on connect.
     display: DisplayState | None = None
+    # The eufy clip gallery reuses it too: ``camera_clips`` is the full current
+    # (bounded, newest-first) clip list for reconciliation, pushed on every
+    # change and on connect; ``camera_status`` is the source's connection state.
+    camera_clips: list[StoredClip] | None = None
+    camera_status: str | None = None
     # Keep ``list`` last: ``list: … = None`` binds the name in the class body, which
     # would shadow the ``list`` builtin for any annotation evaluated after it.
     list: GroceryList | None = None

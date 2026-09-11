@@ -1,0 +1,19 @@
+{
+  "name": "mission-control-eufy-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local sidecar wrapping eufy-security-client for Mission Control's camera clip gallery. Not published; deployment infrastructure only. See docs/eufy-sdk-integration.md.",
+  "type": "commonjs",
+  "main": "index.js",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "eufy-security-client": "4.1.1-1",
+    "ws": "^8.18.0"
+  }
+}

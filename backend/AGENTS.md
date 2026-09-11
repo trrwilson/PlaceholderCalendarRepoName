@@ -45,7 +45,9 @@ registry + `broadcast()`. The timer and list stores push typed messages on this 
 channel, and the socket sends the current timers + lists on connect. One shared
 frontend connection (`frontend/src/realtime/appSocket.ts` + `useAppSocket`) feeds both
 `useTimers` and `useLists`. Keep any further push a small typed extension of the
-envelope — no second socket, no bus.
+envelope — no second socket, no bus. `EufyEventService` (`app/eufy/`) follows the
+same injected-broadcast, no-socket-import mould as the feature stores below and
+pushes `camera_clips`/`camera_status` on the same envelope.
 
 ## Feature stores — timer / list / privacy
 

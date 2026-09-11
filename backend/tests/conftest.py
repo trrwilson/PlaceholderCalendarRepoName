@@ -3,6 +3,7 @@ import pytest
 from app.api import _build_provider
 from app.config import Settings, get_settings
 from app.display import reset_display_store
+from app.eufy import reset_eufy_service
 from app.lists import reset_list_store
 from app.presence import reset_presence
 from app.privacy import reset_privacy_store
@@ -41,6 +42,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     reset_privacy_store()
     reset_display_store()
     reset_presence()
+    reset_eufy_service()
     reset_voice_token_cache()
     reset_provider_override()
     reset_wake_provider_override()
@@ -56,6 +58,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     reset_privacy_store()
     reset_display_store()
     reset_presence()
+    reset_eufy_service()
     reset_voice_token_cache()
     reset_provider_override()
     reset_wake_provider_override()

@@ -578,4 +578,66 @@ describe('Mission Control dashboard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Turn off privacy mode' }))
     expect(await screen.findByRole('dialog', { name: 'Turn off privacy mode' })).toBeInTheDocument()
   })
+
+  describe('camera clip gallery', () => {
+    const clip = (over: Record<string, unknown> = {}) => ({
+      clip_id: 'a:1', camera_id: 'a', camera_name: 'Front Door', occurred_at: new Date().toISOString(), approx_duration_seconds: 18, has_thumbnail: true, ...over,
+    })
+    const stubFetch = (over: { household?: object; privacy?: object } = {}) => {
+      vi.stubGlobal('fetch', vi.fn((url: string | URL) => {
+        const target = String(url)
+        if (target.includes('/api/household')) {
+          return Promise.resolve({ ok: true, status: 200, json: async () => ({ clips: [clip()], source_status: 'connected', cameras_online: true, ...over.household }) })
+        }
+        if (target.includes('/api/privacy')) {
+          return Promise.resolve({ ok: true, json: async () => ({ locked: false, since: null, available: true, ...over.privacy }) })
+        }
+        if (target.includes('/api/calendar')) {
+          return Promise.resolve({ ok: true, json: async () => ({ calendars: [], events: [] }) })
+        }
+        return Promise.resolve({ ok: true, json: async () => ({}) })
+      }))
+    }
+
+    it('replaces the old placeholder slot with a thumbnail that opens the player on tap', async () => {
+      stubFetch()
+      render(<App />)
+      const thumb = await screen.findByRole('button', { name: /Play Front Door clip/ })
+      expect(thumb.querySelector('img')).toHaveAttribute('src', expect.stringContaining('/api/camera/clip/a%3A1/thumbnail'))
+
+      fireEvent.click(thumb)
+      const dialog = await screen.findByRole('dialog', { name: 'Front Door clip' })
+      expect(dialog.querySelector('video')).toHaveAttribute('src', expect.stringContaining('/api/camera/clip/a%3A1/video'))
+
+      // Escape and outside-tap both dismiss it.
+      fireEvent.keyDown(window, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Front Door clip' })).not.toBeInTheDocument())
+    })
+
+    it('dismisses the clip player on an outside tap', async () => {
+      stubFetch()
+      render(<App />)
+      const thumb = await screen.findByRole('button', { name: /Play Front Door clip/ })
+      fireEvent.click(thumb)
+      const dialog = await screen.findByRole('dialog', { name: 'Front Door clip' })
+      fireEvent.click(dialog.parentElement as HTMLElement) // the scrim, not the dialog itself
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Front Door clip' })).not.toBeInTheDocument())
+    })
+
+    it('collapses to nothing when there are no clips', async () => {
+      stubFetch({ household: { clips: [] } })
+      render(<App />)
+      await screen.findByText('Today')
+      expect(screen.queryByText('Recent activity')).not.toBeInTheDocument()
+    })
+
+    it('shows generic placeholders with no thumbnail fetch or tap interaction while privacy-locked', async () => {
+      stubFetch({ privacy: { locked: true, since: 't' } })
+      render(<App />)
+      await screen.findByText('Recent activity')
+      expect(screen.queryByRole('button', { name: /Play Front Door clip/ })).not.toBeInTheDocument()
+      expect(document.querySelector('.camera-thumb-private')).toBeInTheDocument()
+      expect(document.querySelector('.camera-thumb-private img')).not.toBeInTheDocument()
+    })
+  })
 })

@@ -2,13 +2,23 @@ import ipaddress
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
 import app.calendar.personal_auth as personal_auth
 from app.calendar.provider import CalendarProvider, MockCalendarProvider
 from app.config import get_settings
 from app.display import get_display_store
+from app.eufy import get_eufy_service
 from app.host import host_capabilities
 from app.lists import get_list_store
 from app.models import (
@@ -17,6 +27,7 @@ from app.models import (
     CalendarAuthStatus,
     CalendarRange,
     CalendarSnapshot,
+    CameraGallerySnapshot,
     DisplayConfigUpdate,
     DisplayState,
     GroceryList,
@@ -899,6 +910,63 @@ def presence_activity(request: Request, body: PresenceActivityRequest) -> None:
     note_activity(body.source)
 
 
+# -- eufy camera clip gallery -------------------------------------------------
+# On-demand thumbnails + tap-to-play video for recent eufy clips, replacing the
+# "garage door" placeholder in the home view. These are read-only fetches (a
+# snapshot / cached-image / retrieved-video read never mutates household
+# state), so they are LAN-gated like `/api/display` and `/api/presence` but
+# not `_require_unlocked` — the frontend itself refuses to open the gallery
+# while privacy-locked, matching how it already treats other camera imagery.
+# See docs/eufy-sdk-integration.md.
+
+
+@router.get("/household", response_model=CameraGallerySnapshot)
+def household_snapshot(request: Request) -> CameraGallerySnapshot:
+    """The clip gallery's current state. 409 while eufy is disabled, matching
+    `/api/presence` and `/api/voice/token`."""
+    _require_local(request)
+    service = get_eufy_service()
+    if service is None:
+        raise HTTPException(status_code=409, detail="camera clip gallery is disabled")
+    return service.snapshot()
+
+
+@router.get("/camera/clip/{clip_id}/thumbnail")
+async def camera_clip_thumbnail(request: Request, clip_id: str) -> Response:
+    """A cached, decoded JPEG for one clip. 404 for an unknown clip id (already
+    evicted from the ring buffer, or never existed); 503 if the bridge can't
+    resolve it right now — never a 500 for a camera hiccup."""
+    _require_local(request)
+    service = get_eufy_service()
+    if service is None:
+        raise HTTPException(status_code=409, detail="camera clip gallery is disabled")
+    if not service.has_clip(clip_id):
+        raise HTTPException(status_code=404, detail="no such clip")
+    data = await service.get_thumbnail(clip_id)
+    if data is None:
+        raise HTTPException(status_code=503, detail="thumbnail unavailable right now")
+    return Response(content=data, media_type="image/jpeg")
+
+
+@router.get("/camera/clip/{clip_id}/video")
+async def camera_clip_video(request: Request, clip_id: str) -> FileResponse:
+    """Retrieve (decrypt + mux, on first request) and stream the clip's video.
+    No HTTP Range support in this v1 — clips are short household recordings,
+    not long video, so seeking ahead of the buffered portion is an accepted
+    gap. LAN-gated; the response is never cacheable client-side since the file
+    behind it is a short-lived local cache, not a stable resource."""
+    _require_local(request)
+    service = get_eufy_service()
+    if service is None:
+        raise HTTPException(status_code=409, detail="camera clip gallery is disabled")
+    if not service.has_clip(clip_id):
+        raise HTTPException(status_code=404, detail="no such clip")
+    path = await service.get_video_path(clip_id)
+    if path is None:
+        raise HTTPException(status_code=503, detail="video unavailable right now")
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "no-store"})
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -940,6 +1008,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 display=get_display_store().state(),
             ).model_dump(mode="json", exclude_none=True)
         )
+        # ...and the current camera clip gallery, if the feature is on.
+        eufy_service = get_eufy_service()
+        if eufy_service is not None:
+            snapshot = eufy_service.snapshot()
+            await websocket.send_json(
+                ApplicationMessage(
+                    type="camera_clips",
+                    message="current camera clip gallery",
+                    camera_clips=snapshot.clips,
+                    camera_status=snapshot.source_status,
+                ).model_dump(mode="json", exclude_none=True)
+            )
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

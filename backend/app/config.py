@@ -637,6 +637,167 @@ class Settings(BaseSettings):
             raise ValueError("privacy_mode_pin must be exactly four digits (or blank to disable)")
         return pin
 
+    # -- Eufy camera clip gallery ------------------------------------------
+    # On-demand thumbnail/video review of recent eufy camera clips, replacing
+    # the home-view "garage door" placeholder. Verified against real HomeBase 3
+    # hardware (docs/eufy-sdk-integration.md); a small Node sidecar
+    # (`eufy-bridge/`, `eufy-security-client`) does the P2P/cloud work and talks
+    # to this backend over a localhost WebSocket the backend supervises as a
+    # child process. Off by default — false ⇒ no bridge spawned, no eufy code
+    # imported, `/api/household` and the clip endpoints 409.
+    eufy_enabled: bool = False
+    eufy_email: str | None = None
+    eufy_password: str | None = None
+    # Must match the eufy app's account region exactly (verified "US" 2026-09-10).
+    eufy_region: str = "US"
+    # Bridge session file — cloud tokens + push credentials + openudid. Always
+    # tried before a fresh login (docs/eufy-sdk-integration.md §5.5): the whole
+    # point is minimizing cloud-facing auth traffic. Relative -> backend working
+    # dir, alongside .msal_token_cache.json; git-ignored.
+    eufy_session_file: str = ".eufy_persistent.json"
+    # The device fingerprint (`openudid`) is generated and persisted by
+    # eufy-security-client itself, inside the session file (§5.5) — it is not
+    # a settable field on `EufySecurityConfig` (verified against the real
+    # 4.1.1-1 type definitions, 2026-09-11). Nothing to configure here;
+    # changing accounts/devices is what would force a fresh one.
+    #
+    # This household's HomeBase LAN IP + station serial — local P2P discovery
+    # was unreliable without an explicit `stationIPAddresses` hint in the
+    # verification spike, and that config option is keyed by serial, so both
+    # must be set together for the hint to take effect. Blank = rely on
+    # discovery (verified 2026-09-10: unreliable without this).
+    eufy_station_lan_ip: str | None = None
+    eufy_station_serial: str | None = None  # this household: "T8030P13232003FB"
+    # Optional {serial: "Front door"} friendly-name overrides; falls back to the
+    # device's own name from the SDK. Same "key=value,key2=value2" parsing as
+    # local_person_aliases.
+    eufy_camera_names: Annotated[dict[str, str], NoDecode] = {}
+
+    @field_validator("eufy_camera_names", mode="before")
+    @classmethod
+    def _parse_eufy_camera_names(cls, value: object) -> object:
+        if isinstance(value, str):
+            out: dict[str, str] = {}
+            for pair in value.split(","):
+                if "=" in pair:
+                    key, val = pair.split("=", 1)
+                    if key.strip() and val.strip():
+                        out[key.strip()] = val.strip()
+            return out
+        return value
+
+    # The bridge's own cloud-session housekeeping refresh. A too-large value
+    # here previously overflowed Node's 32-bit setTimeout and fired the cloud
+    # refresh call roughly every millisecond instead — ~356 extra authenticated
+    # calls in under two minutes (docs/eufy-sdk-integration.md §5.6.1). Validated
+    # below to a sane range; never pass anything meant as "infinite"/"disabled".
+    eufy_polling_interval_minutes: int = 1440  # once/day
+
+    @field_validator("eufy_polling_interval_minutes")
+    @classmethod
+    def _check_eufy_polling_interval(cls, value: int) -> int:
+        # Comfortably under Node setTimeout's ~35,791-minute (2^31 ms) overflow
+        # ceiling, with headroom — see the §5.6.1 incident this guards against.
+        if not 1 <= value <= 44_640:  # 31 days
+            raise ValueError("eufy_polling_interval_minutes must be between 1 and 44640")
+        return value
+
+    # How often the bridge re-lists each camera's local event database
+    # (`databaseQueryByDate`) to discover new clips. This is a **LAN-local P2P
+    # call to the HomeBase, not a call to eufy's cloud** — safe to run often
+    # (see AGENTS.md -> "minimize cloud-facing activity"). Real-time device
+    # events (motion/person/doorbell/etc.) additionally trigger an immediate
+    # targeted re-list for that one camera, so this interval is a fallback, not
+    # the primary freshness path.
+    eufy_reconcile_interval_seconds: int = 120
+    # How far back each reconciliation query looks, to tolerate a missed push
+    # or a bridge restart without re-scanning the station's whole (thousands of
+    # events) local index.
+    eufy_reconcile_lookback_minutes: int = 10
+
+    @field_validator("eufy_reconcile_interval_seconds", "eufy_reconcile_lookback_minutes")
+    @classmethod
+    def _check_eufy_positive_int(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("must be a positive number of seconds/minutes")
+        return value
+
+    # Bounded ring buffer of the most recent discovered clips (across all
+    # cameras) kept in memory for the gallery; oldest drop off as new arrive.
+    eufy_clip_ring_buffer_size: int = 20
+    # Bounded LRU of decoded thumbnail JPEGs kept in memory, so re-rendering the
+    # gallery never re-decodes a thumbnail already shown.
+    eufy_thumbnail_cache_size: int = 20
+    # A stored record carries a frame count but not a frame rate (the true rate
+    # is only known once a download actually starts); this is the assumed rate
+    # used to turn frame_num into an approximate duration label for the gallery
+    # (the verified spike's clip was ~15fps). Purely cosmetic — never used for
+    # playback.
+    eufy_assumed_fps: float = 15.0
+    # Where the bridge writes a retrieved-and-muxed clip before the backend
+    # streams it to the kiosk. Short-lived, git-ignored, relative -> backend
+    # working dir. This is the one place this feature writes decrypted media to
+    # disk, however briefly (AGENTS.md -> "Eufy camera integration").
+    eufy_clip_cache_dir: str = ".eufy_clip_cache"
+    # How long a retrieved clip file is kept before it is eligible for cleanup.
+    # Not a hard delete guarantee — a still-open kiosk playback is never
+    # interrupted; this only bounds how long a *finished* clip lingers on disk.
+    eufy_clip_cache_ttl_seconds: int = 600
+
+    @field_validator(
+        "eufy_clip_ring_buffer_size", "eufy_thumbnail_cache_size", "eufy_clip_cache_ttl_seconds"
+    )
+    @classmethod
+    def _check_eufy_positive_ints(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("must be a positive number")
+        return value
+
+    @field_validator("eufy_assumed_fps")
+    @classmethod
+    def _check_eufy_assumed_fps(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("eufy_assumed_fps must be positive")
+        return value
+
+    # -- Eufy bridge process (the Node sidecar this backend supervises) -----
+    # `eufy_enabled` alone does not start anything with hardware/network
+    # side effects until lifespan startup spawns this child process — mirrors
+    # `host_local_camera` gating the webcam thread. Localhost only; never
+    # exposed off-box.
+    eufy_bridge_host: str = "127.0.0.1"
+    eufy_bridge_port: int = 3011
+    # The Node executable to spawn the bridge with. Override with an absolute
+    # path if the host's system `node` is older than the bridge's Node >= 24.0.0
+    # requirement (docs/eufy-sdk-integration.md open question #2 — the
+    # verification spike used a portable Node 24 extraction, not a system install).
+    eufy_bridge_node_path: str = "node"
+    # Entry script, relative -> backend working dir (matches every other
+    # relative path in this config).
+    eufy_bridge_script: str = "../eufy-bridge/index.js"
+    # Initial reconnect/respawn backoff if the bridge process exits or the
+    # control socket drops; doubles on each consecutive failure, capped here —
+    # same "exponential backoff, cap ~60s" rule as every other reconnect loop
+    # in this backend.
+    eufy_bridge_restart_backoff_seconds: float = 5.0
+    eufy_bridge_restart_backoff_max_seconds: float = 60.0
+
+    @field_validator("eufy_bridge_port")
+    @classmethod
+    def _check_eufy_bridge_port(cls, value: int) -> int:
+        if not 1 <= value <= 65_535:
+            raise ValueError("eufy_bridge_port must be a valid TCP port")
+        return value
+
+    @field_validator(
+        "eufy_bridge_restart_backoff_seconds", "eufy_bridge_restart_backoff_max_seconds"
+    )
+    @classmethod
+    def _check_eufy_backoff(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("must be a positive number of seconds")
+        return value
+
     def calendar_color_for(self, index: int) -> CalendarColor:
         """Assign a stable CalendarColor to the configured user at ``index``.
 

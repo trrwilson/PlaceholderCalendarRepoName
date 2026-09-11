@@ -57,14 +57,18 @@ backend/                FastAPI service (Python 3.12+)
   app/models.py          Pydantic v2 domain + API models — the frontend/backend contract
   app/calendar/          CalendarProvider protocol + mock / Graph / personal-Outlook providers
   app/voice/             shared voice plumbing + providers/ adapters; local/ hybrid pipeline; wake*
+  app/eufy/              eufy clip gallery: bridge client, event mapping, EufyEventService
   app/timers.py  app/lists.py  app/privacy.py    backend-owned feature stores
   tests/                pytest
 frontend/               React 19 + TypeScript (strict) + Vite
   src/App.tsx           App shell + Home/Week/Month views + hand-written API types
   src/App.css           Design tokens + layout + semantic markers (single stylesheet)
   src/voice/            tap-to-talk session, audio pipeline, wake word, tools
+  src/camera/            eufy clip gallery hook + mirrored types
   src/timers/  src/lists/  src/realtime/         feature UIs + one shared /api/ws socket
   e2e/                  Playwright kiosk-layout checks
+eufy-bridge/            Node >= 24 sidecar wrapping eufy-security-client — not a Python dep,
+                        spawned/supervised by app/eufy/bridge_process.py; see docs/eufy-sdk-integration.md
 ```
 
 ## Product & design principles
@@ -113,6 +117,17 @@ method and a maintained catalogue.
   store, Redis, Postgres, or a broker.
 - **Real-time is one small typed endpoint** (`/api/ws`, `ApplicationMessage`), not an
   event bus. Keep any addition a small typed extension. See `backend/AGENTS.md`.
+- **Unofficial third-party integrations** (eufy: `eufy-security-client`, against
+  Anker's ToS) stay feature-flagged, isolated in their own package/sidecar, and
+  severable — failure must never degrade the core calendar experience. Full
+  account credentials server-side is heavier than this repo's other read-only
+  OAuth flows; justified only when there is no official API. Any config value
+  feeding a timer/interval must be validated against platform limits before
+  shipping (a too-large `pollingIntervalMinutes` overflowed Node's 32-bit
+  `setTimeout` and burst extra authenticated cloud calls — see
+  docs/eufy-sdk-integration.md §5.6.1). The eufy clip gallery is the first
+  capability that writes decrypted media to disk, however briefly (a
+  short-lived, TTL-evicted cache, never persisted).
 - **Voice/AI calls explicit application tools** (`get_events`, `start_timer`, …), never
   a provider directly. See `backend/app/voice/AGENTS.md`.
 - **Privacy mode is a global read-only lock.** Every mutating endpoint calls

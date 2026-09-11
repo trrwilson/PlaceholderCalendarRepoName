@@ -49,6 +49,14 @@ async def lifespan(_app: FastAPI):
         from app.presence import start_local_camera
 
         start_local_camera()
+
+    # Eufy camera clip gallery: spawns the Node bridge child process and opens
+    # its control socket. Feature-flagged (docs/eufy-sdk-integration.md); a
+    # disabled install never imports app.eufy.service or touches Node.
+    if get_settings().eufy_enabled:
+        from app.eufy import start_eufy_service
+
+        start_eufy_service()
     try:
         yield
     finally:
@@ -61,6 +69,10 @@ async def lifespan(_app: FastAPI):
             from app.presence import stop_display_dim_policy
 
             stop_display_dim_policy()
+        if get_settings().eufy_enabled:
+            from app.eufy import stop_eufy_service
+
+            await stop_eufy_service()
 
 
 app = FastAPI(title="Mission Control API", version="0.1.0", lifespan=lifespan)

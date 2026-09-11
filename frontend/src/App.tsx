@@ -19,6 +19,8 @@ import type { ListItem } from './lists/types'
 import { usePrivacy } from './privacy/usePrivacy'
 import { PrivacyPad } from './privacy/PrivacyPad'
 import { useDisplay } from './display/useDisplay'
+import { useCameraActivity } from './camera/useCameraActivity'
+import type { StoredClip } from './camera/types'
 
 type CalendarSource = 'mock' | 'outlook' | 'google'
 // `name` is the raw account handle; `display_name` is the natural personal name the
@@ -34,12 +36,9 @@ type SemanticColorMode = 'category-first' | 'people-first'
 type CalendarAuthState = 'connected' | 'connecting' | 'disconnected' | 'not_applicable'
 type CalendarAuth = { provider: string; state: CalendarAuthState; account: string | null; accounts?: string[]; user_code: string | null; verification_uri: string | null; verification_uri_complete: string | null; verification_qr: string | null; expires_in: number | null; error: string | null }
 
-type HouseholdException = { title: string; detail: string; action: string }
-
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const WAKE_HOURS = Array.from({ length: 14 }, (_, index) => index + 7)
-const MOCK_EXCEPTION: HouseholdException = { title: 'Garage door open', detail: 'Open for 43 minutes', action: 'Check garage' }
 const colorClass = (color: string) => `calendar-${color}`
 const personName = (calendar?: Calendar) => calendar?.display_name || calendar?.name || ''
 // Privacy mode: obscure the *what* (title, location, category) while keeping the
@@ -313,6 +312,13 @@ function App() {
   // and the shared ws push. See docs/display-dimming-plan.md.
   const display = useDisplay(API_URL)
 
+  // The eufy camera clip gallery — a thumbnail review of the latest footage,
+  // replacing the home view's "garage door" placeholder. Backend-owned (it
+  // holds the eufy bridge connection); this hook reconciles from
+  // GET /api/household and the shared ws push. See docs/eufy-sdk-integration.md.
+  const camera = useCameraActivity(API_URL)
+  const [selectedClip, setSelectedClip] = useState<StoredClip | null>(null)
+
   function enterPrivacyMode() {
     if (!privacy.available || privacy.locked) return
     void privacy.lock().then((ok) => {
@@ -332,6 +338,7 @@ function App() {
     setSettingsOpen(false)
     setSelectedEvent(null)
     setConnectOpen(false)
+    setSelectedClip(null)
   }, [privacy.locked])
 
   // The no-PIN undo window closes on its own after a few seconds.
@@ -509,7 +516,7 @@ function App() {
       </header>
 
       <section className="view-frame">
-        {mode === 'home' && <HomeView now={now} todayEvents={shownTodayEvents} todaySpans={shownTodaySpans} upcoming={shownNextEvents} calendarById={calendarById} onSelect={selectEvent} colorMode={displayColorMode} calendarAlert={authNeedsSetup && !redacting ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} />}
+        {mode === 'home' && <HomeView now={now} todayEvents={shownTodayEvents} todaySpans={shownTodaySpans} upcoming={shownNextEvents} calendarById={calendarById} onSelect={selectEvent} colorMode={displayColorMode} calendarAlert={authNeedsSetup && !redacting ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} camera={camera} redacting={redacting} onSelectClip={redacting ? () => undefined : setSelectedClip} apiBaseUrl={API_URL} />}
         {mode === 'week' && <WeekView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'timer' && <TimerView timer={timers.timer} remainingMs={timers.remainingMs} alarm={timers.alarm} onStart={startTimerFromTouch} onExtend={extendTimer} onPause={() => timerAction('pause')} onResume={() => timerAction('resume')} onRestart={() => timerAction('restart')} onCancel={() => { void timers.cancel() }} onDismiss={() => { void timers.dismiss() }} />}
@@ -518,6 +525,7 @@ function App() {
 
       <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={calendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} audioOutput={audioOutput} voiceConfig={voiceConfig} display={display} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onSetWakeGateEnabled={voice.setWakeGateEnabled} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
       {selectedEvent && !redacting && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
+      {selectedClip && !redacting && <CameraClipModal clip={selectedClip} apiBaseUrl={API_URL} onClose={() => setSelectedClip(null)} />}
       {connectOpen && auth && !redacting && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}
       {privacyPadOpen && <PrivacyPad onClose={() => setPrivacyPadOpen(false)} onUnlock={privacy.unlock} onUndo={privacyNotice ? () => { void privacy.undo(); setPrivacyPadOpen(false); setPrivacyNotice(false) } : undefined} cooldownMs={privacy.cooldownMs} />}
       <VoiceOverlay status={voice.status} activationStyle={voice.activationStyle} transcript={voice.transcript} error={voice.error} onStop={voice.stopTurn} onDismissError={voice.dismissError} />
@@ -769,9 +777,88 @@ function HolidayNote({ date, className }: { date: Date; className: string }) {
   )
 }
 
-function HomeView({ now, todayEvents, todaySpans, upcoming, calendarById, onSelect, colorMode, calendarAlert }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; upcoming: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null }) {
+function HomeView({ now, todayEvents, todaySpans, upcoming, calendarById, onSelect, colorMode, calendarAlert, camera, redacting, onSelectClip, apiBaseUrl }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; upcoming: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null; camera: ReturnType<typeof useCameraActivity>; redacting: boolean; onSelectClip: (clip: StoredClip) => void; apiBaseUrl: string }) {
   const tomorrow = upcoming.filter((event) => !isSpanningEvent(event) && isSameDay(new Date(event.starts_at), addDays(now, 1))).slice(0, 3)
-  return <div className="home-view"><div className="home-grid"><section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><h2>{todayEvents.length} things on the rhythm</h2><HolidayNote date={now} className="holiday-note-home" /></div><span className="date-pill">{formatShortDate(now)}</span></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section><aside className="home-rail"><section className="next-card"><div className="view-heading"><div><p className="section-kicker">Coming up</p><h2>Next</h2></div><span className="arrow-mark">→</span></div><div className="next-list">{upcoming.slice(0, 4).map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div></section><section className="tomorrow-card"><p className="section-kicker">Tomorrow</p><h2>{formatWeekday(addDays(now, 1))}</h2><HolidayNote date={addDays(now, 1)} className="holiday-note-home" />{tomorrow.length ? tomorrow.map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />) : <p>No events planned yet.</p>}</section>{calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>{MOCK_EXCEPTION.title}</strong><span>{MOCK_EXCEPTION.detail}</span></div><button onClick={() => undefined}>{MOCK_EXCEPTION.action}</button></section>}</aside></div></div>
+  return <div className="home-view"><div className="home-grid"><section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><h2>{todayEvents.length} things on the rhythm</h2><HolidayNote date={now} className="holiday-note-home" /></div><span className="date-pill">{formatShortDate(now)}</span></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section><aside className="home-rail"><section className="next-card"><div className="view-heading"><div><p className="section-kicker">Coming up</p><h2>Next</h2></div><span className="arrow-mark">→</span></div><div className="next-list">{upcoming.slice(0, 4).map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div></section><section className="tomorrow-card"><p className="section-kicker">Tomorrow</p><h2>{formatWeekday(addDays(now, 1))}</h2><HolidayNote date={addDays(now, 1)} className="holiday-note-home" />{tomorrow.length ? tomorrow.map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />) : <p>No events planned yet.</p>}</section>{calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} />}</aside></div></div>
+}
+
+// Tastefully laid-out review of the latest eufy camera clips, in the slot the
+// "garage door" placeholder used to occupy. Collapses to nothing when the
+// feature is off or there's simply nothing new (principle 4: normal status
+// earns no chrome) — same rule the exception card it replaced followed.
+// Thumbnail affordance follows the industry-standard tappable-video language
+// (YouTube/Nest/Ring): a bottom gradient scrim, a centered play glyph sized
+// for a touch target, and a duration pill, so it reads as playable at a
+// glance without a text label. See docs/eufy-sdk-integration.md.
+const CLIP_RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['day', DAY_MS], ['hour', 3_600_000], ['minute', 60_000],
+]
+function formatClipRelativeTime(occurredAt: string, now: Date): string {
+  const diffMs = now.getTime() - new Date(occurredAt).getTime()
+  for (const [unit, unitMs] of CLIP_RELATIVE_UNITS) {
+    const amount = Math.floor(diffMs / unitMs)
+    if (amount >= 1) return new Intl.RelativeTimeFormat('en', { numeric: 'auto' }).format(-amount, unit)
+  }
+  return 'just now'
+}
+function formatClipDuration(seconds: number | null): string | null {
+  if (!seconds || seconds < 1) return null
+  const total = Math.round(seconds)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+function CameraGalleryCard({ camera, redacting, onSelectClip, apiBaseUrl }: { camera: ReturnType<typeof useCameraActivity>; redacting: boolean; onSelectClip: (clip: StoredClip) => void; apiBaseUrl: string }) {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 30_000)
+    return () => window.clearInterval(id)
+  }, [])
+  if (!camera.available) return null
+  // The rail is narrow and shares vertical space with two cards above it, so
+  // the thumbnail count is a real layout constraint, not a style choice — two
+  // wide 16:9 crops read clearly at both 4K and 1080p without pushing the
+  // card past the rail's height budget (no document-level scrolling allowed).
+  const shown = camera.clips.slice(0, 2)
+  if (shown.length === 0) return null
+  return (
+    <section className="camera-review">
+      <div className="view-heading"><p className="section-kicker">Camera</p><h2>Recent activity</h2></div>
+      <div className="camera-thumb-row">
+        {shown.map((clip) => redacting
+          ? <span className="camera-thumb camera-thumb-private" key={clip.clip_id} aria-label="Camera thumbnail hidden — privacy mode is on"><span className="camera-thumb-private-icon" aria-hidden>🎥</span></span>
+          : <button className="camera-thumb" key={clip.clip_id} onClick={() => onSelectClip(clip)} aria-label={`Play ${clip.camera_name} clip from ${formatClipRelativeTime(clip.occurred_at, now)}`}>
+              <img src={`${apiBaseUrl}/api/camera/clip/${encodeURIComponent(clip.clip_id)}/thumbnail`} alt="" loading="lazy" />
+              <span className="camera-thumb-scrim" aria-hidden />
+              <span className="camera-thumb-play" aria-hidden>▶</span>
+              {formatClipDuration(clip.approx_duration_seconds) && <span className="camera-thumb-duration">{formatClipDuration(clip.approx_duration_seconds)}</span>}
+              <span className="camera-thumb-meta"><strong>{clip.camera_name}</strong><span>{formatClipRelativeTime(clip.occurred_at, now)}</span></span>
+            </button>)}
+      </div>
+    </section>
+  )
+}
+
+// The clip player: a centered modal (not the bottom-anchored `.detail-sheet`
+// family — the brief calls for a majority-of-screen dialog with a visible
+// margin) reusing the same scrim/Escape/outside-tap dismiss convention as
+// every other overlay in this app. A plain <video> is the whole player —
+// playback is a solved problem, no library needed.
+function CameraClipModal({ clip, apiBaseUrl, onClose }: { clip: StoredClip; apiBaseUrl: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return (
+    <div className="clip-modal-scrim" role="presentation" onClick={onClose}>
+      <section className="clip-modal" role="dialog" aria-label={`${clip.camera_name} clip`} onClick={(event) => event.stopPropagation()}>
+        <button className="close-detail" onClick={onClose} aria-label="Close video">×</button>
+        <video className="clip-modal-video" src={`${apiBaseUrl}/api/camera/clip/${encodeURIComponent(clip.clip_id)}/video`} controls autoPlay playsInline />
+        <p className="clip-modal-caption"><strong>{clip.camera_name}</strong><span>{new Date(clip.occurred_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span></p>
+      </section>
+    </div>
+  )
 }
 
 // Wraps a Week/Month grid with the navigation that used to sit in the heading: a quiet ‹ ›

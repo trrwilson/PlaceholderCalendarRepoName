@@ -1,11 +1,24 @@
 ---
-status: ready-to-implement
-summary: Eufy camera events AND on-demand decrypted clip retrieval — both verified working against real hardware (HomeBase 3 / S380) on 2026-09-10. SDK is `eufy-security-client`, not the still-unreleased `@mega-yfue/eufy-sdk`.
+status: built (clip gallery); events pipeline not yet built
+summary: The clip-review gallery (thumbnails + tap-to-play, replacing the old "garage door" placeholder) is built end-to-end — Node bridge, backend clip/thumbnail/retrieve pipeline, frontend gallery + modal player. Ambient events (motion/person/doorbell banners, contact-sensor exceptions, §2/§7.2) remain designed but unbuilt. SDK is `eufy-security-client`, verified against real HomeBase 3 / S380 hardware on 2026-09-10.
 ---
 
 # Eufy camera integration — verified capability + implementation plan
 
-Status: **verified against real hardware, not yet built.** A 2026-09-10 investigation
+> **2026-09-11 update.** The clip-review gallery this document's §5.7 proposed
+> ("unbuilt — proposed") is now built end-to-end, on the primary household eufy
+> account (an accepted, explicit risk — see the household's own note in §11 item
+> 1's resolution below): `eufy-bridge/` (Node sidecar), `backend/app/eufy/`
+> (service, client, event mapping), the `GET /api/household` /
+> `GET /api/camera/clip/{id}/thumbnail` / `GET /api/camera/clip/{id}/video`
+> endpoints, and the frontend gallery + centered modal player replacing the old
+> `MOCK_EXCEPTION` "garage door" placeholder in `frontend/src/App.tsx`. See the
+> new §15 for exactly what shipped, what's still best-effort/unverified, and
+> what a future session should check first. The ambient-events pipeline (§2,
+> §7.2 — motion/person/doorbell banners, contact-sensor exceptions) is
+> unaffected by this and remains designed but unbuilt.
+
+Status: **verified against real hardware; the clip gallery is built (§15).** A 2026-09-10 investigation
 (login → local P2P → decrypted clip, end to end) proved out both capabilities below on
 the actual HomeBase 3 (S380) and eufyCam S330 this household owns. This document is the
 implementation plan plus everything that investigation learned, so a future
@@ -580,11 +593,16 @@ dashboard space.
 - **Exceptions:** camera-derived exceptions (`contactState` open too long,
   `batteryAlert`) flow into the same slot that renders `MOCK_EXCEPTION` today.
   Replace the mock with the real list; one code path for all exceptions.
-- **Clip retrieval UI** is intentionally not designed here — §5.7's endpoints are a
-  backend/voice-tool surface for now; a "watch this clip" UI is future work.
-- **No live camera imagery** in the normal appliance UI (matches
-  `camera-support-plan.md`). Any future thumbnail/clip view belongs only in a
-  touch-expanded detail view, not the ambient surfaces above.
+- **Clip retrieval UI is now built** — see §15. It replaced the old `MOCK_EXCEPTION`
+  "garage door" placeholder in the home-view right rail with a two-thumbnail
+  gallery (`CameraGalleryCard` in `App.tsx`) and a centered tap-to-play modal
+  (`CameraClipModal`), not a Settings/diagnostics-only surface as this
+  paragraph originally assumed. Privacy mode replaces thumbnails with generic
+  placeholders and disables the tap, matching the redaction rule the rest of
+  this section already states.
+- **No live camera imagery** in the *ambient* appliance UI still holds — the
+  gallery is deliberately a touch-initiated review (tap a thumbnail, watch a
+  clip), never an auto-playing or live feed on the passive Home screen.
 
 ### 7.3 Settings / diagnostics
 
@@ -762,21 +780,26 @@ recorded.
 
 ## 13. Explicitly out of scope
 
-Live video / RTSP / WebRTC streaming; talkback; PTZ or any camera/station
-control; arming / disarming / guard-mode changes; **any write path**; face
-**recognition** / enrolment (the HomeBase's own output may be *displayed* if the
-user opts in and a future SDK version exposes a name, but Mission Control does no
-recognition itself); a kiosk-side eufy sign-in UI; non-eufy cameras; persisting
-event *history* to disk beyond the short-lived retrieved-clip cache (§5.7);
-multi-HomeBase / multi-site; the SDK's vacuum / mower / smart-light / lock
-capabilities; audio-muxed clip playback (decrypt is proven, audio muxing is not
-— see §5.4); a full clip-browsing gallery UI (the backend surface in §5.7 is
-proposed, no UI is designed).
+Live video / RTSP / WebRTC streaming (the clip gallery is on-demand tap-to-play
+of a *stored* recording, never a live feed); talkback; PTZ or any
+camera/station control; arming / disarming / guard-mode changes; **any write
+path**; face **recognition** / enrolment (the HomeBase's own output may be
+*displayed* if the user opts in and a future SDK version exposes a name, but
+Mission Control does no recognition itself); a kiosk-side eufy sign-in UI;
+non-eufy cameras; persisting event *history* to disk beyond the short-lived
+retrieved-clip cache (§5.7, §15); multi-HomeBase / multi-site; the SDK's
+vacuum / mower / smart-light / lock capabilities; the ambient events pipeline
+(§2 / §7.2 — motion/person/doorbell banners, contact-sensor exceptions,
+Settings "Cameras" diagnostics) — designed, not built by this pass.
 
 **No longer out of scope, as of this revision:** recorded-clip retrieval and
-decryption. This was excluded in earlier drafts because the SDK then targeted
-(`@mega-yfue/eufy-sdk`) never supported it; `eufy-security-client` does, and it is
-verified working (§5).
+decryption (§5, hardware-verified) and the clip-browsing gallery UI itself
+(§15, built 2026-09-11) — both excluded in earlier drafts, the first because
+the SDK then targeted (`@mega-yfue/eufy-sdk`) never supported it, the second
+because it was left as a future decision once retrieval was proven. Audio
+muxing (§5.4) is also no longer a gap — §15's bridge muxes video+audio when
+both decode cleanly and falls back to a silent mux otherwise, rather than
+dropping audio unconditionally.
 
 ---
 
@@ -819,3 +842,151 @@ verified working (§5).
   backend as an earlier draft of this doc assumed) — corroborated by the
   2026-06-10 `v2_eufysecurity:` addition and by this investigation's direct
   success against a current-generation HomeBase 3.
+
+---
+
+## 15. The clip gallery, as actually built (2026-09-11)
+
+This section is the payoff of the 2026-09-11 build session: exactly what
+shipped, what's verified vs. best-effort, and what a future session should
+check first against the real household hardware/account. §5 remains the
+authoritative record of the 2026-09-10 hardware verification spike; this
+section is the implementation built on top of it.
+
+### 15.1 What's real and running
+
+- **`eufy-bridge/`** (Node, `eufy-security-client@4.1.1-1` pinned) — logs in
+  (reusing the persisted session first, per §5.5), enumerates stations/devices,
+  opens local P2P (`ONLY_LOCAL`), and exposes a localhost WebSocket control
+  channel (`src/server.js`) the backend connects to. `src/eufyBridge.js` owns
+  the SDK interaction; `src/ffmpeg.js` muxes a downloaded clip; `src/config.js`
+  validates env config (including the §5.6.1 polling-interval overflow guard,
+  independently re-checked here since this is the process that actually feeds
+  the value to Node's timer).
+- **`backend/app/eufy/`** — `client.py` (thin WS client), `service.py`
+  (`EufyEventService`: bounded newest-first clip ring buffer, a bounded
+  thumbnail LRU, request/response plumbing for thumbnail/video, exponential
+  backoff reconnect), `bridge_process.py` (spawns/supervises the bridge child
+  process — this build's answer to §11 open question 2: the backend owns
+  process lifecycle, no NSSM/Task Scheduler/Docker), `__main__.py`
+  (`python -m app.eufy login/status/logout`, modeled on `app/auth.py`).
+- **`GET /api/household`**, **`GET /api/camera/clip/{id}/thumbnail`**,
+  **`GET /api/camera/clip/{id}/video`** in `app/api.py` — LAN-gated, 409 while
+  `eufy_enabled` is false, 404 for an unknown clip id, 503 (never 500) when the
+  bridge can't resolve a thumbnail/video in time. `StoredClip` /
+  `CameraGallerySnapshot` in `app/models.py`; `ApplicationMessage.camera_clips`
+  / `camera_status` push the same shape over `/api/ws` on every change.
+- **Frontend**: `src/camera/useCameraActivity.ts` (mirrors `useDisplay.ts` —
+  `GET /api/household` reconcile + the shared ws push), `CameraGalleryCard` and
+  `CameraClipModal` in `App.tsx`, replacing `MOCK_EXCEPTION` in the home-view
+  right rail. Two 16:9 thumbnails (the rail's real width/height budget, not a
+  style choice), a bottom scrim + centered play glyph + duration pill (the
+  standard YouTube/Nest/Ring tappable-video language), tap opens a centered
+  modal (not the bottom-anchored `.detail-sheet` family) with a plain
+  `<video controls autoplay>`. Privacy mode swaps thumbnails for a generic
+  camera-icon placeholder, issues no thumbnail fetch, and the tap is inert.
+- **Freshness has no new cloud-facing polling.** The bridge's own periodic
+  `databaseQueryByDate` reconciliation (`eufy_reconcile_interval_seconds`,
+  default 120s) is LAN-local P2P to the HomeBase, not a call to eufy's cloud;
+  real device events (where they fire — see 15.2) additionally trigger an
+  immediate narrow re-query. The only cloud-facing cadence is the SDK's own
+  daily session refresh, unchanged from §5.2's verified config.
+- **Tests**: `backend/tests/test_eufy_events.py` (pure mapping),
+  `test_eufy_service.py` (21 cases against a scripted fake bridge client —
+  ring-buffer bounds/dedup, status transitions, thumbnail/video request
+  round-trips, disconnect handling), `test_api_camera.py` (10 endpoint-shape
+  cases), `eufy-bridge/test/` (13 `node:test` cases against a stubbed
+  `EufySecurity`-shaped fake — roster loading, clip dedup, the captcha/2FA
+  `connect()` handshake, the thumbnail round trip), `frontend/src/camera/
+  useCameraActivity.test.ts` (4 cases), 4 new cases in `App.test.tsx` (tap to
+  open, outside-tap dismiss, collapses when empty, privacy placeholders). All
+  green; `ruff check`/`format`, `tsc -b`, and `eslint` all clean.
+- **Manually verified in-browser** (this session, via a fixture-backed fake
+  `get_eufy_service()` — no real eufy account touched): the gallery renders
+  from `GET /api/household`, no document overflow at 1920×1080, tap opens the
+  centered modal, Escape and outside-tap both dismiss it, privacy lock swaps in
+  placeholders with zero thumbnail fetches. This is UI-layer verification only
+  — see 15.2 for what is *not* yet proven against real hardware.
+
+### 15.2 What's genuinely unverified — check these first on the real HomeBase
+
+The 2026-09-10 spike (§5) proved login, device enumeration, local P2P connect,
+`databaseQueryByDate`, `startDownload`, and ffmpeg muxing. This build session
+had no access to the household's real eufy account, hardware, or a Node ≥24
+runtime (this dev sandbox has Node 20; `npm install` succeeds with an engine
+warning, real SDK behavior was not exercised). Two things this design leans on
+were **not** covered by that spike and should be confirmed on first real run:
+
+1. **The ambient device event names** (`"device motion detected"`, `"device
+   person detected"`, `"device rings"`, etc., used only as a low-latency
+   accelerant for the reconciliation poll — see `DEVICE_EVENT_NAMES` in
+   `eufy-bridge/src/eufyBridge.js`) were confirmed against
+   `eufy-security-client` 4.1.1-1's own published type definitions
+   (`build/interfaces.d.ts`, inspected directly 2026-09-11), not against a real
+   device firing them. If a name is wrong or the household's firmware doesn't
+   emit it, the *only* consequence is latency — the periodic reconciliation
+   still finds the clip within `eufy_reconcile_interval_seconds` — never a
+   missed clip or a crash.
+2. **`station.downloadImage(thumb_path)` → `"station image download"`** (the
+   per-clip thumbnail path) is a real, documented method on `Station`
+   (verified against the same type definitions) but was not itself exercised
+   live — the 2026-09-10 spike proved the *connect-time per-camera snapshot*
+   decode, not this specific call against a stored record's `thumb_path`. If it
+   doesn't resolve, `GET /api/camera/clip/{id}/thumbnail` degrades to a 503
+   (the gallery shows nothing for that thumbnail, no crash) rather than
+   silently succeeding with wrong bytes.
+
+Also unverified end-to-end because it needs a real HomeBase 3 + Node ≥24:
+`_downloadAndMux`'s stream-piping/timeout/cancel logic, and `muxClip`'s
+HEVC/H.264 × with/without-audio fallback ladder (`eufy-bridge/src/ffmpeg.js`)
+against a real downloaded elementary stream and a real `ffmpeg` binary on the
+deployment host (confirm `ffmpeg` is on PATH there — it is not a declared
+dependency anywhere yet).
+
+### 15.3 Decisions this build session made that extend §3/§6/§11
+
+- **Primary eufy account, explicitly accepted risk.** §11 item 1 asked
+  whether to migrate to a dedicated account before Phase 2. The household's
+  direction for this build: use the primary account, lean hard on session-file
+  reuse (§5.5) and the reconciliation design above to keep actual cloud-facing
+  traffic minimal, and accept the elevated risk rather than block on account
+  migration. Revisit if the account ever shows rate-limit/eviction symptoms.
+- **Bridge process management** (§11 item 2) resolved as: the FastAPI backend
+  spawns and supervises the bridge as a child process
+  (`app/eufy/bridge_process.py`), restarting it with the same backoff policy as
+  the WS reconnect. No Docker, no Windows service, no NSSM — one `uvicorn` run
+  brings the whole feature up when `MISSION_CONTROL_EUFY_ENABLED=true`.
+- **`openudid` is not a settable init-time config field** — §6.1's original
+  table proposed `eufy_openudid`; the real `EufySecurityConfig` (verified
+  2026-09-11) has no such field. The library generates and persists it itself,
+  inside the session file. `Settings.eufy_openudid` was removed accordingly.
+- **`stationIPAddresses` needs the serial known up front** — added
+  `eufy_station_serial` alongside `eufy_station_lan_ip` so both can be passed
+  to `EufySecurity.initialize()` together, matching the real (keyed-by-serial)
+  shape of that config option.
+- **Clip id** is `{device_sn}:{record_id}` — `record_id` (a field on
+  `DatabaseQueryByDate` this document's earlier drafts didn't mention) is a
+  clean stable per-station key, simpler than the start-time encoding §5.7
+  implied.
+- **Ambient events pipeline (§2/§7.2) is still not built.** This session
+  scoped to the clip-review gallery specifically, per the household's request
+  to replace the garage-door placeholder — motion/person/doorbell banners, the
+  activity list, contact-sensor exceptions, and the Settings "Cameras"
+  diagnostics section remain exactly as designed earlier in this document,
+  unchanged and unbuilt. `CameraEvent` / `HouseholdActivity` in this doc's
+  §6.3 were not added to `app/models.py`; only `StoredClip` /
+  `CameraGallerySnapshot` were.
+
+### 15.4 Not done in this pass
+
+- Settings "Cameras" diagnostics section (§7.3) — status/roster/reconnect
+  count are exposed by `EufyEventService` internally but have no UI yet.
+  `GET /api/household` carries only what the gallery needs.
+- `HTTP Range` support on `GET /api/camera/clip/{id}/video` — clips are short
+  household recordings, so this was accepted as a v1 gap rather than built.
+- A voice tool over this surface (§8) — not started, not needed for the
+  gallery to work.
+- Migrating off the primary eufy account (§15.3 above).
+- Any production deployment doc for the bridge process beyond
+  `bridge_process.py` itself (Node ≥24 provisioning on the real kiosk host is
+  still a manual prerequisite — this dev sandbox only has Node 20).
