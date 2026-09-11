@@ -1278,31 +1278,132 @@ from scratch to call whatever endpoint the app calls; we would only need to
 learn the exact path and payload shape and hand them to a method the SDK
 already provides.
 
-### 17.4 Open items for next time
+### 17.4 The decrypted-capture chase, and why it's a dead end on this hardware
 
-- Get a properly decrypted capture of the `Phase2_EventAPI` call to learn its
-  exact path/payload/host and confirm the `app-house-us-pr.eufy.com` guess.
-  The PCAPdroid capture taken this session did **not** yield this: it
-  exported a plain legacy `.pcap`, which cannot carry embedded decryption
-  secrets (that needs `.pcapng` + a keylog, which this PCAPdroid run did not
-  produce) — so the file is encrypted TLS records at rest despite in-app
-  decryption being enabled. Candidates for next time, roughly in order of
-  effort: check PCAPdroid's own in-app connection inspector (decrypts live
-  for its UI, may still hold this session's detail without a new capture);
-  look for a PCAPdroid "export decryption keys"/keylog option for a
-  `.pcapng` re-export; pull the app's APK and grep its React Native JS bundle
-  for the literal endpoint path (no network capture needed at all, and the
-  bundle likely contains the same string constants seen in logcat —
-  `refreshEventData`, `megaEventId`, `houseId`); or a full system-wide
-  MITM (e.g. mitmproxy) with its CA trusted on the phone, which only needs a
-  repeatable pull-to-refresh, not another physical trigger.
-- If/once the endpoint is known, prototype the call through
-  `MegaHTTPApi.call`/`callDecrypted` rather than hand-rolling auth — confirm
-  first whether `eufyBridge.js`'s existing `EufySecurity` client exposes (or
-  could be made to expose) the underlying `MegaHTTPApi` instance, since it is
-  presently an internal implementation detail, not part of the client's
-  public/documented surface.
+Same-day follow-up (still 2026-09-11), trying every candidate from the
+original open-items list to get a decrypted capture of the `Phase2_EventAPI`
+call:
+
+- **PCAPdroid's exported `.pcap`** — confirmed useless for this: it's a plain
+  legacy `.pcap`, which cannot carry embedded decryption secrets (that needs
+  `.pcapng` + a keylog, which this PCAPdroid version did not produce). SNI
+  from the handshake (always cleartext, decryption-independent) was still
+  extractable and is what gave the `app-house-us-pr.eufy.com` candidate.
+- **The app's APK / React Native JS bundle** — genuine dead end, not a
+  tooling gap. Pulled the base APK and the feature module actually behind the
+  Events tab (`RN_ANDROID_ZX_EVENT_TAB.zip`, confirmed correct via matching
+  log-message strings found in its Hermes bytecode — `"[RNEvent]
+  refreshEventData:"` etc.). No hardcoded host or path string exists anywhere
+  in it. This matches the SDK's own architecture
+  (`MegaHTTPApi.getDomains()`/`estimateDomain()`, §17.3) — the app resolves
+  its backend host dynamically at runtime the same way, so there was never a
+  literal URL to find by static search, with or without better Hermes
+  tooling. (Separately: the base APK is wrapped in Ijiami app-protection —
+  irrelevant here since the Events module lives in an unprotected downloaded
+  RN bundle, but worth knowing if a future session goes looking for something
+  in the *native* app shell instead.)
+- **System-wide MITM (mitmproxy)** — got this fully working as
+  infrastructure (installed, LAN-reachable, Windows Firewall approved,
+  correctly proxying plaintext HTTP) but the phone's HTTPS traffic to eufy's
+  backend never got a chance: the household's phone has an **MDM-enforced
+  Always-On VPN** (Tailscale-range address, `100.64.0.0/10`; survived a full
+  phone reboot, which is what confirmed it's MDM-enforced rather than a
+  regular VPN app or Samsung Secure Folder specifically) that takes routing
+  priority over a plain Wi-Fi manual proxy setting. Not something to route
+  around — it's the phone owner's employer's device policy, out of scope to
+  defeat from this side entirely.
+- **PCAPdroid's in-app decryption** (its own VPN-based MITM, independent of
+  system proxy routing, so unaffected by the Always-On VPN above) — this is
+  the one that actually reached the real question. CA confirmed trusted
+  (Settings → Encryption & credentials → Trusted credentials → User),
+  reinstalled to be sure, retried: **"broken pipe" during the TLS handshake**
+  on the connection to the plausible endpoint. Not a trust-store failure (a
+  clean TLS alert, like the earlier "does not trust the proxy's certificate"
+  error, would look different) — an abrupt low-level socket close after the
+  leaf certificate is presented is the signature of **certificate pinning**
+  (e.g. OkHttp's `CertificatePinner` rejecting on pin mismatch), not a chain-
+  of-trust problem. The Events module (and/or the "Thing-Network" native
+  layer underneath it, §17.3) pins eufy's real certificate and rejects any
+  MITM, trusted CA or not.
+
+**Conclusion: getting the decrypted payload needs root**, specifically a
+runtime hook (Frida) to patch the app's own pinning check — no amount of
+CA-trust-store manipulation on a non-rooted device gets past pinning by
+design. Rooting the actual household phone (a Samsung Galaxy S24 Ultra,
+`SM-S928U` — the US carrier/unlocked variant, which has no official Samsung
+OEM-unlock path at all) was evaluated and rejected: a real, permanent Knox
+e-fuse trip (irreversible even after later unrooting/reflashing stock),
+breaks Samsung Pay/Pass/Secure Folder and the household's work MDM
+integration outright, and is a device-policy question for the owner's
+employer independent of the technical risk. See §17.5 for the lower-risk
+alternative this points to instead.
+
+### 17.5 Deferred: a rooted emulator for the pinning bypass, not the real phone
+
+Not attempted this session — recorded here as complete-enough context for a
+future session to pick straight up, since the real-phone path is closed
+(§17.4) but the underlying question (what does `Phase2_EventAPI` actually
+request) is still open and this is the standard, low-risk way to answer it.
+
+**Why an emulator sidesteps everything in §17.4:** a rootable Android
+emulator (e.g. an Android Studio AVD using one of Google's own
+`google_apis` — not `google_apis_playstore` — system images, which ship
+rootable/writable by design) is fully disposable. Rooting it trips nothing
+permanent, touches no Knox fuse, and is completely disconnected from the
+household's actual phone or its MDM/work-VPN integration — that whole
+category of risk just doesn't apply to a throwaway VM.
+
+**What's needed, roughly in order:**
+
+1. Android Studio (for the AVD manager + emulator) — not yet installed on
+   this dev machine as of this writing.
+2. Create an AVD on a `google_apis` (non-Play Store) system image — these
+   ship with an unlocked/writable `/system`, so no separate bootloader-unlock
+   step the way a real device needs. A recent API level matching the phone's
+   real Android version is worth matching if the app has a `minSdk`/behavior
+   split, otherwise the newest available `google_apis` image is simplest.
+3. `adb push`/`adb install` the pulled APKs — already have `base.apk` +
+   `split_config.arm64_v8a.apk` + `split_feature_asset_pack.apk` from this
+   session, but the emulator is almost certainly x86_64, not arm64, so the
+   `arm64_v8a` native-library split will not run there. Two options: install
+   with `adb install-multiple` and let it fail closed on native libs (fine if
+   the Events module itself is all RN/Hermes, no native code of its own,
+   which §17.4's findings suggest); or use an x86_64-native APK variant if
+   `pm path`/`bundletool` can produce one, or run the AVD with a
+   arm64-translation-capable image (recent AVDs support this on newer Android
+   Studio releases, at a performance cost).
+4. **Untested, flag this as the first thing to verify:** the base APK's
+   Ijiami protection (§17.4) commonly includes anti-emulator detection as
+   part of its anti-tampering feature set. The app may simply refuse to start
+   at all on an emulator, independent of root. Worth finding out early —
+   before investing in Frida setup — whether the app even launches.
+5. If it launches: install Frida server on the emulator (rootable AVDs
+   support this cleanly, no exploit needed — just push the matching
+   `frida-server` binary and run it), then use a standard SSL-unpinning
+   script (`frida-trust` / `objection`'s built-in
+   `android sslpinning disable`, or a hand-written Frida script targeting
+   OkHttp's `CertificatePinner.check`) while capturing with mitmproxy exactly
+   as set up in §17.4 — that infrastructure (installed, working, just
+   defeated by pinning) is otherwise ready to reuse as-is.
+6. Sign into the household's real eufy account inside the emulator to get a
+   real, populated Events tab to refresh against — same account credentials
+   already used by the bridge (`backend/.env`).
+7. Once the decrypted `Phase2_EventAPI` request/response is captured, resume
+   at the point §17.3/§17.4 left off: confirm the path against
+   `app-house-us-pr.eufy.com`, and prototype the call through
+   `MegaHTTPApi.call`/`callDecrypted` rather than hand-rolling auth —
+   confirming first whether `eufyBridge.js`'s existing `EufySecurity` client
+   exposes (or could be made to expose) the underlying `MegaHTTPApi`
+   instance, since it is presently an internal implementation detail, not
+   part of the client's public/documented surface.
+
+### 17.6 Open items for next time
+
+- The empirical alternative to §17.5 (attempted without a confirmed
+  endpoint, going straight at `MegaHTTPApi`'s public surface with informed
+  guesses from what's already known) is being tried in a same-day follow-up
+  — see git history around this section's commit for whether that landed.
 - Revisit §16.5's original packet-capture suggestion now that we know *why*
   it's worth doing: not just "does anything arrive" (answered — yes, and
   §17.1 fixed the local handler for it) but "what does the one HTTP call that
-  actually works look like."
+  actually works look like" (still open, blocked on §17.4/§17.5).
