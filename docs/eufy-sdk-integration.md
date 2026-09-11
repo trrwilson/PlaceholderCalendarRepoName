@@ -1455,9 +1455,61 @@ should not keep blind-guessing snake_case variations — the productive next
 step is §17.5's decrypted capture (which would just *answer* this) or a
 proper look at the native app code, not more guesses.
 
-### 17.7 Open items for next time
+### 17.7 A second, independent SDK went public mid-session — checked, doesn't help
+
+`@mega-yfue/eufy-sdk` (GitHub `mega-yfue/eufy-sdk`) published its v0.1.0 to npm the same day as
+this session — previously private (GitHub Packages only), now public. Verified as a real, credible
+project before touching it: 386 commits, 123 PRs, CI, OIDC-provenance npm publishing, a full docs
+site, active contributors — not a scam or a drive-by repo, and a striking match for what our own
+SDK's `megaTransition.js` comment calls "a native v6 data layer (the new library)" that would one
+day replace the transitional mega code.
+
+**Read-only research first** (no install, nothing executed) — `gh api` against the repo: browsed
+`src/transport/http/mega-client.ts`, `src/client/eufy-mega.ts`, and `docs/events.md` directly, plus
+searched the whole repo for every path name this session had tried or could think of
+(`get_event_list`, `event_list`, `refresh_event_data`, `house_event`, `megaEventId`,
+`get_record_list`, `get_alarm`, `video_events`, `activity_log`, `timeline`). **Zero hits, on
+everything.** Its `eufy.on("motion", …)` events are realtime-only (P2P/push/property-poll,
+matching what our own §17.1 fix already gets us) — not a historical clip/event-listing capability.
+Its "cloud poll" is device *property* state polling (10-minute interval), unrelated to event
+history.
+
+**Live probe, once the user explicitly authorized real credentials** — installed in an isolated
+directory (`backend/.eufy-investigation/mega-sdk-probe/`, never touched the production bridge or
+its `node_modules`), ran its documented login flow against the real account. Notes for reproducing:
+
+- Login succeeded with **no captcha or 2FA prompt**, contrary to the SDK's own docs ("2FA if
+  new/changed device") — worth knowing the docs' assumption doesn't always hold in practice.
+- Produced a genuinely valuable **device capability dump** — real P2P parameter IDs, wire formats,
+  and hardware-verified read/write behavior for both cameras and the HomeBase 3 (`T8030`), going
+  well beyond what `eufy-security-client` exposes. No firmware-version field anywhere in it, and
+  no event-history capability on the station either (`storage` is a listed capability with zero
+  implemented reads/actions — "capacity earns a member when a station is captured reporting one").
+  Worth keeping as a reference even though it didn't solve §17's actual question.
+- Surfaced `[mega] err envelope: {"code":20004,"msg":"Only the owner can change settings."}` on
+  **every one of the 3 devices** queried, with the SDK's own registry gracefully falling back to
+  reading params from the device list instead. This confirmed the account in `backend/.env`
+  (`dissonance@cheerful.com`) is a **shared/member account, not the original owner** — a real,
+  reproducible fact about this household's account setup, worth having on record.
+- **Ruled out as an explanation for §17's core problem**, and worth recording precisely so a future
+  session doesn't re-chase it: `20004` is scoped to *per-device settings writes*, not event
+  reads — a completely different capability. Direct evidence already in this session disproves the
+  broader hypothesis anyway: the official app, logged into this exact same non-owner account,
+  successfully read real events at 12:11:51 (§17.3's `Phase2_EventAPI` response). An account-
+  permission ceiling that blocks settings writes cannot be the reason event reads fail, when event
+  reads are demonstrably not failing for this account.
+
+Net effect on the investigation: no closer to the endpoint, but the new SDK is now a known,
+evaluated quantity (useful for device capability reference, not for this specific gap), and one
+plausible-sounding but wrong theory is closed off in writing rather than left to resurface.
+
+### 17.8 Open items for next time
 
 - Revisit §16.5's original packet-capture suggestion now that we know *why*
   it's worth doing: not just "does anything arrive" (answered — yes, and
   §17.1 fixed the local handler for it) but "what does the one HTTP call that
   actually works look like" (still open, blocked on §17.4/§17.5).
+- Whether this HomeBase 3's firmware (`3.8.5.2` as of this session) is current is unconfirmed —
+  eufy's own firmware-changelog pages 404/redirect incorrectly and public search found nothing
+  authoritative. Check directly in the app (HomeBase settings → General → About Device → Check for
+  firmware update) rather than via further web research.
