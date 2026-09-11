@@ -61,6 +61,15 @@ function loadConfig() {
     reconcileLookbackMinutes: intEnv("EUFY_RECONCILE_LOOKBACK_MINUTES", 10),
     clipCacheDir: requireEnv("EUFY_CLIP_CACHE_DIR"),
     clipCacheTtlSeconds: intEnv("EUFY_CLIP_CACHE_TTL_SECONDS", 600),
+    // Diagnostic-only, off by default: logs every event the SDK client emits
+    // (not just the ones this bridge has a handler for) and turns on the
+    // SDK's own trace/debug logging. For chasing the real-hardware push/
+    // reconcile correlation problem in docs/eufy-sdk-integration.md §16.2-16.4
+    // — `DEVICE_EVENT_NAMES` was verified only against the SDK's type
+    // definitions, never real firmware, so a wildcard listener is the only
+    // way to catch an event under a name nobody guessed. Never enable this
+    // for normal operation — it is verbose and not meant to run continuously.
+    debugRawEvents: process.env.EUFY_DEBUG_RAW_EVENTS === "1",
   };
 }
 

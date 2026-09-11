@@ -70,6 +70,11 @@ backend/models/stt/
 # manual/live testing) — never durable app data, never committed
 backend/.run/
 
+# Local-only archive of live diagnostic captures (pcaps, phone logcat, bridge
+# debug logs) from one-off hardware investigations — kept on disk for future
+# reference, never committed (can contain LAN/device identifiers).
+backend/.eufy-investigation/
+
 # Editors and OS
 .vscode/*
 !.vscode/extensions.json

@@ -1182,3 +1182,127 @@ codec failure). `CameraClipModal` (`frontend/src/App.tsx`) now shows a
 spinner overlay ("Loading clip…") from the moment the modal opens until the
 video reports `canplay`/`playing`, and a plain "Couldn't load this clip."
 message if the request errors instead of spinning forever.
+
+## 17. Live-capture session (2026-09-11): the push handler was listening for the wrong event name, and a second bug remains
+
+§16.4 concluded "push events do not fire" against real firmware. That
+conclusion was wrong — or rather, right about the symptom and wrong about the
+cause. This section covers a same-day follow-up: an instrumented live capture
+(a wildcard listener on the SDK client's own `emit`, a LAN packet capture, and
+a phone-side `adb logcat` + PCAPdroid capture, all running across one real,
+physically-triggered motion event) that found the actual root cause of one
+bug and drew a hard line around a second, still-open one. Full raw artifacts
+(pcaps, logcat, the instrumented bridge log) are archived locally at
+`backend/.eufy-investigation/2026-09-11-push-event-live-capture/` (git-ignored
+— see that directory's own `README.md` for the complete writeup this section
+summarizes).
+
+### 17.1 Root cause found and fixed: `DEVICE_EVENT_NAMES` was missing the `"device "` prefix
+
+`eufy-bridge/src/eufyBridge.js` subscribed to bare event names — `"motion
+detected"`, `"person detected"`, etc. — taken from a reading of
+`eufy-security-client`'s type definitions (`build/interfaces.d.ts`,
+`EufySecurityEvents`) during the 2026-09-10 spike. Each entry in that
+interface is one indivisible string key, and every one of them is actually
+**prefixed**: `"device motion detected"`, `"device person detected"`. Reading
+the type defs as `"device"` + a suffix, rather than each full string being the
+literal event name, meant `client.on("motion detected", ...)` was listening
+for a string the SDK never emits, under any firmware, on any account — not an
+account-side or v6/"mega"-migration problem as §16.4 assumed.
+
+Confirmed directly: a diagnostic wildcard listener wrapping `client.emit`
+(gated behind `EUFY_DEBUG_RAW_EVENTS=1`, see `src/config.js` — off by
+default, verbose) captured `[raw-event] "device motion detected" (2 args)`
+and `[raw-event] "device person detected" (3 args)` firing twice, ten seconds
+apart, at the exact moment of a real physical trigger at the Front Door
+camera. Both strings match the type defs exactly. **Fixed:** every entry in
+`DEVICE_EVENT_NAMES` renamed to the real, prefixed string; the bridge test
+suite's fake-client event now emits the corrected name too. All 14 bridge
+tests pass.
+
+This restores the intended low-latency push path (a real event now correctly
+triggers `_onDeviceEvent`'s narrow re-query) — it does **not**, on its own,
+make new clips appear, because of §17.2.
+
+### 17.2 Confirmed still open: the narrow re-query hits the same broken `databaseQueryByDate`
+
+`_onDeviceEvent`'s targeted re-query calls the same `station.databaseQueryByDate()`
+that §16.2 already documented as unreliable. Live-tested across four
+periodic reconcile cycles spanning the trigger (~2 minutes before to ~2
+minutes after) — all four returned the identical stale 6-record cluster, even
+the one that ran after the confirmed push arrived and after the official app
+had already retrieved the new event by a different path (§17.3). Fixing
+§17.1 alone does not fix "new events don't appear" — a correctly-wired push
+handler still terminates in this same broken query.
+
+### 17.3 Why the official app succeeds: a separate, undocumented event-history API
+
+`adb logcat` captured the official app's own pull-to-refresh at the
+ReactNativeJS layer, making two distinct calls:
+
+- `TopEventAPI` (cloud video events) → `count=0` — the same dead cloud-video
+  endpoint family as §16.3's abandoned backfill attempt.
+- A second call, logged as `PullRefresh_Phase2_EventAPI` /
+  `refreshEventData` → **`count=2`**, returning both the just-triggered event
+  and the original one from earlier that day:
+  ```
+  {"megaEventId":"T8030P13232003FB~local~2026091100005","startTime":"2026-09-11 12:09:46"}
+  {"megaEventId":"T8030P13232003FB~local~2026091100001","startTime":"2026-09-11 10:56:51"}
+  ```
+
+The `megaEventId` naming and `~local~` tag point at eufy's newer "mega"
+backend exposing a lightweight local-event *metadata* index — separate from
+both the dead cloud-video API and from `databaseQueryByDate`'s local P2P
+path. SNI from the phone-side pcap (still useful without decryption — SNI is
+always sent in the clear) shows a tight cluster of TLS handshakes right
+before the API responses land, with `app-house-us-pr.eufy.com` the leading
+candidate for the working call (name matches the `houseId` field in the
+app's own logged request payload) against `security-app.eufylife.com` as the
+likely dead `TopEventAPI` host — not confirmed at the payload level (see
+§17.4).
+
+**A promising lead for actually fixing this:** the installed
+`eufy-security-client` (4.1.1-1, and 4.2.0 — checked, no newer surface)
+already ships `build/http/megaApi.js` (`MegaHTTPApi`) — device-list and MQTT
+push-config methods (`getThingsListDecrypted`, `getDevsListDecrypted`,
+`getUserMqttInfo`, `getMqttConnectConfig`), plus, critically, **generic
+authenticated call primitives**: `call(host, path, payload)` and
+`callDecrypted(service, path, payload)`, backed by the SDK's own session
+management (`setAuth`/`hasValidSession`/`exportSession`). A source comment in
+`megaApi.js` near the MQTT config method confirms v6 events are pushed over
+this channel but notes it "is NOT a live event path today" in this SDK
+version. None of `megaApi.d.ts`'s methods wrap an event-history query
+directly, in either version — but the generic `call`/`callDecrypted`
+primitives mean we would not need to reimplement mega's auth/session/crypto
+from scratch to call whatever endpoint the app calls; we would only need to
+learn the exact path and payload shape and hand them to a method the SDK
+already provides.
+
+### 17.4 Open items for next time
+
+- Get a properly decrypted capture of the `Phase2_EventAPI` call to learn its
+  exact path/payload/host and confirm the `app-house-us-pr.eufy.com` guess.
+  The PCAPdroid capture taken this session did **not** yield this: it
+  exported a plain legacy `.pcap`, which cannot carry embedded decryption
+  secrets (that needs `.pcapng` + a keylog, which this PCAPdroid run did not
+  produce) — so the file is encrypted TLS records at rest despite in-app
+  decryption being enabled. Candidates for next time, roughly in order of
+  effort: check PCAPdroid's own in-app connection inspector (decrypts live
+  for its UI, may still hold this session's detail without a new capture);
+  look for a PCAPdroid "export decryption keys"/keylog option for a
+  `.pcapng` re-export; pull the app's APK and grep its React Native JS bundle
+  for the literal endpoint path (no network capture needed at all, and the
+  bundle likely contains the same string constants seen in logcat —
+  `refreshEventData`, `megaEventId`, `houseId`); or a full system-wide
+  MITM (e.g. mitmproxy) with its CA trusted on the phone, which only needs a
+  repeatable pull-to-refresh, not another physical trigger.
+- If/once the endpoint is known, prototype the call through
+  `MegaHTTPApi.call`/`callDecrypted` rather than hand-rolling auth — confirm
+  first whether `eufyBridge.js`'s existing `EufySecurity` client exposes (or
+  could be made to expose) the underlying `MegaHTTPApi` instance, since it is
+  presently an internal implementation detail, not part of the client's
+  public/documented surface.
+- Revisit §16.5's original packet-capture suggestion now that we know *why*
+  it's worth doing: not just "does anything arrive" (answered — yes, and
+  §17.1 fixed the local handler for it) but "what does the one HTTP call that
+  actually works look like."

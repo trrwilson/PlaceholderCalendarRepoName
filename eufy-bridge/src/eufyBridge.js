@@ -9,26 +9,33 @@ const { EufySecurity, P2PConnectionType } = require("eufy-security-client");
 
 const { muxClip } = require("./ffmpeg");
 
-// Real device event names, verified against eufy-security-client 4.1.1-1's
-// own type definitions (EufySecurityEvents in build/interfaces.d.ts,
-// inspected 2026-09-11) — NOT exercised against a real device by the
-// 2026-09-10 hardware spike, which proved login / device listing / local P2P
-// / database query / clip download + decrypt, but not these specific push
-// events actually firing. Confirm on first real run against the household's
-// S330/HB3. A missing or renamed event here only costs latency (the periodic
-// reconciliation poll still finds any new clip within
-// `reconcileIntervalSeconds`), never correctness — this list is purely a
-// low-latency accelerant, not the source of truth for what's on the station.
+// Real device event names the `EufySecurity` client emits, taken verbatim
+// from eufy-security-client 4.1.1-1's own type definitions (EufySecurityEvents
+// in build/interfaces.d.ts). Each is emitted on the *client*, not the device,
+// with the device passed as the first argument — e.g.
+// `client.on("device motion detected", (device, state) => ...)`.
+//
+// This list previously used the bare names ("motion detected" etc., without
+// the "device " prefix) based on a misreading of the type definitions during
+// the 2026-09-10 verification spike — an easy mistake, since each map key is
+// one indivisible string, not a "device" namespace plus a suffix. That meant
+// `client.on(eventName, ...)` was subscribing to an event that never exists
+// under any firmware, so every real push (docs/eufy-sdk-integration.md
+// §16.4's "push events do not fire" finding) was silently dropped — not an
+// account/firmware/migration problem as originally suspected. Confirmed live
+// 2026-09-11 with a wildcard listener on `client.emit` (see `debugRawEvents`
+// in src/config.js): a real motion trigger produced "device motion detected"
+// and "device person detected" on the client, matching the type defs exactly.
 const DEVICE_EVENT_NAMES = [
-  "motion detected",
-  "person detected",
-  "stranger person detected",
-  "pet detected",
-  "dog detected",
-  "vehicle detected",
-  "crying detected",
-  "sound detected",
-  "rings",
+  "device motion detected",
+  "device person detected",
+  "device stranger person detected",
+  "device pet detected",
+  "device dog detected",
+  "device vehicle detected",
+  "device crying detected",
+  "device sound detected",
+  "device rings",
 ];
 
 const DOWNLOAD_START_TIMEOUT_MS = 20_000;
@@ -92,6 +99,7 @@ class EufyBridge {
     // `new EufySecurity(config)` does not work — the static factory is
     // required (verified 2026-09-10, see docs/eufy-sdk-integration.md §5.1).
     this.client = await this._initializeClient(eufyConfig, this._logger());
+    if (this.config.debugRawEvents) this._wireRawEventLogging();
     this._wireEvents();
     this.emit({ type: "status", state: "connecting" });
     await this.client.connect({ force: false });
@@ -104,12 +112,27 @@ class EufyBridge {
 
   _logger() {
     const log = this.log;
+    const verbose = this.config.debugRawEvents;
     return {
-      trace() {},
-      debug() {},
+      trace: verbose ? (...args) => log(`[eufy-security-client] TRACE ${args.map(String).join(" ")}`) : () => {},
+      debug: verbose ? (...args) => log(`[eufy-security-client] DEBUG ${args.map(String).join(" ")}`) : () => {},
       info: (...args) => log(`[eufy-security-client] ${args.map(String).join(" ")}`),
       warn: (...args) => log(`[eufy-security-client] WARN ${args.map(String).join(" ")}`),
       error: (...args) => log(`[eufy-security-client] ERROR ${args.map(String).join(" ")}`),
+    };
+  }
+
+  // Diagnostic-only (see `debugRawEvents` in src/config.js): logs the name and
+  // arg count of every event the client emits, including ones this bridge has
+  // no handler for. Wraps `emit` rather than adding a listener because Node's
+  // EventEmitter has no built-in wildcard subscription.
+  _wireRawEventLogging() {
+    const client = this.client;
+    const log = this.log;
+    const originalEmit = client.emit.bind(client);
+    client.emit = (eventName, ...args) => {
+      log(`[raw-event] "${eventName}" (${args.length} arg${args.length === 1 ? "" : "s"})`);
+      return originalEmit(eventName, ...args);
     };
   }
 
@@ -188,14 +211,11 @@ class EufyBridge {
 
     for (const eventName of DEVICE_EVENT_NAMES) {
       client.on(eventName, (device) => {
-        // Logged explicitly -- these event names were verified only against
-        // the SDK's type definitions (docs/eufy-sdk-integration.md §15.2),
-        // never against this household's real firmware actually firing them.
-        // Without this line there's no way to tell a push ever arrived: the
-        // narrow re-query it triggers logs nothing of its own, and its
-        // result folds silently into the same clip_discovered stream the
-        // periodic reconcile also feeds.
-        this.log(`device event "${eventName}" from ${device.getSerial()}`);
+        // Logged explicitly -- without this line there's no way to tell a
+        // push ever arrived: the narrow re-query it triggers logs nothing of
+        // its own, and its result folds silently into the same
+        // clip_discovered stream the periodic reconcile also feeds.
+        this.log(`"${eventName}" from ${device.getSerial()}`);
         this._onDeviceEvent(device);
       });
     }

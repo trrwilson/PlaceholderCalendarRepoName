@@ -208,7 +208,7 @@ test("a device event triggers a narrow re-query for that camera's station", asyn
   await new Promise((resolve) => setImmediate(resolve));
   station.queries.length = 0; // clear the initial "station connect" reconcile, if any
 
-  fakeClient.emit("motion detected", device);
+  fakeClient.emit("device motion detected", device);
 
   assert.equal(station.queries.length, 1);
   assert.deepEqual(station.queries[0].serials, ["CAM1"]);
