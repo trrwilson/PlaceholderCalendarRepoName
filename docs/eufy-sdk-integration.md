@@ -1389,20 +1389,74 @@ category of risk just doesn't apply to a throwaway VM.
    real, populated Events tab to refresh against — same account credentials
    already used by the bridge (`backend/.env`).
 7. Once the decrypted `Phase2_EventAPI` request/response is captured, resume
-   at the point §17.3/§17.4 left off: confirm the path against
-   `app-house-us-pr.eufy.com`, and prototype the call through
-   `MegaHTTPApi.call`/`callDecrypted` rather than hand-rolling auth —
-   confirming first whether `eufyBridge.js`'s existing `EufySecurity` client
-   exposes (or could be made to expose) the underlying `MegaHTTPApi`
-   instance, since it is presently an internal implementation detail, not
-   part of the client's public/documented surface.
+   at the point §17.6 left off: confirm the path against
+   `app-house-us-pr.eufy.com` and try it through the `mega_call` diagnostic
+   primitive (§17.6) — that plumbing is already built and confirmed working,
+   only the exact path string is still missing.
 
-### 17.6 Open items for next time
+### 17.6 Empirical probing (same session, no root): confirmed the mechanism works, path still unknown
 
-- The empirical alternative to §17.5 (attempted without a confirmed
-  endpoint, going straight at `MegaHTTPApi`'s public surface with informed
-  guesses from what's already known) is being tried in a same-day follow-up
-  — see git history around this section's commit for whether that landed.
+Tried in parallel with recording §17.5, without waiting for a rooted
+emulator — going straight at `MegaHTTPApi`'s public surface with informed
+guesses, on the theory that a wrong path just 404s cleanly (safe to try) and
+a right one would settle this immediately.
+
+**Confirmed reachable at runtime:** `EufySecurity`'s `megaTransition` field is
+TypeScript `private` (`build/eufysecurity.d.ts`) but that is compile-time
+only — erased in the actual compiled `.js`, where it is a plain
+`this.megaTransition = new MegaTransition(...)` assignment, not a real JS
+private field (`#megaTransition`). So `client.megaTransition.getMegaApi()`
+is genuinely callable from `eufyBridge.js`, and it lazily reuses the
+already-persisted v6 session — no second login, no second connection to the
+account. Added as `EufyBridge.megaCall(service, path, payload)` →
+`MegaHTTPApi.callDecrypted`, exposed over the control socket as a new
+`mega_call` message type gated by `EUFY_DEBUG_MEGA_CALL=1` (off by default,
+same pattern as `debugRawEvents`), with a small CLI (`eufy-bridge/mega-probe.js`)
+to fire one-off calls at the *already-running* bridge without opening a
+competing session. `megaApi.js` also confirms the service-name guess from
+§17.3: `clusterHost(service)` builds `app-{service}-{region}-pr.eufy.com`,
+so `app-house-us-pr.eufy.com` means the service really is `"house"`, and
+`getUserMqttInfo()`'s own call (`callDecrypted("devicemanage",
+"/app/devicemanage/get_user_mqtt_info", {})`) confirms the general path
+shape: `/app/{service}/{snake_case_action}`.
+
+**Guessed and got clean 404s from a real, correctly-authenticated endpoint**
+(not an auth/signing error — confirming both the mechanism and the service
+name are right) for: `get_event_list`, `refresh_event_data` (the direct
+transform of the app's own `refreshEventData` function name — highest-
+confidence guess, still wrong), `get_events`, `event_list`, `list_event`,
+`query_event_list`, `get_house_event_list`, `house_event_list`.
+
+**Went back to static analysis with the now-known `/app/{service}/{action}`
+shape** to search for it directly rather than guessing further: re-pulled
+just the Events module and grepped for the literal pattern `/app/[a-z_]+/[a-z_]+`
+across it and seven more likely bundles (`RN_ANDROID_ZX_EVENT_TAB`,
+`RN_ANDROID_ZX_EVENT`, `RN_ANDROID_ZX_T8030`, `RN_ANDROID_zx-rnsdk` — the
+shared-SDK-shaped one, `RN_ANDROID_ZX_GLOBAL`, `RN_ANDROID_MEGA_PLAYER`,
+`RN_ANDROID_ZX_AI`, `RN_ANDROID_SEC_SETTING`). Found plenty of *other* real
+`/app/{service}/{action}` paths this way (`/app/nvr/get_dictionary`,
+`/app/device/relate_list`, `/app/equipment/get_white_list`, a couple dozen
+more) — confirming the pattern and the extraction technique both work — but
+**zero matches anywhere for `/app/house/*`**. `RN_ANDROID_ZX_EVENT_TAB`
+itself (the Events tab module, confirmed correct via matching log-message
+strings, §17.4) has *no* `/app/` literals in it at all. Conclusion: this
+specific call is not made from the RN/JS layer — it is almost certainly
+issued from native (Java/Kotlin, or the "Thing-Network" native layer seen in
+logcat, §17.3) code, with the JS side only invoking a native bridge method.
+That is very likely inside the Ijiami-protected base APK (§17.4), which is a
+meaningfully bigger reverse-engineering undertaking than reading a JS
+bundle — realistically in the same effort tier as the rooted-emulator path
+in §17.5, not a shortcut around it.
+
+**Net result:** the `mega_call` infrastructure and probing technique are
+solid and reusable (confirmed against a real endpoint, not simulated), but
+this session did not land on the actual path. Whoever picks this up next
+should not keep blind-guessing snake_case variations — the productive next
+step is §17.5's decrypted capture (which would just *answer* this) or a
+proper look at the native app code, not more guesses.
+
+### 17.7 Open items for next time
+
 - Revisit §16.5's original packet-capture suggestion now that we know *why*
   it's worth doing: not just "does anything arrive" (answered — yes, and
   §17.1 fixed the local handler for it) but "what does the one HTTP call that
