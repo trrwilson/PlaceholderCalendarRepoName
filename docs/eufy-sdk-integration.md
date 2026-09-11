@@ -990,3 +990,149 @@ dependency anywhere yet).
 - Any production deployment doc for the bridge process beyond
   `bridge_process.py` itself (Node ≥24 provisioning on the real kiosk host is
   still a manual prerequisite — this dev sandbox only has Node 20).
+
+---
+
+## 16. First live hardware bring-up (2026-09-11): negative findings and current state
+
+§15 above was written from the 2026-09-10 verification spike plus a same-day
+build session against a fixture-backed fake service — real household
+credentials, hardware, and Node ≥24 were still untested end-to-end at that
+point (§15.2). This section covers what happened bringing it up for real
+against this household's actual account, HomeBase 3, and Front
+Door/KittyCam cameras, later the same day. Net result: the gallery UI works
+end-to-end against real footage (thumbnails, playback, layout all verified),
+but **freshness is broken in a way this document did not anticipate**, and
+one proposed fix (cloud backfill) turned out to be a dead end for this
+account. Read this section before touching `eufy_reconcile_lookback_minutes`
+or re-attempting a cloud-backed approach.
+
+### 16.1 Fixed during bring-up
+
+- **`clip_discovered` ordering bug.** `eufy-bridge/src/eufyBridge.js`'s
+  `_onDatabaseQueryByDate` emitted records in whatever order the SDK
+  returned them; the backend's ring buffer (`EufyEventService._add_clip`)
+  does an unconditional `appendleft` per event assuming ascending-chronological
+  emission, so a newest-first (or unordered) SDK response silently inverted
+  the gallery and evicted the newest clips first as the buffer filled. Fixed
+  by sorting explicitly before emitting; covered by a regression test.
+- **`ffmpeg` not resolving from a freshly-`winget`-installed PATH.** The
+  shell that spawned the backend predated the PATH update; refreshing
+  `$env:Path` from the registry before restart fixed it. Not a code bug, but
+  worth remembering for the next fresh-machine bring-up.
+- **Gallery card 2×2 layout silently overflowed at realistic kiosk heights.**
+  Built and screenshot-verified as 2×2 (up to 4 clips), but a 1366×768
+  viewport test showed the card's bottom clipped invisibly by an ancestor's
+  `overflow:hidden` — no scrollbar, content just vanished. Switched to a
+  single row of 4, which keeps true 16:9 crops and fits comfortably at both
+  1366×768 and 1920×1080 (verified via DOM geometry, zero overflow).
+- **Clip-modal close button read as misplaced.** The reused `.detail-sheet`
+  style (`top:14px; right:18px`, cream fill) was built for a component with
+  header space above its content; here the video sits flush against the
+  card's padding, leaving ~2px clearance, so the button mostly overlapped the
+  video with low contrast. Restyled using the app's own dark-translucent
+  video-overlay language (matching the thumbnail play glyph) with real
+  clearance.
+
+### 16.2 Confirmed, not fixed: local `databaseQueryByDate` isn't reliably tied to the requested window
+
+Querying the real station with different lookback windows produced small
+(5–9 record), *different* clusters each time, consistently near the **start**
+of whatever range was requested — never reliably reaching records close to
+"now" even when a window nominally included a clip confirmed to exist (via
+the eufy app) well inside it. Concretely: a 7-day window returned only the
+oldest day in range; a 2-day window returned a different, single day; a
+6-hour window returned yet another. Widening the window makes this *worse*
+(surfaces older data), not better.
+
+Partially root-caused: `eufy-security-client`'s `databaseQueryByDate()`
+truncates the precise `since`/`until` `Date` objects to day granularity
+(`format(startDate, "YYYYMMDD")`) before the P2P request is ever built
+(`eufy-bridge/node_modules/eufy-security-client/build/http/station.js:13337-
+13338`) — sub-day windowing never reaches the device. What is **not**
+explained by anything found in the SDK's source (a dedicated code-reading
+pass turned up no pagination cursor, no "more results" signal, and confirmed
+`returnCode` is a plain success/error flag, not a continuation token): why
+only a handful of records ever come back per call at all, or why they
+cluster at the range's oldest edge specifically. Likely related to the v6/
+"mega" backend migration noted in §1 — the SDK client has kept pace on the
+image-decode side, but this account/firmware may be mid-transition
+server-side in ways that affect how `databaseQueryByDate` responses are
+paged or windowed. Not confirmed; flagged as the leading hypothesis only
+because the symptom pattern (works locally, cloud index empty, push silent)
+lines up with "parts of the migration landed, parts didn't" better than any
+single-bug explanation found so far.
+
+**Mitigation (not a fix):** `MISSION_CONTROL_EUFY_RECONCILE_LOOKBACK_MINUTES`
+is parked at `1440` (1 day) — empirically the smallest of {1, 2, 3, 6, 7}-day
+windows tried that reliably returned ≥4 clips (returned 6 on the first try).
+This guarantees *a* gallery isn't empty; it does not guarantee those 4+ clips
+are the most recent ones that exist. Do not widen this further expecting
+better recency — it was tried up to 7 days this session and only surfaces a
+different, similarly-stale cluster, never anything closer to "now."
+
+### 16.3 Abandoned: cloud history backfill
+
+Built and tested a fallback: `EufySecurity.getApi().getVideoEvents()` (a
+regular cloud REST call, precise second-granularity windowing, no observed
+correlation problems) used sparingly (interval-gated, state persisted across
+restarts) to seed a reliable index, with clip bytes still fetched via the
+existing local P2P path (`EventRecordResponse` carries the same
+`station_sn`/`device_sn`/`storage_path`/`thumb_path`/`cipher_id`/`frame_num`
+fields as a local `DatabaseQueryByDate` record — confirmed by direct
+comparison of `eufy-security-client`'s type definitions, so no separate
+download path was needed).
+
+**Every cloud event endpoint returned zero results against this real
+account** — `getVideoEvents` (default filter and explicit
+`storageType: LOCAL_AND_CLOUD`), `getAllVideoEvents` (the SDK's own
+unfiltered 15-year "everything" convenience call), `getAllHistoryEvents`,
+and `getAllAlarmEvents` — despite local P2P confirming real clips exist in
+the exact same window. Leading explanation: **this account has no active
+eufy cloud video subscription**, so nothing is indexed in eufy's cloud at
+all; clips exist only in the HomeBase's local storage. Possibly compounded
+by the same v6 migration referenced above. Reverted entirely — the code is
+not present in this repo as of this writing. If the household adds a cloud
+subscription later, or the migration completes, this approach is fully
+designed and could be rebuilt quickly from this section plus git history
+(commit history around 2026-09-11 has the full implementation and its test
+suite, both green at time of revert).
+
+### 16.4 Confirmed: push events do not fire under the registered names
+
+§15.2 flagged `DEVICE_EVENT_NAMES` as verified only against the SDK's type
+definitions, never real firmware. Live-tested 2026-09-11: real motion at
+KittyCam (confirmed via the eufy app, with timestamp) produced no
+`device event "..."` log line at all, despite the bridge being connected and
+subscribed under every name in the list, well after the motion occurred. The
+periodic local reconcile (which should have run at least once in the
+following few minutes, well within its lookback) also did not surface the
+new clip — consistent with §16.2's correlation problem, now demonstrated
+against a clip of known, exact provenance rather than an ambiguous historical
+one.
+
+**Consequence:** contrary to this document's original design assumption
+(§2, §15.1) that push is the primary freshness path and reconcile is only a
+low-latency accelerant, *neither* path is currently reliable against this
+household's real hardware. The periodic reconcile is the only thing
+delivering any clips at all right now, and it has the correlation problem
+above.
+
+### 16.5 Open items for next time
+
+- Revisit once eufy's v6/"mega" migration is confirmed complete for this
+  account/region/firmware, or once the household's cloud subscription status
+  is clarified (§16.3) — either could resolve some or all of §16.2–16.4 at
+  once without a code change here.
+- If push events matter enough to chase now rather than wait: packet-level
+  capture of real P2P traffic during a confirmed motion event is the next
+  diagnostic step; static code reading has been exhausted (two independent
+  passes, including a dedicated subagent investigation, found no pagination
+  or continuation mechanism and no event-name documentation beyond the SDK's
+  own type definitions).
+- `eufy-bridge/src/eufyBridge.js` now logs `local reconcile: querying ... ->
+  ...` and `local reconcile: N record(s) returned` on every reconcile call,
+  and `device event "..." from ...` on every push event received — added
+  during this investigation specifically so a future session doesn't have to
+  re-derive "did anything even run" from silence, the ambiguity that cost
+  real time here.

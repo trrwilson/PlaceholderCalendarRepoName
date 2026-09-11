@@ -815,11 +815,11 @@ function CameraGalleryCard({ camera, redacting, onSelectClip, apiBaseUrl }: { ca
     return () => window.clearInterval(id)
   }, [])
   if (!camera.available) return null
-  // The rail is narrow and shares vertical space with two cards above it, so
-  // the thumbnail count is a real layout constraint, not a style choice — two
-  // wide 16:9 crops read clearly at both 4K and 1080p without pushing the
-  // card past the rail's height budget (no document-level scrolling allowed).
-  const shown = camera.clips.slice(0, 2)
+  // A 2x2 grid of up to four true 16:9 crops. Target is 4K at 100% OS scaling
+  // (3840x2160) ONLY -- 2560x1440 was tried and rejected (the whole rail is
+  // ~101px short there, not just this card; see App.css). Anything below 4K
+  // may clip this card's bottom row silently (no document-level scrolling).
+  const shown = camera.clips.slice(0, 4)
   if (shown.length === 0) return null
   return (
     <section className="camera-review">

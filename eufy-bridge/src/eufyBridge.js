@@ -187,7 +187,17 @@ class EufyBridge {
     });
 
     for (const eventName of DEVICE_EVENT_NAMES) {
-      client.on(eventName, (device) => this._onDeviceEvent(device));
+      client.on(eventName, (device) => {
+        // Logged explicitly -- these event names were verified only against
+        // the SDK's type definitions (docs/eufy-sdk-integration.md §15.2),
+        // never against this household's real firmware actually firing them.
+        // Without this line there's no way to tell a push ever arrived: the
+        // narrow re-query it triggers logs nothing of its own, and its
+        // result folds silently into the same clip_discovered stream the
+        // periodic reconcile also feeds.
+        this.log(`device event "${eventName}" from ${device.getSerial()}`);
+        this._onDeviceEvent(device);
+      });
     }
   }
 
@@ -261,11 +271,26 @@ class EufyBridge {
       .filter(([, stationSn]) => stationSn === station.getSerial())
       .map(([deviceSn]) => deviceSn);
     if (serials.length === 0) return;
+    // Logged explicitly -- without this there's no way to tell "no query ran"
+    // from "a query ran and the station's response didn't include what we
+    // expected" (docs/eufy-sdk-integration.md §15.5/§15.6: the response is
+    // not reliably correlated to the requested window on this household's
+    // real hardware, so that distinction matters for diagnosis).
+    this.log(`local reconcile: querying ${since.toISOString()} -> ${now.toISOString()} (lookback ${this.config.reconcileLookbackMinutes}m)`);
     station.databaseQueryByDate(serials, since, now);
   }
 
   _onDatabaseQueryByDate(records) {
-    for (const record of records || []) {
+    this.log(`local reconcile: ${(records || []).length} record(s) returned`);
+    // `clip_discovered` events must be emitted oldest-first: the backend's
+    // ring buffer (`EufyEventService._add_clip`) does an unconditional
+    // `appendleft` per event and relies on that ordering to end up
+    // newest-first itself. The SDK's own return order isn't documented, so
+    // sort explicitly rather than assume it matches.
+    const sorted = [...(records || [])].sort(
+      (a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime(),
+    );
+    for (const record of sorted) {
       const clipId = `${record.device_sn}:${record.record_id}`;
       if (this.clipCache.has(clipId)) continue;
       this.clipCache.set(clipId, record);

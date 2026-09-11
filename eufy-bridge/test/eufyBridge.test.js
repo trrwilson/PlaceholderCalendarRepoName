@@ -161,6 +161,44 @@ test("a database-query-by-date response emits clip_discovered once per new recor
   assert.equal(discovered[0].frame_num, 300);
 });
 
+test("a database-query-by-date response emits clip_discovered oldest-first regardless of record order", async () => {
+  // The backend's ring buffer (EufyEventService._add_clip) does an
+  // unconditional appendleft per clip_discovered event and relies on
+  // oldest-first emission to end up newest-first itself. The SDK's actual
+  // return order for databaseQueryByDate isn't documented, so this asserts
+  // the bridge sorts rather than trusting it — records here arrive
+  // newest-first, the opposite of what's required.
+  const station = new FakeStation("STATION1");
+  const device = new FakeDevice("CAM1", "Front Door", "STATION1");
+  const { bridge, fakeClient, events } = makeBridge({ stations: [station], devices: [device] });
+  await bridge.start();
+  fakeClient.emit("connect");
+  await new Promise((resolve) => setImmediate(resolve));
+  events.length = 0;
+
+  const recordAt = (id, iso) => ({
+    device_sn: "CAM1",
+    station_sn: "STATION1",
+    record_id: id,
+    start_time: new Date(iso),
+    storage_path: "/path/to/clip",
+    thumb_path: "/path/to/thumb",
+    cipher_id: 7,
+    frame_num: 300,
+  });
+  const newest = recordAt(3, "2026-09-07T18:30:00Z");
+  const middle = recordAt(2, "2026-09-06T18:30:00Z");
+  const oldest = recordAt(1, "2026-09-05T18:30:00Z");
+  fakeClient.emit("station database query by date", station, 0, [newest, middle, oldest]);
+
+  const discovered = events.filter((e) => e.type === "clip_discovered");
+  assert.deepEqual(
+    discovered.map((e) => e.clip_id),
+    ["CAM1:1", "CAM1:2", "CAM1:3"],
+    "must emit oldest-first even when the SDK returned newest-first"
+  );
+});
+
 test("a device event triggers a narrow re-query for that camera's station", async () => {
   const station = new FakeStation("STATION1");
   const device = new FakeDevice("CAM1", "Front Door", "STATION1");
