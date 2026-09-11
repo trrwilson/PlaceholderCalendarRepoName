@@ -15,6 +15,13 @@ dependencies = [
   # Upstream client for the Azure voice relay (app/voice/relay.py). Already
   # present transitively via uvicorn[standard]; pinned here because we import it.
   "websockets>=13,<17",
+  # Local-webcam presence motion detection (app/presence/sources/local_camera.py,
+  # docs/camera-support-plan.md). `-headless` drops the GUI (Qt/highgui) build
+  # this backend never uses (no imshow, no windows) — smaller wheel, fewer
+  # native deps, same VideoCapture / background-subtraction / contour API.
+  # BSD-3-Clause; no model weights (MOG2 is a classical, non-trained algorithm)
+  # so there is no separate weights licence to review — see docs/credits.md.
+  "opencv-python-headless>=4.9,<5.0",
 ]
 
 [project.optional-dependencies]

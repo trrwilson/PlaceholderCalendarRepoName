@@ -142,6 +142,24 @@ async def test_relay_turns_a_recognition_into_a_wake_frame_and_re_arms(fake_spee
     assert _FakeKeywordRecognizer.last.stopped is True
 
 
+async def test_relay_confirmed_keyword_notes_presence_activity(fake_speechsdk) -> None:
+    """The confirmed keyword itself is a presence signal — see
+    docs/presence-module-plan.md and app/presence/__init__.py's note_activity."""
+    from app.models import PresenceScope
+    from app.presence import get_presence_aggregator
+    from app.voice.wake_azure import run_wake_relay
+
+    def detect() -> None:
+        evt = SimpleNamespace(result=SimpleNamespace(reason="RecognizedKeyword"))
+        _FakeKeywordRecognizer.last.recognized.fire(evt)
+
+    ws = _FakeWS([detect, {"type": "audio", "pcm": ""}])
+    await asyncio.wait_for(run_wake_relay(ws), timeout=2)
+
+    kiosk_state = get_presence_aggregator().state(PresenceScope(kind="kiosk", id="kiosk"))
+    assert kiosk_state.present is True
+
+
 async def test_relay_ignores_a_non_keyword_result(fake_speechsdk) -> None:
     from app.voice.wake_azure import run_wake_relay
 

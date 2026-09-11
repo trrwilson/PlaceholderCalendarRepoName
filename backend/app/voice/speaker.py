@@ -1,5 +1,13 @@
 """Backend bridge for the Wi-Fi speaker output path (kiosk → Invoke).
 
+STATUS — ON HOLD (2026-09). The Wi-Fi speaker reliability investigation is
+tabled; the kiosk plays its output over Bluetooth instead. This path is
+**disabled by default** (``invoke_speaker_host`` empty) and the on-device
+``invoke_speaker_daemon.sh`` receiver is only ever started by an explicit
+``invokectl speaker-daemon up`` — nothing auto-starts it. The module and its
+hardening (TCP keepalive + drain-timeout guard, below) are kept intact for if the
+path is re-enabled.
+
 The mirror of :mod:`app.voice.wake_invoke`, one layer up: that module bridges the
 Invoke gate's *control* socket; this one carries *audio*, in the opposite
 direction from the mic path.
@@ -46,6 +54,7 @@ import array
 import asyncio
 import contextlib
 import json
+import socket
 import sys
 import time
 
@@ -71,6 +80,60 @@ _PRIME_SECONDS = 0.06
 _MAX_BUFFER_BYTES = RATE * _IN_BYTES_PER_FRAME * 35 // 100  # ~350 ms
 _RECONNECT_BACKOFF_S = (0.5, 1.0, 2.0, 4.0, 8.0)
 _STATUS_INTERVAL_S = 5.0
+#: A hard device reboot / Wi-Fi drop / kiosk sleep tears the peer away with no
+#: FIN/RST, leaving this socket ``ESTABLISHED`` but dead. Without a bound, a
+#: ``writer.drain()`` against it hangs indefinitely and the bridge never
+#: reconnects — the mirror of the mic-feeder wedge (ReInvoke2026
+#: ``RELIABILITY_INCIDENT_2026-09-09.md``). Two guards below: OS TCP keepalive so
+#: the socket eventually errors on its own, and a ``drain()`` timeout so a
+#: wedged send is caught fast. ~8 s clears the ~1–3 s Wi-Fi scan stalls the
+#: device is prone to without false-tripping.
+_SEND_STALL_S = 8.0
+#: TCP keepalive: first probe after this idle, then every ``_KEEPALIVE_INTVL_S``.
+_KEEPALIVE_IDLE_S = 5
+_KEEPALIVE_INTVL_S = 2
+_KEEPALIVE_CNT = 3
+
+
+def _enable_keepalive(sock: socket.socket) -> None:
+    """Best-effort aggressive TCP keepalive so the OS RSTs a silently-dropped
+    Invoke instead of the bridge sitting forever on a half-open socket.
+
+    Every step is optional: ``asyncio``'s ``TransportSocket`` proxy exposes
+    ``setsockopt`` but not ``ioctl`` (raises ``AttributeError``), and the
+    per-option constants are platform-specific — so a missing capability must
+    never abort the bridge, only skip the tuning."""
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except (OSError, AttributeError):
+        return
+    if hasattr(socket, "SIO_KEEPALIVE_VALS"):  # Windows (the kiosk host)
+        with contextlib.suppress(OSError, AttributeError):
+            sock.ioctl(
+                socket.SIO_KEEPALIVE_VALS,
+                (1, _KEEPALIVE_IDLE_S * 1000, _KEEPALIVE_INTVL_S * 1000),
+            )
+    for name, value in (
+        ("TCP_KEEPIDLE", _KEEPALIVE_IDLE_S),
+        ("TCP_KEEPINTVL", _KEEPALIVE_INTVL_S),
+        ("TCP_KEEPCNT", _KEEPALIVE_CNT),
+        ("TCP_USER_TIMEOUT", int((_SEND_STALL_S + 2) * 1000)),
+    ):  # POSIX (a Linux-hosted backend)
+        opt = getattr(socket, name, None)
+        if opt is not None:
+            with contextlib.suppress(OSError, AttributeError):
+                sock.setsockopt(socket.IPPROTO_TCP, opt, value)
+
+
+async def _drain_or_raise(writer: asyncio.StreamWriter) -> None:
+    """``writer.drain()`` with a ceiling — a drain that blocks past
+    ``_SEND_STALL_S`` means the device peer is wedged (half-open socket). Turn it
+    into an ``OSError`` so the bridge tears down and reconnects instead of
+    hanging on it."""
+    try:
+        await asyncio.wait_for(writer.drain(), _SEND_STALL_S)
+    except TimeoutError as exc:
+        raise OSError(f"device send stalled >{_SEND_STALL_S:.0f}s") from exc
 
 
 def resolve_speaker_host(settings: Settings) -> str:
@@ -240,13 +303,16 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
                 continue
             attempt = 0
             stats["link"] = "up"
+            sock = writer.get_extra_info("socket")
+            if sock is not None:
+                _enable_keepalive(sock)
             note(f"voice speaker bridge: connected to {host}:{port} (codec {codec})")
             async with lock:  # a reconnect costs one clean gap, not stale latency
                 buffer.clear()
                 have_audio.clear()
             try:
                 writer.write(prime)
-                await writer.drain()
+                await _drain_or_raise(writer)
                 await _send_status("streaming")
                 await _drain_to_device(reader, writer)
             except OSError as exc:
@@ -269,7 +335,7 @@ async def run_speaker_bridge(client: WebSocket, settings: Settings) -> None:
                 have_audio.clear()
             if pending:
                 writer.write(_encode(pending, slip, codec))
-                await writer.drain()
+                await _drain_or_raise(writer)
                 stats["sent_bytes"] += len(pending)
             if reader.at_eof():  # the daemon closed the socket
                 return

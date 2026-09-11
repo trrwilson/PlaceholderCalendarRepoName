@@ -260,6 +260,63 @@ describe('useVoiceSession', () => {
     }
   })
 
+  it('endpoints a continuously noisy feed once speech stops, not at the hard cap', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+
+      // Leading room tone from a far-field VB-CABLE feed: ~0.015 RMS, above the
+      // absolute speech floor (0.004) — the old fixed gate never fell back under
+      // it after speech, so the turn only ended at MAX_LISTEN_MS.
+      for (let i = 0; i < 6; i += 1) {
+        act(() => h.state.level(0.015))
+        vi.advanceTimersByTime(100)
+      }
+      // The command.
+      for (let i = 0; i < 8; i += 1) {
+        act(() => h.state.level(0.09))
+        vi.advanceTimersByTime(100)
+      }
+      expect(result.current.status).toBe('listening')
+
+      // Speech stops — the feed drops back to its noise floor, not to silence.
+      for (let i = 0; i < 10; i += 1) {
+        act(() => h.state.level(0.015))
+        vi.advanceTimersByTime(100)
+      }
+
+      expect(result.current.status).toBe('thinking')
+      expect(h.spies.endActivity).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not let the far-field noise floor alone open a turn', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+
+      // Nothing but the ~0.015 room tone for well past NO_SPEECH_TIMEOUT_MS.
+      for (let i = 0; i < 60; i += 1) {
+        act(() => h.state.level(0.015))
+        vi.advanceTimersByTime(100)
+      }
+
+      // Abandoned as "nothing was said", not submitted as a turn full of noise.
+      expect(h.spies.endActivity).not.toHaveBeenCalled()
+      expect(result.current.status).toBe('idle')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('ends the turn when the provider VAD reports speech stopped', async () => {
     vi.useFakeTimers()
     try {

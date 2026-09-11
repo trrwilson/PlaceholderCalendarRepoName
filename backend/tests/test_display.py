@@ -244,6 +244,45 @@ async def test_restore_full_returns_to_reference() -> None:
     assert controller.levels[-1] == 90
 
 
+# -- store: ambient brightness (the presence-dim policy's primitive) ------
+
+
+async def test_ambient_brightness_does_not_leave_night_mode() -> None:
+    """Unlike `set_brightness`, `set_ambient_brightness` must not clear night
+    mode — it's the layer the presence-dim policy uses underneath whatever
+    night-mode choice is standing (docs/display-dimming-plan.md)."""
+    store, controller, _ = make_store()
+    await store.set_night_mode(True)
+    await store.set_ambient_brightness(0)
+    assert store.state().brightness == 0
+    assert store.state().night_mode is True
+    assert controller.levels[-1] == 0
+
+
+async def test_ambient_brightness_does_not_disturb_reference() -> None:
+    store, _, _ = make_store(controller=FakeController(probe=ProbeResult(ok=True, level=100)))
+    await store.set_night_mode(True)  # reference captured as 100, dims to 10
+    await store.set_ambient_brightness(0)
+    assert store.night_level() == 10  # unaffected by the ambient override
+
+
+async def test_ambient_brightness_no_redundant_apply() -> None:
+    store, controller, sent = make_store(
+        controller=FakeController(probe=ProbeResult(ok=True, level=60))
+    )
+    await store.set_ambient_brightness(60)  # already 60
+    assert controller.levels == []
+    assert sent == []
+
+
+def test_night_level_computes_from_reference_and_pct() -> None:
+    store, _, _ = make_store(
+        controller=FakeController(probe=ProbeResult(ok=True, level=80)),
+        night_mode_level_pct=25,
+    )
+    assert store.night_level() == 20
+
+
 # -- API ---------------------------------------------------------------
 
 
@@ -256,7 +295,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 def test_capabilities_defaults_to_not_colocated(client: TestClient) -> None:
     body = client.get("/api/capabilities").json()
-    assert body == {"host_local_display": False}
+    assert body == {"host_local_display": False, "host_local_camera": False}
 
 
 def test_capabilities_reflects_the_assertion(monkeypatch: pytest.MonkeyPatch) -> None:

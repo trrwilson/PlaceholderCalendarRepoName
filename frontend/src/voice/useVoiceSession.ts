@@ -87,6 +87,31 @@ const SPEECH_LEVEL_CEILING = 0.25
  * only endpointer. Dead time on every such turn, so kept just long enough to
  * ride out a mid-sentence pause. */
 const SILENCE_HOLD_MS = 700
+/** `SPEECH_RMS_FLOOR` assumes the room goes quieter than a voice between
+ * phrases. The kiosk's VB-CABLE feed from the Invoke far-field mic does not — its
+ * noise floor sits around 0.015–0.02 RMS, above both the absolute floor and
+ * `speechLevel * SPEECH_LEVEL_FRACTION`. So once speech had been heard the
+ * "still talking?" gate never dropped back under the incoming level, `lastVoiceAt`
+ * was refreshed on every frame, and the turn only ever ended at `MAX_LISTEN_MS`
+ * (the reported "unfinalized for up to 15 s", worst on the VB-CABLE input).
+ *
+ * The fix mirrors the wake content gate (`WAKE_CONTENT_FLOOR_MULT`): sample the
+ * room's own noise floor from the quiet *before* the user starts speaking and
+ * lift the endpointer's floor to a small multiple of it. Sampled pre-speech
+ * only, never off a sentence's quiet tail, so a clean mic — or a turn with no
+ * leading silence — behaves exactly as before. */
+const NOISE_FLOOR_MULT = 1.8
+/** Ceiling on the sampled-floor gate: past this a room is loud enough that the
+ * mic cannot separate speech from it and nothing here helps, so don't let the
+ * endpoint floor climb into the range of a normal speaking level. */
+const NOISE_FLOOR_CEILING = 0.03
+/** Only frames quieter than this seed the noise-floor estimate. Above it a frame
+ * is plausibly speech (or a transient), not room tone — seeding off it would
+ * push the endpoint gate up into the command itself. Set between a far-field
+ * feed's resting floor (~0.01–0.02, see `WAKE_CONTENT_RMS`) and a speaking
+ * level, so the continuous VB-CABLE floor is captured but an eager talker's
+ * first word is not. */
+const NOISE_FLOOR_SAMPLE_CEILING = 0.02
 /** Silence hold when the provider VAD owns the endpoint (`endpointing: hybrid`,
  * or after a `speech-started` on any provider): trust it to send `speech-stopped`
  * and only step in as a backstop if it doesn't. */
@@ -290,6 +315,10 @@ export function useVoiceSession({
    *  Both reset per turn in `startTurn`. */
   const wakeFloorRef = useRef(Infinity)
   const wakeContentRunRef = useRef(0)
+  /** Room/mic noise floor sampled from the quiet before speech this turn (the
+   *  per-frame minimum, post-AEC-settle, pre-`spoke`). Lifts the end-of-speech
+   *  gate above a noisy far-field feed — see `NOISE_FLOOR_MULT`. Reset per turn. */
+  const noiseFloorRef = useRef(Infinity)
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) {
@@ -313,6 +342,9 @@ export function useVoiceSession({
     awaitingContentRef.current = false
     contentSpeechSeenRef.current = true
     wakeContentRunRef.current = 0
+    // The wake floor window sampled the same room tone; carry it over so the
+    // end-of-speech gate below is lifted off a noisy far-field feed from frame one.
+    noiseFloorRef.current = Math.min(noiseFloorRef.current, wakeFloorRef.current)
     // Content speech was heard — the user has started talking. Arm the normal
     // end-of-speech state so a provider `speech-stopped` (or the mic-RMS hold)
     // from here can finalise the turn; the keyword→command gap is behind us.
@@ -713,15 +745,35 @@ export function useVoiceSession({
         return
       }
 
+      // Sample the room/mic noise floor from the quiet before the first speech
+      // (per-frame minimum), so "silence" below is judged against this room
+      // rather than only an absolute number. Restricted to sub-
+      // `NOISE_FLOOR_SAMPLE_CEILING` frames so a command that starts with no
+      // leading pause never seeds the floor from its own speech — and never
+      // updated once `spoke`, so a sentence's quiet tail can't lower it either.
+      if (!spokeRef.current && rms < NOISE_FLOOR_SAMPLE_CEILING) {
+        noiseFloorRef.current = Math.min(noiseFloorRef.current, rms)
+      }
+
       if (rms > speechLevelRef.current) {
         speechLevelRef.current = Math.min(rms, SPEECH_LEVEL_CEILING)
       }
       // "Still talking" is judged relative to this speaker's own speech level,
-      // floored, so the quiet tail of a sentence still counts. Arming `spoke`
-      // the first time stays absolute so room noise can't start a turn.
+      // floored, so the quiet tail of a sentence still counts. `endpointFloor`
+      // lifts that floor to a multiple of the sampled room tone when one was
+      // measured, so a continuous far-field feed whose noise never drops below
+      // the fixed `SPEECH_RMS_FLOOR` still reads as silence when speech stops.
+      // The same floor also raises the first-arm gate, so that noise cannot open
+      // a turn on its own either.
+      const endpointFloor = Number.isFinite(noiseFloorRef.current)
+        ? Math.min(
+            Math.max(SPEECH_RMS_FLOOR, noiseFloorRef.current * NOISE_FLOOR_MULT),
+            NOISE_FLOOR_CEILING,
+          )
+        : SPEECH_RMS_FLOOR
       const voiceGate = spokeRef.current
-        ? Math.max(SPEECH_RMS_FLOOR, speechLevelRef.current * SPEECH_LEVEL_FRACTION)
-        : SPEECH_RMS
+        ? Math.max(endpointFloor, speechLevelRef.current * SPEECH_LEVEL_FRACTION)
+        : Math.max(SPEECH_RMS, endpointFloor)
 
       if (now - levelLoggedAtRef.current > 1_000) {
         levelLoggedAtRef.current = now
@@ -783,6 +835,7 @@ export function useVoiceSession({
     contentSpeechSeenRef.current = !viaWake
     wakeFloorRef.current = Infinity
     wakeContentRunRef.current = 0
+    noiseFloorRef.current = Infinity
     // Push-to-talk with the on-device Invoke gate layered on: open the gate for
     // this manual turn (a wake activation opened it already). The matching close
     // goes out from `teardown()`.
@@ -842,6 +895,7 @@ export function useVoiceSession({
       levelLoggedAtRef.current = 0
       peakRmsRef.current = 0
       speechLevelRef.current = 0
+      noiseFloorRef.current = Infinity
       serverVadSeenRef.current = false
       listenStartRef.current = performance.now()
       // Visual-only acknowledgement for a wake turn (docs/voice-activation-ux-mvp.md

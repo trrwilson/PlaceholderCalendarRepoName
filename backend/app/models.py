@@ -303,13 +303,13 @@ class PrivacyUnlockRequest(BaseModel):
 class HostCapabilities(BaseModel):
     """What this deployment can do that depends on backend/frontend colocation.
 
-    Served by ``GET /api/capabilities`` (always safe to call). Today the only
-    flag is ``host_local_display``; the presence / display-sleep work
-    (``docs/camera-support-plan.md``) will add ``host_local_camera`` and friends
-    behind the same seam.
+    Served by ``GET /api/capabilities`` (always safe to call). ``host_local_camera``
+    (``docs/camera-support-plan.md``) is the same seam as ``host_local_display``,
+    applied to the local webcam instead of the panel.
     """
 
     host_local_display: bool
+    host_local_camera: bool
 
 
 DisplayMechanism = Literal["wmi", "ddcci", "none"]
@@ -350,6 +350,111 @@ class DisplayConfigUpdate(BaseModel):
         if self.brightness is None and self.night_mode is None:
             raise ValueError("set brightness, night_mode, or both")
         return self
+
+
+# -- Presence ---------------------------------------------------------------
+# The provider-neutral presence-signal contract shared by the local webcam and
+# any future ambient/remote source (``docs/presence-module-plan.md``). Pure
+# data; the aggregator and sources that implement the contract live in
+# ``app/presence/``, per the repo's "models.py is the contract" rule.
+
+
+class PresenceSignalKind(StrEnum):
+    # A discrete "someone just interacted" pulse — no standing presence claim
+    # (touch, voice, a timer pulse, wake-word activation).
+    activity = "activity"
+    # A continuous claim: someone is / isn't there now.
+    presence = "presence"
+    # A transient pulse, weaker than ``presence`` — no standing state implied.
+    # This MVP's local-camera detector emits only this kind: it flags a raw
+    # frame-to-frame change without confirming a person is what moved
+    # (``docs/camera-support-plan.md``'s actual person detector is a later step).
+    motion = "motion"
+    zone_entry = "zone_entry"  # a person/device entered a named zone
+    zone_exit = "zone_exit"  # a person/device left a named zone
+
+
+class PresenceScope(BaseModel):
+    """``kiosk`` is this device and is the only scope allowed to drive display
+    sleep/wake; ``zone:<name>`` is anywhere else with household meaning (an
+    outside camera, a future geofence) and is advisory only. Frozen so it can
+    key a dict (``PresenceAggregator`` keeps one ``PresenceState`` per scope)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["kiosk", "zone"]
+    id: str = Field(min_length=1)  # "kiosk" for kind="kiosk"; "front_door", … for "zone"
+
+
+class PresenceSignal(BaseModel):
+    """One observation from a presence source, passed to
+    ``PresenceAggregator.observe()``. See ``docs/presence-module-plan.md`` for
+    the full contract (in-process sources call ``observe()`` directly; the one
+    out-of-process source — a future geofence — would use
+    ``POST /api/presence/signal``, not yet built)."""
+
+    source_id: str = Field(min_length=1)  # "touch" | "voice" | "local_camera" | …
+    scope: PresenceScope
+    kind: PresenceSignalKind
+    value: bool | None = None  # presence: True=present; zone_entry/exit: always True
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    detail: str | None = None  # short human-readable extra (rarely shown)
+    observed_at: datetime  # naive local time, converted at the source boundary
+
+    @model_validator(mode="after")
+    def _presence_carries_a_value(self) -> "PresenceSignal":
+        if self.kind is PresenceSignalKind.presence and self.value is None:
+            raise ValueError("a 'presence' signal must carry a boolean value")
+        return self
+
+
+class PresenceState(BaseModel):
+    """The aggregator's current best-effort claim for one scope."""
+
+    scope: PresenceScope
+    present: bool
+    last_signal_at: datetime | None = None
+    last_activity_at: datetime | None = None  # most recent `activity`-kind pulse
+
+
+class ActivitySource(StrEnum):
+    touch = "touch"
+    voice = "voice"
+    wake_word = "wake_word"
+    timer = "timer"
+
+
+class PresenceActivityRequest(BaseModel):
+    """``POST /api/presence/activity`` body."""
+
+    source: ActivitySource
+
+
+class PresenceSettings(BaseModel):
+    """Effective presence configuration, part of ``PresenceDiagnostics``."""
+
+    enabled: bool
+    inactivity_timeout_seconds: int
+    confidence_threshold: float
+    inference_interval_ms: int
+    camera_device: str | None
+    motion_min_area_ratio: float
+    motion_max_area_ratio: float
+
+
+CameraStatus = Literal["ok", "absent", "disconnected", "error", "disabled"]
+
+
+class PresenceDiagnostics(BaseModel):
+    """``GET /api/presence`` response: effective config + live kiosk-scope state."""
+
+    settings: PresenceSettings
+    kiosk_state: PresenceState
+    detector_available: bool
+    camera_status: CameraStatus
+    # Placeholder until display-policy integration (camera-support-plan.md step 3)
+    # lands; always False until then.
+    display_mechanism_available: bool
 
 
 class ApplicationMessage(BaseModel):

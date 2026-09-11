@@ -400,6 +400,21 @@ class DisplayStore:
     def _mechanism(self) -> DisplayMechanism:
         return self._controller.mechanism if self._available else "none"
 
+    @property
+    def night_mode(self) -> bool:
+        """Whether night mode is the *standing* intent, independent of the
+        instantaneous panel level — see :meth:`set_ambient_brightness`."""
+        return self._night_mode
+
+    def night_level(self) -> int:
+        """The brightness night mode is currently targeting
+        (``round(reference * night_pct / 100)``), regardless of what the panel
+        is showing this instant. A pure read of the same numbers
+        :meth:`set_night_mode` applies — safe to call even while an ambient
+        overlay (:meth:`set_ambient_brightness`) has the panel at some other
+        level, since neither `_reference` nor `_night_pct` moves for that."""
+        return max(1, round(self._reference * self._night_pct / 100))
+
     def state(self) -> DisplayState:
         return DisplayState(
             brightness=self._brightness,
@@ -438,6 +453,21 @@ class DisplayStore:
             self._night_mode = False
             await self._apply(self._reference)
             await self._emit("display-night-mode")
+        return self.state()
+
+    async def set_ambient_brightness(self, pct: int) -> DisplayState:
+        """Set an explicit level *without* touching night-mode/reference
+        bookkeeping — unlike :meth:`set_brightness`, this does not "leave
+        night mode". For a transient, automatic overlay (the presence-driven
+        idle-dim policy, ``docs/display-dimming-plan.md``) layered underneath
+        whatever standing brightness choice (night mode or not) the household
+        has made, so toggling night mode while the panel happens to be
+        ambient-dimmed is still respected on the next restore."""
+        target = max(0, min(100, int(pct)))
+        changed = target != self._brightness
+        if changed:
+            await self._apply(target)
+            await self._emit("display-ambient")
         return self.state()
 
     async def restore_full(self) -> None:
