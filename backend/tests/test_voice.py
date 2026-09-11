@@ -99,6 +99,22 @@ def test_token_gated_to_local_network(client: TestClient, monkeypatch: pytest.Mo
     assert response.status_code == 403
 
 
+def test_token_grant_notes_presence_activity(
+    client: TestClient, voice_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A voice turn actually starting is a presence signal too — it should
+    brighten a dimmed kiosk display just like touch (docs/presence-module-plan.md)."""
+    from app.models import PresenceScope
+    from app.presence import get_presence_aggregator
+
+    monkeypatch.setattr(gemini_provider, "_build_client", _fake_client_factory({}))
+    response = client.post("/api/voice/token")
+    assert response.status_code == 200
+    kiosk_state = get_presence_aggregator().state(PresenceScope(kind="kiosk", id="kiosk"))
+    assert kiosk_state.present is True
+    assert kiosk_state.last_activity_at is not None
+
+
 def test_token_minted_with_locked_constraints(
     client: TestClient, voice_env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

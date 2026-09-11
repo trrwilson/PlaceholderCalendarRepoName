@@ -2,7 +2,7 @@ import math
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.models import CalendarColor, Endpointing, VoiceProviderId, WakeProviderId
@@ -55,6 +55,47 @@ class Settings(BaseSettings):
     # captured when it was switched on. 10 => a 100-bright panel goes to 10.
     display_night_mode_level_pct: int = 10
 
+    # -- Idle display dimming, presence-driven (docs/display-dimming-plan.md —
+    # a basic first slice) -----------------------------------------------
+    # That doc designs a fuller inactivity policy (activity pulses from touch/
+    # voice/timers, an `asleep` level, restoring to "whatever it was"). This is
+    # a smaller, more direct version: dim/restore driven purely by kiosk-scope
+    # presence signals (today, only this MVP's local-camera `motion` events),
+    # restoring to a *fixed* configured level rather than the prior one — see
+    # `app/presence/display_policy.py`. Reuses the exact brightness primitive
+    # ("night mode") already built here; see `DisplayStore.set_ambient_brightness`.
+    #
+    # On by default (that doc's own default is off) — presence itself is on by
+    # default in this build, and the point of that is to see it drive
+    # something observable without extra configuration.
+    display_dim_enabled: bool = True
+    # Idle time with no kiosk-scope presence signal before the panel dims. A
+    # much shorter fuse than `presence_inactivity_timeout_seconds` above (which
+    # is the standing "is someone home" claim, not ambient screen dimming).
+    display_dim_after_seconds: float = 10.0
+    # Target brightness (0-100) while dimmed.
+    display_dim_level: int = 0
+    # Target brightness (0-100) a presence signal restores to, *unless* night
+    # mode is on — night mode's own (dynamically computed) level takes over as
+    # the restore target in that case, so a household that dimmed the panel for
+    # the evening does not get jolted back to full brightness by someone
+    # walking past (see `PresenceDisplayPolicy`).
+    display_dim_restore_level: int = 80
+
+    @field_validator("display_dim_after_seconds")
+    @classmethod
+    def _check_display_dim_after_seconds(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("display_dim_after_seconds must be positive")
+        return value
+
+    @field_validator("display_dim_level", "display_dim_restore_level")
+    @classmethod
+    def _check_display_dim_pct(cls, value: int) -> int:
+        if not 0 <= value <= 100:
+            raise ValueError("must be between 0 and 100")
+        return value
+
     @field_validator("display_default_brightness")
     @classmethod
     def _check_default_brightness(cls, value: int) -> int:
@@ -68,6 +109,85 @@ class Settings(BaseSettings):
         if not 1 <= value <= 100:
             raise ValueError("display_night_mode_level_pct must be between 1 and 100")
         return value
+
+    # -- Presence: local webcam motion (Phase 1 MVP) --------------------------
+    # See docs/presence-module-plan.md (the general PresenceSignal/aggregator
+    # contract) and docs/camera-support-plan.md (this kiosk-scope implementation).
+    # This MVP does coarse *motion* detection only (frame-to-frame change, not
+    # person detection) — see app/presence/sources/local_camera.py.
+    #
+    # Master flag for the presence *feature* (the aggregator + `/api/presence*`
+    # routes). On by default, unlike most feature flags here, because the
+    # aggregator itself does no I/O — it is a pure state machine, safe under
+    # pytest and on any host. The camera thread is a separate concern, gated
+    # by `host_local_camera` below.
+    presence_enabled: bool = True
+    # A single missed/absent observation must not sleep the display; the kiosk
+    # scope's `present` claim only flips to false after continuous absence for
+    # this long. Not consulted by this MVP's `motion` signals (which never set
+    # `present` — see PresenceAggregator.observe); ready for a future real
+    # presence/person detector (camera-support-plan.md step 4).
+    presence_inactivity_timeout_seconds: int = 900
+    # Detector confidence floor. Reserved for a future real presence/person
+    # detector (camera-support-plan.md step 4); this MVP's motion detector
+    # gates on `presence_motion_min_area_ratio` instead and leaves this unused.
+    presence_confidence_threshold: float = 0.6
+    # Motion-detector cadence. One frame is captured and scored per interval —
+    # deliberately far below the webcam's native frame rate (camera-support-plan.md
+    # -> "modest ... inference cadence").
+    presence_inference_interval_ms: int = 750
+    # Device name/path/index override; blank = auto-select (index 0).
+    presence_camera_device: str | None = None
+    # The motion gate: the smallest contiguous foreground blob, as a fraction of
+    # the (downscaled) analysis frame, that counts as motion. This is what keeps
+    # sensor noise / small reflections from tripping the detector while still
+    # catching a person crossing the background — tuned low because recall
+    # matters far more than a rare false positive here.
+    presence_motion_min_area_ratio: float = 0.015
+    # The motion ceiling: a blob *larger* than this fraction of the frame is
+    # treated as a global scene change (a light switching, exposure/white-balance
+    # jump, a hand over the lens) rather than a person, and is not reported as
+    # motion. The background subtractor already absorbs a *slow* brightness
+    # drift into its model, but an abrupt, large brightness change can briefly
+    # register as one frame-filling "foreground" blob before it catches up —
+    # this ceiling is what rejects that case specifically (a person practically
+    # never fills more than this much of a webcam's frame).
+    presence_motion_max_area_ratio: float = 0.6
+    # Formal assertion (mirrors `host_local_display`) that this process owns a
+    # physical webcam on this host. **On by default** — an opt-out, not an
+    # opt-in: a plain `uvicorn app.main:app` run is expected to just work
+    # against whatever webcam the host has. Set this to `false` on a host with
+    # no webcam, or one that should never touch one (a non-colocated dev
+    # machine, a shared server). Tests never see this default regardless — the
+    # autouse `isolate_settings` fixture (`tests/conftest.py`) forces it off so
+    # pytest/CI never opens real hardware no matter what the app default is.
+    host_local_camera: bool = True
+
+    @field_validator("presence_inactivity_timeout_seconds", "presence_inference_interval_ms")
+    @classmethod
+    def _check_presence_positive_int(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("must be a positive number of seconds/milliseconds")
+        return value
+
+    @field_validator(
+        "presence_confidence_threshold",
+        "presence_motion_min_area_ratio",
+        "presence_motion_max_area_ratio",
+    )
+    @classmethod
+    def _check_presence_unit_fraction(cls, value: float) -> float:
+        if not 0.0 < value <= 1.0:
+            raise ValueError("must be between 0 (exclusive) and 1")
+        return value
+
+    @model_validator(mode="after")
+    def _check_presence_motion_band(self) -> "Settings":
+        if self.presence_motion_min_area_ratio >= self.presence_motion_max_area_ratio:
+            raise ValueError(
+                "presence_motion_min_area_ratio must be less than presence_motion_max_area_ratio"
+            )
+        return self
 
     graph_tenant_id: str | None = None
     graph_client_id: str | None = None

@@ -31,8 +31,15 @@ downstream still rides the existing `/api/ws` / `ApplicationMessage` channel.
 
 ## Status
 
-**Planning. Decisions below drafted 2026-09-10, alongside the camera and eufy
-plans they generalize.** Nothing in this module is built. Treat it as the target
+**Planning, with a first implementation slice.** Decisions below drafted
+2026-09-10, alongside the camera and eufy plans they generalize. `app/models.py`
+(`PresenceSignal`/`PresenceSignalKind`/`PresenceScope`/`PresenceState`) and
+`app/presence/aggregator.py` (`PresenceAggregator`) are built and match this
+doc's shape; the only producer wired to them so far is the `kiosk`-scope
+local-camera **motion** source (`camera-support-plan.md`'s Phase 1 MVP, coarse
+motion only — not the real presence/person detector that doc's own "Phase 1
+build spec" describes). No `zone`-scope source, no `POST /api/presence/signal`,
+and no consumer beyond the diagnostics endpoint exist yet. Treat the rest as the target
 shape for `camera-support-plan.md`'s Phase 1 (see that doc's "Phase 1 build spec"
 section, added alongside this one) and for whichever remote source ships next.
 

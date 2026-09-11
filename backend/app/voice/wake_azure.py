@@ -32,6 +32,8 @@ import json
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from app.config import get_settings
+from app.models import ActivitySource
+from app.presence import note_activity
 from app.voice.trace import note
 
 # 16 kHz mono PCM16 — fixed by the frontend downsample (`downsampleTo16k`) and
@@ -126,6 +128,10 @@ async def run_wake_relay(client: WebSocket) -> None:
         while True:
             event = await events.get()
             if event["type"] == "wake":
+                # The confirmed keyword itself is a presence signal — brightens
+                # the panel the instant someone says "Mission Control", not
+                # only once a full turn opens (docs/presence-module-plan.md).
+                note_activity(ActivitySource.voice)
                 await _safe_send_json(client, {"type": "wake", "score": 1.0})
                 # `recognize_once_async` completes on the first hit — re-arm so
                 # the next "Mission Control" is heard too.

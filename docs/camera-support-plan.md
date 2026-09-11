@@ -1,6 +1,6 @@
 ---
 status: future
-summary: Local webcam presence detection - designed, not started. Its activity seam and detector output now target the general contract in presence-module-plan.md.
+summary: Local webcam presence detection. A Phase 1 MVP (coarse motion only, not person detection) is implemented, plus a basic presence-driven display-dim/restore policy (docs/display-dimming-plan.md). The full Phase 1 build spec below (a real presence/person detector, `asleep`/wake) is not.
 ---
 
 # Mission Control: Presence Detection and Future Person Recognition
@@ -27,11 +27,70 @@ Before implementation, inspect the repository, existing architecture, configurat
 
 ## Status
 
-**Planning. Architecture decisions locked in 2026-09-05; not yet implemented.** The
-directive above and the requirement sections below ("Product requirements" onward) are the
-original brief and remain the design target. The three sections immediately following this
-one record the decisions taken and the feasibility review done on 2026-09-05, and take
-precedence where they are more specific than the original brief.
+**Architecture decisions locked in 2026-09-05.** A no-hardware-required MVP was
+implemented 2026-09-10 — see "Phase 1 MVP: local-camera motion (implemented
+2026-09-10)" immediately below. The directive above and the requirement
+sections below ("Product requirements" onward) are the original brief and
+remain the design target; the MVP is a deliberately smaller first slice of it,
+not a replacement. The three sections after the MVP one record the decisions
+taken and the feasibility review done on 2026-09-05, and take precedence where
+they are more specific than the original brief.
+
+## Phase 1 MVP: local-camera motion (implemented 2026-09-10)
+
+What actually exists today, ahead of the full "Phase 1 build spec" further
+below (which is not yet built): the local-webcam **source** half of
+`presence-module-plan.md`'s contract, doing coarse *motion* detection rather
+than person/presence detection.
+
+- **`app/presence/`** — `aggregator.py` (`PresenceAggregator`, generic over
+  every `PresenceSignalKind` the envelope defines, though only `activity` and
+  `motion` have a producer today) and `sources/local_camera.py` (the webcam
+  source). Wired from `app/main.py` lifespan startup and `app/api.py`
+  (`GET /api/presence`, `POST /api/presence/activity`) exactly per that doc's
+  module layout and API shape.
+- **Detector: OpenCV MOG2 background subtraction** (`opencv-python-headless`,
+  a core backend dependency — BSD-3-Clause, no model weights; see
+  `docs/credits.md`), not an ML person detector. It answers "did something
+  change in front of the camera", which is the envelope's `motion` kind, not
+  `presence` — the `kiosk` scope's `present` claim is therefore never set by
+  this source (see `PresenceAggregator.observe`'s docstring). A real
+  presence/person detector (this doc's "Detector / model / cadence" question,
+  still open) is a separate future source emitting `presence` instead; it
+  drops in without changing the aggregator or this one.
+- **Two independent gates**, mirroring `host_local_display`: `presence_enabled`
+  (default **on** — the aggregator is pure/free, safe under pytest and on any
+  host) turns on the feature/API surface; `host_local_camera` (also default
+  **on** — an opt-out, so a plain `uvicorn app.main:app` run just opens
+  whatever webcam the host has) is the hardware assertion that actually opens
+  it. Set `MISSION_CONTROL_HOST_LOCAL_CAMERA=false` on a host with no webcam
+  or that should never touch one. `tests/conftest.py`'s autouse fixture forces
+  it off for the whole suite regardless of this default, so pytest/CI never
+  touch real hardware; a plain dev/CI checkout that doesn't override it still
+  gets a working `/api/presence` (`camera_status: "disabled"` or `"absent"`
+  if the code path does run without a webcam present).
+- **FA/recall tuning**, validated against synthetic frames (no camera
+  required — see `backend/tests/test_presence.py`): a contiguous foreground
+  blob must cover at least `presence_motion_min_area_ratio` (default 1.5%) of
+  the analysis frame to count as motion (rejects sensor noise / small
+  reflections) but no more than `presence_motion_max_area_ratio` (default 60%)
+  (rejects a frame-filling change — an abrupt lighting/exposure jump — that
+  the background model hasn't absorbed yet). A *gradual* light change is
+  handled by MOG2 itself (a slow, frame-wide drift is learned into the
+  background rather than flagged); the ceiling specifically catches the
+  faster/larger case that MOG2's own shadow suppression does not.
+- **Known gaps against the locked decisions above**: no named-mutex/lockfile
+  guard against a second worker (or `--reload`) racing for the camera device
+  (the "Single-process hardware ownership" row below) — acceptable for a
+  single-worker MVP, not for production. No DSHOW-vs-MSMF or resolution/FOV
+  tuning against the real deployed webcam — do that plus the resource-usage
+  measurement on the actual kiosk hardware.
+- **Manual validation**: run the backend with its defaults (`host_local_camera`
+  and `presence_enabled` are both on out of the box) and watch its console —
+  each accepted detection logs `presence: motion observed confidence=… (…)`,
+  and camera status transitions log too. Poll `GET /api/presence` before/after
+  moving in frame and see `kiosk_state.last_signal_at` advance. Set
+  `MISSION_CONTROL_HOST_LOCAL_CAMERA=false` first on a host with no webcam.
 
 ## Decisions locked in (2026-09-05)
 

@@ -12,6 +12,7 @@ from app.display import get_display_store
 from app.host import host_capabilities
 from app.lists import get_list_store
 from app.models import (
+    ActivitySource,
     ApplicationMessage,
     CalendarAuthStatus,
     CalendarRange,
@@ -26,6 +27,9 @@ from app.models import (
     ListMutationResult,
     ListReorderRequest,
     ListRestoreRequest,
+    PresenceActivityRequest,
+    PresenceDiagnostics,
+    PresenceSettings,
     PrivacyState,
     PrivacyUnlockRequest,
     Timer,
@@ -43,6 +47,13 @@ from app.models import (
     WakeConfigUpdate,
     WakeProviderInfo,
     WakeWordConfig,
+)
+from app.presence import (
+    KIOSK_SCOPE,
+    camera_status,
+    detector_available,
+    get_presence_aggregator,
+    note_activity,
 )
 from app.privacy import get_privacy_store
 from app.realtime import connections
@@ -215,6 +226,7 @@ async def voice_token(
 
     _require_local(request)
     note("token request received")
+    note_activity(ActivitySource.voice)
     try:
         return await get_voice_token(get_settings(), calendar_provider, body)
     except VoiceUnavailable as exc:
@@ -286,6 +298,9 @@ async def voice_live_relay(websocket: WebSocket) -> None:
         await websocket.close(code=4401)
         return
     await websocket.accept()
+    # A real turn is starting — noted here (not just at the token grant) since
+    # a cached token can open more than one turn without a fresh grant.
+    note_activity(ActivitySource.voice)
     try:
         await run_relay(websocket, config)
     except WebSocketDisconnect:
@@ -510,6 +525,9 @@ async def voice_local_pipeline(websocket: WebSocket) -> None:
 
     provider = get_provider()
     await websocket.accept()
+    # A real turn is starting — noted here (not just at the token grant) since
+    # a cached token can open more than one turn without a fresh grant.
+    note_activity(ActivitySource.voice)
     try:
         recognizer = await get_recognizer(lambda: create_recognizer(settings))
     except Exception as exc:  # noqa: BLE001 - report and fall back to text bypass
@@ -834,6 +852,51 @@ async def set_display(request: Request, body: DisplayConfigUpdate) -> DisplaySta
     if body.brightness is not None:
         await store.set_brightness(body.brightness)
     return store.state()
+
+
+# -- presence ----------------------------------------------------------------
+# The provider-neutral presence-signal contract (docs/presence-module-plan.md),
+# this Phase 1 MVP's kiosk-scope implementation (docs/camera-support-plan.md).
+# `presence_enabled` gates the feature (on by default — the aggregator is pure
+# and does no I/O); `host_local_camera` separately gates whether the camera
+# thread actually opens hardware. Not `_require_unlocked` on the activity
+# sugar endpoint — a touch/voice pulse must still register while privacy-locked.
+
+
+@router.get("/presence", response_model=PresenceDiagnostics)
+def presence_diagnostics(request: Request) -> PresenceDiagnostics:
+    """Effective presence config + live kiosk-scope state. Read-only, matches
+    `/api/display` / `/api/capabilities`. 409 while presence is disabled."""
+    _require_local(request)
+    aggregator = get_presence_aggregator()
+    if aggregator is None:
+        raise HTTPException(status_code=409, detail="presence detection is disabled")
+    settings = get_settings()
+    return PresenceDiagnostics(
+        settings=PresenceSettings(
+            enabled=settings.presence_enabled,
+            inactivity_timeout_seconds=settings.presence_inactivity_timeout_seconds,
+            confidence_threshold=settings.presence_confidence_threshold,
+            inference_interval_ms=settings.presence_inference_interval_ms,
+            camera_device=settings.presence_camera_device,
+            motion_min_area_ratio=settings.presence_motion_min_area_ratio,
+            motion_max_area_ratio=settings.presence_motion_max_area_ratio,
+        ),
+        kiosk_state=aggregator.state(KIOSK_SCOPE),
+        detector_available=detector_available(),
+        camera_status=camera_status(),
+        display_mechanism_available=get_display_store().state().available,
+    )
+
+
+@router.post("/presence/activity", status_code=204)
+def presence_activity(request: Request, body: PresenceActivityRequest) -> None:
+    """Sugar for `observe()` with `scope=kiosk, kind=activity`. Always 204s,
+    even while presence is disabled — cheap to always accept, expensive only
+    to act on (matches the identical rule for a fired timer's cancel while
+    privacy-locked)."""
+    _require_local(request)
+    note_activity(body.source)
 
 
 @router.websocket("/ws")

@@ -4,6 +4,7 @@ from app.api import _build_provider
 from app.config import Settings, get_settings
 from app.display import reset_display_store
 from app.lists import reset_list_store
+from app.presence import reset_presence
 from app.privacy import reset_privacy_store
 from app.timers import reset_timer_store
 from app.voice import reset_voice_token_cache
@@ -27,12 +28,19 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     # disk unless one explicitly builds a store with a path.
     monkeypatch.setenv("MISSION_CONTROL_LISTS_FILE", "")
     monkeypatch.setenv("MISSION_CONTROL_PRIVACY_STATE_FILE", "")
+    # `host_local_camera` defaults on (app/config.py — an opt-out, not an
+    # opt-in) so a plain dev/prod run just opens the webcam. Force it off here
+    # regardless: a `with TestClient(app) as client:` test runs the real
+    # lifespan, and pytest/CI must never touch actual camera hardware. A test
+    # that specifically wants the camera path sets this itself.
+    monkeypatch.setenv("MISSION_CONTROL_HOST_LOCAL_CAMERA", "false")
     get_settings.cache_clear()
     _build_provider.cache_clear()
     reset_timer_store()
     reset_list_store()
     reset_privacy_store()
     reset_display_store()
+    reset_presence()
     reset_voice_token_cache()
     reset_provider_override()
     reset_wake_provider_override()
@@ -47,6 +55,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     reset_list_store()
     reset_privacy_store()
     reset_display_store()
+    reset_presence()
     reset_voice_token_cache()
     reset_provider_override()
     reset_wake_provider_override()

@@ -46,6 +46,10 @@ voice-samples/
 backend/models/stt/
 *.stt-bench.json
 
+# Ad-hoc local run logs (e.g. a backgrounded `uvicorn` redirected here for
+# manual/live testing) — never durable app data, never committed
+backend/.run/
+
 # Editors and OS
 .vscode/*
 !.vscode/extensions.json

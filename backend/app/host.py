@@ -21,4 +21,7 @@ from app.models import HostCapabilities
 
 def host_capabilities(settings: Settings) -> HostCapabilities:
     """The capabilities this deployment's topology unlocks. Pure; no I/O."""
-    return HostCapabilities(host_local_display=settings.host_local_display)
+    return HostCapabilities(
+        host_local_display=settings.host_local_display,
+        host_local_camera=settings.host_local_camera,
+    )
