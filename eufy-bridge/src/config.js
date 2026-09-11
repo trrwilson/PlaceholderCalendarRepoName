@@ -70,6 +70,14 @@ function loadConfig() {
     // way to catch an event under a name nobody guessed. Never enable this
     // for normal operation — it is verbose and not meant to run continuously.
     debugRawEvents: process.env.EUFY_DEBUG_RAW_EVENTS === "1",
+    // Diagnostic-only, off by default: exposes the "mega_call" control
+    // message (EufyBridge.megaCall -> MegaHTTPApi.callDecrypted) for probing
+    // the undocumented v6 "mega" event-history endpoint — see
+    // docs/eufy-sdk-integration.md §17. A materially more powerful surface
+    // than debugRawEvents (an authenticated write-capable-shaped call
+    // primitive, not passive logging), so it gets its own flag rather than
+    // riding along with that one.
+    debugMegaCall: process.env.EUFY_DEBUG_MEGA_CALL === "1",
   };
 }
 

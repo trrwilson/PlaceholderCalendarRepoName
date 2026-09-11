@@ -326,6 +326,24 @@ class EufyBridge {
     }
   }
 
+  // Diagnostic-only, gated by `debugMegaCall` in src/config.js (off by
+  // default): probes `MegaHTTPApi.callDecrypted` directly for chasing
+  // docs/eufy-sdk-integration.md §17's "what does the one HTTP call that
+  // actually works look like" question. `megaTransition` is TypeScript
+  // `private` on EufySecurity (compile-time only — erased at runtime, a
+  // plain accessible property on the actual object), and `getMegaApi()`
+  // lazily creates/reuses the already-persisted v6 session, so this needs no
+  // separate login and opens no second connection to the account.
+  async megaCall(service, path, payload) {
+    try {
+      const megaApi = await this.client.megaTransition.getMegaApi();
+      const data = await megaApi.callDecrypted(service, path, payload || {});
+      return { data };
+    } catch (err) {
+      return { error: String(err && err.message ? err.message : err) };
+    }
+  }
+
   async answerCaptcha(code) {
     if (!this.pendingAuth || this.pendingAuth.kind !== "captcha") return;
     const { captchaId } = this.pendingAuth;
