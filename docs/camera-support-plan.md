@@ -1,11 +1,18 @@
 ---
 status: future
-summary: Local webcam presence detection - designed, not started.
+summary: Local webcam presence detection - designed, not started. Its activity seam and detector output now target the general contract in presence-module-plan.md.
 ---
 
 # Mission Control: Presence Detection and Future Person Recognition
 
 Design, implement, and integrate local webcam-based presence detection for Mission Control.
+
+**See [presence-module-plan.md](presence-module-plan.md) first.** It defines the
+general `PresenceSignal` envelope and `PresenceAggregator` this plan's activity
+seam and local-camera detector are the `kiosk`-scope implementation of. Nothing
+below is superseded by it — the "Phase 1 build spec" section added below is the
+concrete, actionable version of that contract for this plan's first
+no-hardware build step.
 
 This is a two-phase capability:
 
@@ -73,7 +80,12 @@ unknowns are empirical and belong on the real kiosk.
   `POST /api/presence/activity`; the detector calls in-process; a future wake-word
   detector needs no change elsewhere. `CAMERA PRESENT` holds the display awake;
   `CAMERA ABSENT` starts the inactivity clock; a touch/voice pulse pushes the clock
-  forward even while the camera reports absent (someone sitting still).
+  forward even while the camera reports absent (someone sitting still). These are
+  the `kiosk`-scope `activity` and `presence` signal kinds in
+  [presence-module-plan.md](presence-module-plan.md) — `note_activity` /
+  `set_presence` are this plan's names for calls into that doc's
+  `PresenceAggregator.observe()`; see this doc's "Phase 1 build spec" for the
+  concrete mapping.
 - **Config + diagnostics.** `MISSION_CONTROL_PRESENCE_*` env vars via a dedicated
   `PresenceSettings` model read through an accessor (the future-store hook).
   `GET /api/presence` returns effective config + live state (presence, camera status,
@@ -132,6 +144,139 @@ Still to pin down (no hardware needed):
 4. Camera capture + detector, behind `MISSION_CONTROL_PRESENCE_ENABLED=false` by default.
 5. On the kiosk: probe DDC/CI, tune the detector, measure resource use, validate wake /
    digitizer behaviour, write the deployment prerequisites.
+
+## Phase 1 build spec: steps 1–2 (no hardware)
+
+Concrete enough to start coding against — covers implementation-order steps 1 and
+2 above. Steps 3–5 (`DisplayController` hardware, camera capture, on-kiosk tuning)
+stay as described elsewhere in this document; nothing here changes them.
+
+**Module layout**
+
+```
+backend/app/
+  models.py            # + PresenceSignal, PresenceSignalKind, PresenceScope
+                        #   (presence-module-plan.md), + PresenceSettings-shaped
+                        #   config model, + the API response models below
+  config.py             # + the MISSION_CONTROL_PRESENCE_* fields (table below)
+  presence/
+    __init__.py          # get_presence_aggregator() singleton, guarded by
+                          #   presence_enabled (lazy import — disabled path never
+                          #   imports the detector)
+    aggregator.py         # PresenceAggregator (presence-module-plan.md); this
+                          #   plan constructs exactly one scope, kiosk, for now
+    detector.py            # PresenceDetector protocol + a FakeDetector for tests;
+                          #   the real OpenCV/ONNX implementation is step 4
+  api.py                # + POST /api/presence/activity, GET /api/presence
+```
+
+**Domain models** (`app/models.py`), on top of `presence-module-plan.md`'s
+`PresenceSignal` / `PresenceSignalKind` / `PresenceScope`:
+
+```python
+class ActivitySource(StrEnum):
+    touch = "touch"
+    voice = "voice"
+    wake_word = "wake_word"
+    timer = "timer"
+
+
+class PresenceSettings(BaseModel):
+    enabled: bool
+    inactivity_timeout_seconds: int
+    confidence_threshold: float
+    inference_interval_ms: int
+    camera_device: str | None
+
+
+class PresenceDiagnostics(BaseModel):
+    """GET /api/presence response."""
+    settings: PresenceSettings
+    kiosk_state: PresenceState            # from presence-module-plan.md
+    detector_available: bool
+    camera_status: Literal["ok", "absent", "disconnected", "error", "disabled"]
+    display_mechanism_available: bool     # placeholder until step 3 lands; False until then
+```
+
+**Config** (`app/config.py`, all `MISSION_CONTROL_`-prefixed, read through an
+accessor so a future runtime store can shadow env without a refactor — same
+posture as `display_dim_*`):
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `presence_enabled` | `false` | Master flag. False ⇒ `app/presence/` never imported, `/api/presence` 409s like `/api/voice/token` when its feature is off. |
+| `presence_inactivity_timeout_seconds` | `900` (15 min) | Sustained `CAMERA ABSENT` (or, before step 4 ships, no activity pulse) before the kiosk scope flips to not-present. |
+| `presence_confidence_threshold` | `0.6` | Detector confidence floor for a positive person detection. Unused until step 4; accepted and validated now so the config shape doesn't change later. |
+| `presence_inference_interval_ms` | `750` | Detector cadence. Same status as above. |
+| `presence_camera_device` | `None` | Device name/path override; `None` = auto-select. Same status as above. |
+
+**Detector abstraction** (`app/presence/detector.py`) — the seam step 4's real
+implementation fills in; step 1 only needs the protocol and a fake:
+
+```python
+class DetectionResult(BaseModel):
+    present: bool
+    confidence: float | None = None
+
+class PresenceDetector(Protocol):
+    def open(self) -> None: ...
+    def read(self) -> DetectionResult | None: ...   # None = frame unavailable / camera lost
+    def close(self) -> None: ...
+
+class FakeDetector:
+    """Test double: a scripted sequence of DetectionResult | None, consumed by read()."""
+```
+
+**Policy / aggregator wiring** (`app/presence/aggregator.py`, implementing
+`PresenceAggregator` from `presence-module-plan.md` with one scope):
+
+```python
+_KIOSK = PresenceScope(kind="kiosk", id="kiosk")
+
+def note_activity(source: ActivitySource, at: datetime) -> None:
+    """Touch/voice/wake-word/timer pulse. Calls observe() with kind=activity."""
+
+def set_presence(present: bool, at: datetime, *, confidence: float | None = None) -> None:
+    """Detector output. Calls observe() with kind=presence, scope=kiosk."""
+```
+
+Hysteresis rule for step 1 (detector not wired yet, so exercised only through
+`FakeDetector` in tests): a single `present=False` observation does not clear
+`kiosk_state.present`; it must stay false for `inactivity_timeout_seconds`
+before the state flips. Any `activity` pulse or a `present=True` observation
+clears it immediately. Never fire `on_change` twice for the same resulting
+state (the aggregator-level rule from `presence-module-plan.md`).
+
+**API** (`app/api.py`):
+
+- `POST /api/presence/activity` — body `{"source": ActivitySource}` → `204`.
+  `_require_local()`. **Not** `_require_unlocked()` — activity must register
+  while privacy-locked (documented DoD exception, same one
+  `display-dimming-plan.md` carves out for its identical endpoint; whichever
+  plan lands this endpoint first, the other reuses it unchanged).
+- `GET /api/presence` — `PresenceDiagnostics` (above). No gating (read-only,
+  matches `/api/display`, `/api/capabilities`). Returns `409` when
+  `presence_enabled` is `false`.
+
+**Tests** (pytest, no camera, no display hardware — mirrors the `Testing`
+section below, scoped to what step 1–2 can actually exercise):
+
+- `note_activity` clears an absent state immediately; a lone `set_presence(False)`
+  does not.
+- Sustained `set_presence(False)` past `inactivity_timeout_seconds` (via the
+  injected clock) flips `kiosk_state.present`; a `set_presence(True)` or any
+  activity pulse before the timeout cancels it.
+- `on_change` fires once per actual transition, never on a repeated identical
+  observation.
+- `presence_enabled=false` ⇒ `get_presence_aggregator()` is never constructed,
+  `GET /api/presence` returns `409`, `POST /api/presence/activity` still 204s
+  harmlessly (matches "activity must register regardless" — cheap to always
+  accept, expensive only to act on).
+- `POST /api/presence/activity` is `_require_local`-gated and **not** blocked
+  by privacy lock.
+- `FakeDetector` sequences (`present → present → None → absent → present`)
+  drive the policy through gaps/misses without special-casing `None`
+  (treated as "no observation this tick," not as absence).
 
 ---
 

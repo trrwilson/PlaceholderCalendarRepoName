@@ -411,7 +411,11 @@ No arm/disarm, no toggles that write back to eufy.
   front-door `personDetected` is an excellent wake trigger. If both ship, feed
   eufy events into the same presence/inactivity policy as an extra "activity"
   input — but keep local webcam presence detection independent and authoritative
-  for sleep decisions.
+  for sleep decisions. `docs/presence-module-plan.md` now formalizes this: eufy
+  events become a `zone`-scope `PresenceSignal` source (mapped from `CameraEvent`
+  in `app/eufy/service.py`), which by construction can never reach the
+  `kiosk`-scope display policy. Do this mapping only once this doc's own gate
+  clears — it is not a prerequisite for Phases 2–4 above.
 - **Voice** (`docs/voice-support-plan.md`): a future read-only tool
   `get_recent_activity()` could answer "did anyone come to the door?" from the
   same `GET /api/household` snapshot. Additive, no new provider access.

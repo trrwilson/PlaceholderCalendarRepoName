@@ -217,7 +217,10 @@ which is also the CI configuration. The policy must never auto-start under pytes
 
 [camera-support-plan.md](camera-support-plan.md) already specifies
 `DisplayController`, the inactivity policy, and the activity seam for **sleep**.
-These are the same components. Convergence:
+These are the same components. The activity seam itself (`POST
+/api/presence/activity`, `note_activity`) is the `kiosk`-scope instance of the
+general contract in [presence-module-plan.md](presence-module-plan.md) — no
+change to what's built or planned here, just the shared name for it. Convergence:
 
 - `DisplayController.set_level()` takes `{awake, dim, asleep}`. This plan
   implements `awake ↔ dim`; the presence plan adds `asleep` and the camera

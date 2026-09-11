@@ -46,6 +46,7 @@ you can triage without opening it.
 | Doc | Summary |
 |---|---|
 | [voice-activation-ux-plan.md](voice-activation-ux-plan.md) | Fixing staged + one-shot keyword activation: leading-silence tolerance, cue timing, keyword-free transcript, silent dismissal of empty queries. MVP slice built (see below); earcon classifier / shorter pre-roll lead / warm sessions still parked here. |
-| [camera-support-plan.md](camera-support-plan.md) | Local webcam presence detection — designed, not started. |
-| [display-dimming-plan.md](display-dimming-plan.md) | Backend-driven idle dimming of the physical panel (dim, not off); shares the presence-plan display seam. |
-| [eufy-sdk-integration.md](eufy-sdk-integration.md) | Eufy camera events — blocked on an upstream SDK release. |
+| [presence-module-plan.md](presence-module-plan.md) | General presence-signal contract (`PresenceSignal`, sources, aggregator) shared by the kiosk activity seam and remote/ambient camera events — designed, not started. |
+| [camera-support-plan.md](camera-support-plan.md) | Local webcam presence detection — designed, not started; includes a concrete no-hardware "Phase 1 build spec." Implements the presence plan's `kiosk` scope. |
+| [display-dimming-plan.md](display-dimming-plan.md) | Backend-driven idle dimming of the physical panel (dim, not off); shares the presence-plan's activity seam. |
+| [eufy-sdk-integration.md](eufy-sdk-integration.md) | Eufy camera events — blocked on an upstream SDK release. Its future tie-in is the presence plan's `zone` scope. |
