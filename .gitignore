@@ -25,6 +25,12 @@ frontend/blob-report/
 *.msal_token_cache.json
 .msal_token_cache*
 
+# eufy-security-client persisted session (cloud tokens, push credentials — see
+# docs/eufy-sdk-integration.md "Session persistence"). Reusing it skips a fresh
+# cloud login, which matters for staying under eufy's abuse-cooldown threshold.
+.eufy_persistent.json
+*.eufy_persistent.json
+
 # Voice debug audio captures (MISSION_CONTROL_VOICE_DEBUG_CAPTURE_DIR)
 backend/voice-captures/
 voice-captures/

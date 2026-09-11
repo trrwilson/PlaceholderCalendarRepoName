@@ -132,7 +132,7 @@ Two shapes cover every source this doc anticipates:
 | --- | --- | --- | --- | --- |
 | Touch / voice / wake-word / timer pulses | `kiosk` | `activity` | In-process, from `app/api.py` handlers | Planned — `camera-support-plan.md` Phase 1 |
 | Local webcam detector | `kiosk` | `presence` | In-process, background thread | Planned — `camera-support-plan.md` Phase 1 |
-| eufy camera events | `zone:<camera name>` | `motion`, `presence` | In-process, mapped from `CameraEvent` in `app/eufy/service.py` | Blocked on upstream SDK — `eufy-sdk-integration.md` |
+| eufy camera events | `zone:<camera name>` | `motion`, `presence` | In-process, mapped from `CameraEvent` in `app/eufy/service.py` | Ready to implement — verified against real hardware, `eufy-sdk-integration.md` §5 |
 | Geofencing | `zone:household:<member>` | `zone_entry`, `zone_exit` | Out-of-process, `POST /api/presence/signal` | Not designed; scope reserved only |
 
 Note the eufy bridge process itself (`eufy-bridge/`, Node, talking to the eufy

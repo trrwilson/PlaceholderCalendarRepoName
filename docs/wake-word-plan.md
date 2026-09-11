@@ -575,7 +575,8 @@ re-derive it.
 ## Verdict
 
 Feasible, medium complexity, almost entirely frontend work. No hard blocker of the kind
-`docs/eufy-sdk-integration.md` has (there the SDK does not exist yet). The plan body is
+`docs/eufy-sdk-integration.md` had before its 2026-09-10 revision (verified working,
+no upstream release to wait for). The plan body is
 sound on product, UX states, testing, and privacy, but it leaves the two decisions that
 actually gate implementation unmade, and it under-credits work already shipped for
 push-to-talk. It is correctly sequenced **after** push-to-talk is stable.
