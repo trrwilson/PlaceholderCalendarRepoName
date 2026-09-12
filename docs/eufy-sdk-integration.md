@@ -1,6 +1,6 @@
 ---
-status: built (clip gallery); freshness-bug workaround wired but off by default (§20); events pipeline not yet built
-summary: The clip-review gallery (thumbnails + tap-to-play, replacing the old "garage door" placeholder) is built end-to-end — Node bridge, backend clip/thumbnail/retrieve pipeline, frontend gallery + modal player. SDK is `eufy-security-client`, verified against real HomeBase 3 / S380 hardware on 2026-09-10. Its enumeration call has a documented freshness bug (§16.2); a second, isolated SDK (`@mega-yfue/eufy-sdk`) confirmed a working alternative query live (§18-§19) and is now wired in behind `MISSION_CONTROL_EUFY_MEGA_ENUMERATION_ENABLED` (default off, §20) pending a live test pass. Ambient events (motion/person/doorbell banners, contact-sensor exceptions, §2/§7.2) remain designed but unbuilt.
+status: built (clip gallery); freshness-bug fix wired, live-verified, still off by default (§20); events pipeline not yet built
+summary: The clip-review gallery (thumbnails + tap-to-play, replacing the old "garage door" placeholder) is built end-to-end — Node bridge, backend clip/thumbnail/retrieve pipeline, frontend gallery + modal player. SDK is `eufy-security-client`, verified against real HomeBase 3 / S380 hardware on 2026-09-10. Its enumeration call has a documented freshness bug (§16.2); a second, isolated SDK (`@mega-yfue/eufy-sdk`) confirmed a working alternative query live (§18-§19), is wired in behind `MISSION_CONTROL_EUFY_MEGA_ENUMERATION_ENABLED` (§20), and was live-verified against the real household backend on 2026-09-11 (§20.5) — the gallery now surfaces same-day events the classic path alone could not. Still defaults to off pending longer-running confirmation. Ambient events (motion/person/doorbell banners, contact-sensor exceptions, §2/§7.2) remain designed but unbuilt.
 ---
 
 # Eufy camera integration — verified capability + implementation plan
@@ -1893,3 +1893,38 @@ the same dedup cache, so a clip either source finds only gets discovered once.
   `station.startDownload(device, storage_path, cipher_id)` call as one discovered via
   `databaseQueryByDate` — but nobody has actually tapped a `MegaEnumerator`-discovered clip in the
   gallery yet to confirm it plays.
+
+### 20.5 First live test (2026-09-11): found and fixed a real bug, then confirmed working end-to-end
+
+Flipped `MISSION_CONTROL_EUFY_MEGA_ENUMERATION_ENABLED=true` against the real household backend.
+**First attempt looked like a hang, not a bug**: `GET /api/household` sat at `source_status:
+"connecting"` for 5+ minutes with nothing on the bridge's control channel — no error, no retry, just
+silence, initially suspected to be an account-level timing/reliability issue given how much real
+P2P/cloud traffic this investigation had already put through the account today.
+
+**A clean kill-and-restart of both the bridge and the backend unwedged it immediately** — connected
+in under 3 seconds, roster loaded, classic reconcile returned its usual 6 (stale, `2026-09-10`)
+records. So whatever caused the first hang did not recur and was very likely exactly what it looked
+like: a one-off timing/connect-race issue, not a systemic account problem. Not root-caused further
+since it didn't reproduce — flag it if it recurs.
+
+**The mega-enumerator's first real poll then failed** with `Unexpected non-whitespace character
+after JSON at position 5957` — a real bug, not a fluke, and not present in this session's earlier
+manual testing purely by luck: `extractLeadingJson`'s predecessor (`stripTrailingNuls`) assumed the
+undecrypted tail past the last 16-byte AES block boundary was always zero-padding. §18/§19's manual
+probes happened to get clean NUL padding both times; this production poll's leftover ciphertext
+noise did not decode to zero. **Fixed** by replacing the padding-character guess with a proper
+scan for the end of the first balanced top-level JSON value (respecting string literals/escapes),
+ignoring everything after it regardless of what it contains — `eufy-bridge/src/megaEnumerator.js`'s
+`extractLeadingJson()`. New tests cover NUL padding, non-NUL noise (the actual production failure
+mode), and braces inside a string value (so the scanner can't be fooled by JSON-looking text inside
+a quoted field). 30/30 bridge tests green after the fix.
+
+**Confirmed working end-to-end after the fix**, live, via `GET /api/household`: the gallery now
+returns 12 clips — the classic reconcile's usual 6 stale `2026-09-10` records, **plus 6 real
+`2026-09-11` records from the mega-enumerator**, freshest at `16:11:04` (`record_id
+2026091100009`, the same record `history_record_info` FULL_TABLE surfaced throughout §18-§19's
+manual testing). This is the freshness bug (§16.2/§16.4), closed and hardware-verified, not just
+designed — the household's real gallery, right now, shows an event from hours ago that the classic
+path alone could never have surfaced (its own lookback window is pinned to whole days and lands on
+the oldest one in range, per §16.2).
