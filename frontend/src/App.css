@@ -89,6 +89,11 @@
 /* --- Home composition: bottom-dock popovers, semantic markers --- */
 .dock-actions .filter-popover { top: auto; right: 0; bottom: calc(100% + 8px); }
 .filter-row .filter-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* A non-primary calendar (a shared calendar, "Holidays", …) nested under its account row —
+   opt-in, so it reads as a lighter, indented variant of a filter row rather than a peer. */
+.filter-subrow { display: grid; grid-template-columns: 18px 1fr 24px; align-items: center; width: 100%; min-height: 40px; padding: 0 10px 0 26px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-soft); font-size: .9em; text-align: left; }
+.filter-subrow:hover { background: var(--warm); }
+.filter-subrow .calendar-swatch { width: 11px; height: 11px; }
 /* Provider mark after a person's name — scales with the surrounding text. */
 .provider-badge { flex: 0 0 auto; width: 1.15em; height: 1.15em; border-radius: 3px; }
 .event-owner .provider-badge { margin-left: 5px; vertical-align: -.18em; }
@@ -99,9 +104,9 @@
    corner popover) with a category rail + a scrolling panel. Everyday display
    preferences are front and centre; the voice bake-off / mic-routing knobs sit
    behind an "Advanced" disclosure. See docs/controls-layout-design.md. */
-.settings-sheet { width: min(1080px, 94vw); max-width: none; padding: 0; overflow: hidden; }
+.settings-sheet { width: min(2160px, 94vw); max-width: none; padding: 0; overflow: hidden; }
 .settings-sheet .close-detail { z-index: 3; top: clamp(14px, 1.3vw, 24px); right: clamp(14px, 1.3vw, 24px); width: clamp(44px, 2.8vw, 56px); height: clamp(44px, 2.8vw, 56px); border: 2px solid var(--line); background: var(--surface); }
-.settings-layout { display: grid; grid-template-columns: minmax(220px, 30%) minmax(0, 1fr); min-height: min(620px, 74vh); }
+.settings-layout { display: grid; grid-template-columns: minmax(220px, 30%) minmax(0, 1fr); min-height: min(1240px, 74vh); }
 .settings-rail { display: flex; flex-direction: column; gap: 6px; padding: clamp(56px, 4vw, 82px) clamp(12px, 1vw, 22px) clamp(20px, 1.8vw, 44px); border-right: 2px solid var(--line); background: var(--warm); }
 .settings-rail-title { margin: 0 0 clamp(8px, .8vw, 18px); padding: 0 clamp(8px, .7vw, 14px); font-family: Georgia, serif; font-weight: 400; font-size: clamp(22px, 1.5vw, 44px); letter-spacing: -.02em; }
 .settings-rail button { min-height: clamp(50px, 3.4vw, 82px); padding: 0 clamp(12px, 1vw, 22px); border: 0; border-radius: 10px; background: transparent; text-align: left; color: var(--ink-soft); font-size: clamp(15px, .9vw, 28px); font-weight: 700; }
@@ -110,7 +115,7 @@
    non-shrinking children: as a grid, a child with its own `overflow` (the Advanced
    disclosure) gets its track compressed and the overflow clipped unreachably instead
    of scrolling the panel. See docs/controls-layout-design.md. */
-.settings-panel { display: flex; flex-direction: column; gap: clamp(16px, 1.5vw, 36px); padding: clamp(56px, 4vw, 82px) clamp(20px, 1.9vw, 48px) clamp(20px, 1.9vw, 48px); max-height: min(620px, 74vh); overflow-y: auto; overscroll-behavior: contain; }
+.settings-panel { display: flex; flex-direction: column; gap: clamp(16px, 1.5vw, 36px); padding: clamp(56px, 4vw, 82px) clamp(20px, 1.9vw, 48px) clamp(20px, 1.9vw, 48px); max-height: min(1240px, 74vh); overflow-y: auto; overscroll-behavior: contain; }
 .settings-panel > * { flex: 0 0 auto; }
 .settings-group { display: grid; gap: clamp(8px, .7vw, 16px); }
 .settings-group > h3 { margin: 0; color: var(--muted); font-size: clamp(12px, .68vw, 20px); font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }

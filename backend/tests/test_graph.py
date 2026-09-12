@@ -12,6 +12,11 @@ TOKEN_URL = "https://login.microsoftonline.com/test-tenant/oauth2/v2.0/token"
 PROFILE_URL = "https://graph.microsoft.com/v1.0/users/alex@example.com"
 CALENDAR_VIEW = "https://graph.microsoft.com/v1.0/users/alex@example.com/calendarView"
 EVENTS_URL = "https://graph.microsoft.com/v1.0/users/alex@example.com/events"
+# The non-primary-calendar listing every snapshot() now makes alongside the
+# primary calendarView (see app/calendar/secondary.py) — mocked empty by
+# default so existing tests are unaffected by it.
+CALENDARS_URL = "https://graph.microsoft.com/v1.0/users/alex@example.com/calendars"
+NO_EXTRA_CALENDARS = httpx.Response(200, json={"value": []})
 MASTER_CATEGORIES = (
     "https://graph.microsoft.com/v1.0/users/alex@example.com/outlook/masterCategories"
 )
@@ -53,6 +58,7 @@ def timed_event(**overrides: object) -> dict[str, object]:
 @respx.mock
 def test_token_is_acquired_and_cached() -> None:
     token_route = respx.post(TOKEN_URL).mock(return_value=token_response())
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
 
     assert provider._access_token() == "tok-123"
@@ -76,6 +82,7 @@ def test_maps_timed_event_to_domain() -> None:
     respx.post(TOKEN_URL).mock(return_value=token_response())
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
         CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
@@ -101,6 +108,7 @@ def test_tz_aware_datetime_is_converted_to_naive_local() -> None:
     )
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [raw]}))
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
         CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
@@ -125,6 +133,7 @@ def test_maps_all_day_event_with_midnight_boundaries() -> None:
     }
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [raw]}))
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
         CalendarRange(starts_on=date(2026, 9, 7), ends_on=date(2026, 9, 10))
@@ -144,6 +153,7 @@ def test_empty_subject_is_coalesced() -> None:
         return_value=httpx.Response(200, json={"value": [timed_event(subject="")]})
     )
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
         CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
@@ -177,6 +187,7 @@ def test_maps_categories_with_slugified_ids_and_master_colors() -> None:
         return_value=_master_categories(Sports="preset4", **{"Work Travel": "preset7"})
     )
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
         CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
@@ -198,6 +209,7 @@ def test_category_missing_from_master_list_falls_back_to_neutral() -> None:
     )
     respx.get(MASTER_CATEGORIES).mock(return_value=_master_categories(Sports="preset4"))
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
         CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
@@ -215,6 +227,7 @@ def test_master_categories_fetched_once_and_reused() -> None:
     )
     master = respx.get(MASTER_CATEGORIES).mock(return_value=_master_categories(Sports="preset4"))
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     window = CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
     provider.snapshot(window)
@@ -229,6 +242,7 @@ def test_snapshot_without_categories_skips_master_categories_fetch() -> None:
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
     master = respx.get(MASTER_CATEGORIES).mock(return_value=_master_categories())
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     provider.snapshot(CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5)))
 
@@ -250,6 +264,7 @@ def test_pagination_follows_next_link() -> None:
         ]
     )
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
         CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
@@ -291,6 +306,10 @@ def test_snapshot_returns_valid_snapshot_across_users() -> None:
         )
     )
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
+    respx.get("https://graph.microsoft.com/v1.0/users/jordan@example.com/calendars").mock(
+        return_value=NO_EXTRA_CALENDARS
+    )
     provider = MicrosoftGraphCalendarProvider(
         make_settings(graph_calendar_users=["alex@example.com", "jordan@example.com"])
     )
@@ -316,6 +335,7 @@ def test_household_calendar_uses_the_holders_given_name_and_outlook_source() -> 
         return_value=httpx.Response(200, json={"givenName": "Alex", "displayName": "Alex Rivera"})
     )
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
         CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
@@ -334,6 +354,7 @@ def test_household_calendar_falls_back_to_account_name_without_directory_access(
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
     respx.get(PROFILE_URL).mock(return_value=httpx.Response(403, json={"error": "Denied"}))
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     snapshot = provider.snapshot(
         CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
@@ -366,6 +387,7 @@ def test_create_event_posts_to_graph() -> None:
 
     respx.post(EVENTS_URL).mock(side_effect=_respond)
 
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
     provider = MicrosoftGraphCalendarProvider(make_settings())
     from app.models import CalendarEvent
 

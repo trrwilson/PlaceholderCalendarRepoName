@@ -149,6 +149,41 @@ describe('Mission Control dashboard', () => {
     expect(row.querySelector('.provider-badge')).toBeInTheDocument()
   })
 
+  it('lists a non-primary calendar disabled by default and opts it in from People', async () => {
+    const today = new Date()
+    const startsAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 16).toISOString()
+    const endsAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 17).toISOString()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') return Promise.resolve({ ok: true, json: async () => ({}) })
+      return Promise.resolve({ json: async () => ({
+        calendars: [
+          { id: 'family', name: 'Family', color: 'coral', enabled: true, is_primary: true },
+          { id: 'family::holidays', name: 'Holidays', color: 'coral', enabled: false, is_primary: false, account_id: 'family' },
+        ],
+        events: [{ id: 'e1', calendar_id: 'family', title: 'Family dinner', starts_at: startsAt, ends_at: endsAt, location: null, all_day: false, categories: [] }],
+      }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+    // The not-yet-opted-in extra calendar doesn't count toward the People badge or fetch events.
+    await waitFor(() => expect(screen.getByRole('button', { name: /People/ })).toHaveTextContent('1/1'))
+    fireEvent.click(screen.getByRole('button', { name: /People/ }))
+
+    const subrow = document.querySelector('.filter-subrow') as HTMLElement
+    expect(subrow).toHaveTextContent('Holidays')
+    expect(subrow).not.toHaveTextContent('✓')
+
+    fireEvent.click(subrow)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/calendar/calendars'),
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ calendar_id: 'family::holidays', enabled: true }),
+      }),
+    ))
+  })
+
   it('dismisses the People popover outside, with Escape, and on mode navigation', async () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: /People/ })).toHaveTextContent('2/2'))

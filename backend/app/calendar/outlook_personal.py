@@ -33,7 +33,10 @@ from app.calendar.graph import (
     ProfileNameCache,
     _local_tz_name,
     _map_event,
+    list_calendars,
+    secondary_calendar_id,
 )
+from app.calendar.secondary import SecondaryCalendarStore, get_secondary_calendar_store
 from app.config import Settings
 from app.models import (
     CalendarEvent,
@@ -185,11 +188,13 @@ class PersonalOutlookCalendarProvider:
         *,
         client: httpx.Client | None = None,
         token_provider: Callable[[], str] | None = None,
+        secondary_store: SecondaryCalendarStore | None = None,
     ) -> None:
         self._settings = settings
         self._client = client or httpx.Client(timeout=30.0)
         self._category_colors = CategoryColorCache(self._client)
         self._profile_names = ProfileNameCache(self._client)
+        self._secondary_store = secondary_store or get_secondary_calendar_store()
         # ID-token claims from the last silent auth, per account username. The
         # sign-in already carries the holder's name (``given_name`` / ``name``)
         # even though the calendar scope alone can't read ``/me``.
@@ -264,7 +269,12 @@ class PersonalOutlookCalendarProvider:
     # -- fetch ------------------------------------------------------------------
 
     def _calendar_view(
-        self, start: datetime, end: datetime, headers: dict[str, str]
+        self,
+        start: datetime,
+        end: datetime,
+        headers: dict[str, str],
+        *,
+        calendar_id: str | None = None,
     ) -> list[dict[str, Any]]:
         params: dict[str, str] = {
             "startDateTime": start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -272,7 +282,11 @@ class PersonalOutlookCalendarProvider:
             "$select": _SELECT_FIELDS,
             "$top": str(_PAGE_SIZE),
         }
-        view_url = f"{_GRAPH_BASE}/me/calendarView"
+        view_url = (
+            f"{_GRAPH_BASE}/me/calendars/{calendar_id}/calendarView"
+            if calendar_id
+            else f"{_GRAPH_BASE}/me/calendarView"
+        )
         url: str | None = view_url
         raw_events: list[dict[str, Any]] = []
         while url:
@@ -324,8 +338,45 @@ class PersonalOutlookCalendarProvider:
                     source=CalendarSource.outlook,
                 )
             )
+
+            try:
+                raw_calendars = list_calendars(self._client, f"{_GRAPH_BASE}/me", headers)
+            except httpx.HTTPError:
+                raw_calendars = []
+            for raw_calendar in raw_calendars:
+                if raw_calendar.get("isDefaultCalendar") or not raw_calendar.get("id"):
+                    continue
+                graph_id = raw_calendar["id"]
+                extra_id = secondary_calendar_id(email, graph_id)
+                extra_name = (raw_calendar.get("name") or "").strip() or "Calendar"
+                is_enabled = self._secondary_store.is_enabled(extra_id)
+                calendars.append(
+                    HouseholdCalendar(
+                        id=extra_id,
+                        name=extra_name,
+                        display_name=extra_name,
+                        color=self._settings.calendar_color_for(index),
+                        source=CalendarSource.outlook,
+                        enabled=is_enabled,
+                        is_primary=False,
+                        account_id=email,
+                    )
+                )
+                if not is_enabled:
+                    continue
+                extra_raw_events = self._calendar_view(start, end, headers, calendar_id=graph_id)
+                extra_colors: dict[str, str] = {}
+                if any(raw.get("categories") for raw in extra_raw_events):
+                    extra_colors = self._category_colors.get(f"{_GRAPH_BASE}/me", headers, email)
+                events.extend(_map_event(raw, extra_id, extra_colors) for raw in extra_raw_events)
+
         events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
         return CalendarSnapshot(calendars=calendars, events=events, range=calendar_range)
+
+    def set_calendar_enabled(self, calendar_id: str, enabled: bool) -> None:
+        if "::" not in calendar_id:
+            raise ValueError("only a non-primary calendar can be toggled")
+        self._secondary_store.set_enabled(calendar_id, enabled)
 
     # -- write ----------------------------------------------------------------
 

@@ -17,6 +17,8 @@ class CalendarProvider(Protocol):
 
     def create_event(self, event: CalendarEvent) -> CalendarEvent: ...
 
+    def set_calendar_enabled(self, calendar_id: str, enabled: bool) -> None: ...
+
 
 class MockCalendarProvider:
     def __init__(self, today: date | None = None) -> None:
@@ -26,19 +28,45 @@ class MockCalendarProvider:
             HouseholdCalendar(id="alex", name="Alex", color=CalendarColor.ocean),
             HouseholdCalendar(id="jordan", name="Jordan", color=CalendarColor.gold),
             HouseholdCalendar(id="home", name="Home", color=CalendarColor.fern),
+            # A non-primary calendar, for exercising the opt-in flow without a
+            # real Outlook account (see app/calendar/secondary.py). Disabled by
+            # default like any other; its events are seeded but excluded from
+            # a snapshot until toggled on.
+            HouseholdCalendar(
+                id="family::holidays",
+                name="Holidays",
+                color=CalendarColor.coral,
+                enabled=False,
+                is_primary=False,
+                account_id="family",
+            ),
         ]
         self.events = self._seed_events()
 
     def snapshot(self, calendar_range: CalendarRange) -> CalendarSnapshot:
         start = datetime.combine(calendar_range.starts_on, time.min)
         end = datetime.combine(calendar_range.ends_on + timedelta(days=1), time.min)
-        events = [event for event in self.events if event.starts_at < end and event.ends_at > start]
+        enabled_ids = {calendar.id for calendar in self.calendars if calendar.enabled}
+        events = [
+            event
+            for event in self.events
+            if event.starts_at < end and event.ends_at > start and event.calendar_id in enabled_ids
+        ]
         events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
         return CalendarSnapshot(calendars=self.calendars, events=events, range=calendar_range)
 
     def create_event(self, event: CalendarEvent) -> CalendarEvent:
         self.events.append(event.model_copy(update={"id": event.id or str(uuid4())}))
         return self.events[-1]
+
+    def set_calendar_enabled(self, calendar_id: str, enabled: bool) -> None:
+        for calendar in self.calendars:
+            if calendar.id == calendar_id:
+                if calendar.is_primary:
+                    raise ValueError("only a non-primary calendar can be toggled")
+                calendar.enabled = enabled
+                return
+        raise ValueError(f"unknown calendar id: {calendar_id}")
 
     def _seed_events(self) -> list[CalendarEvent]:
         today = self.today
@@ -146,5 +174,13 @@ class MockCalendarProvider:
                 ends_at=at(11, 0),
                 all_day=True,
                 categories=[birthday],
+            ),
+            CalendarEvent(
+                id="labor-day",
+                calendar_id="family::holidays",
+                title="Labor Day",
+                starts_at=at(4, 0),
+                ends_at=at(5, 0),
+                all_day=True,
             ),
         ]

@@ -27,12 +27,35 @@ def test_mock_provider_has_distinct_calendars_and_overlapping_events() -> None:
         CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 15))
     )
 
-    assert len(snapshot.calendars) == 4
-    assert len({calendar.color for calendar in snapshot.calendars}) == 4
+    primary = [calendar for calendar in snapshot.calendars if calendar.is_primary]
+    assert len(primary) == 4
+    assert len({calendar.color for calendar in primary}) == 4
     assert any(event.all_day for event in snapshot.events)
     # The mock has no real accounts: display name mirrors the label, no provider badge.
     assert all(calendar.display_name == calendar.name for calendar in snapshot.calendars)
     assert {calendar.source for calendar in snapshot.calendars} == {"mock"}
+
+
+def test_mock_provider_lists_a_non_primary_calendar_disabled_by_default() -> None:
+    provider = MockCalendarProvider(date(2026, 9, 5))
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 15))
+    )
+
+    extra = next(calendar for calendar in snapshot.calendars if calendar.id == "family::holidays")
+    assert extra.is_primary is False
+    assert extra.enabled is False
+    assert extra.account_id == "family"
+    assert "labor-day" not in {event.id for event in snapshot.events}
+
+    provider.set_calendar_enabled("family::holidays", True)
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 15))
+    )
+    assert "labor-day" in {event.id for event in snapshot.events}
+
+    with pytest.raises(ValueError):
+        provider.set_calendar_enabled("family", False)
 
 
 def test_mock_events_preserve_category_classification_separately_from_calendar_identity() -> None:

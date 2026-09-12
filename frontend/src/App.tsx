@@ -27,7 +27,12 @@ type CalendarSource = 'mock' | 'outlook' | 'google'
 // `name` is the raw account handle; `display_name` is the natural personal name the
 // provider resolved (given name > full name > handle). Older snapshots omit both new
 // fields, so treat them as optional and fall back.
-type Calendar = { id: string; name: string; display_name?: string; color: string; source?: CalendarSource; enabled: boolean }
+// `is_primary` is false for a non-primary calendar (a shared calendar, "Holidays", …) an
+// Outlook account carries alongside its default one — additive and opt-in, so `enabled`
+// there reflects whether a household member has turned it on rather than always being true.
+// `account_id` then names the primary calendar it belongs to. Older snapshots omit both;
+// treat a calendar as primary when absent.
+type Calendar = { id: string; name: string; display_name?: string; color: string; source?: CalendarSource; enabled: boolean; is_primary?: boolean; account_id?: string | null }
 type EventCategory = { id: string; name: string; color: string } // color: a concrete #rrggbb from the provider (e.g. Outlook master-category swatch)
 type CalendarEvent = { id: string; calendar_id: string; title: string; starts_at: string; ends_at: string; location: string | null; all_day: boolean; categories?: EventCategory[] }
 type Snapshot = { calendars: Calendar[]; events: CalendarEvent[] }
@@ -251,10 +256,15 @@ function App() {
       .then((nextSnapshot) => {
         setSnapshot(nextSnapshot)
         // Show every calendar the moment it appears — the first one on load, and
-        // any later additions — while leaving existing on/off choices alone.
+        // any later additions — while leaving existing on/off choices alone. A
+        // non-primary calendar the household hasn't opted into yet (`enabled:
+        // false`, see the people flyout) is left out here too, so it stays out of
+        // the agenda until someone turns it on.
         setEnabledCalendars((current) => {
           const seen = new Set(current)
-          const added = nextSnapshot.calendars.map((calendar) => calendar.id).filter((id) => !seen.has(id))
+          const added = nextSnapshot.calendars
+            .filter((calendar) => calendar.enabled !== false && !seen.has(calendar.id))
+            .map((calendar) => calendar.id)
           return added.length ? [...current, ...added] : current
         })
       })
@@ -358,6 +368,11 @@ function App() {
     return override && override !== calendar.color ? { ...calendar, color: override } : calendar
   })
   const calendarById = new Map(calendars.map((calendar) => [calendar.id, calendar]))
+  // The people flyout's count badge, and the calendar-colour picker in Settings, only
+  // consider a calendar "in the household" once it's actually shown — every primary
+  // calendar, plus a non-primary one only after someone has opted it in.
+  const filterableCalendars = calendars.filter((calendar) => calendar.is_primary !== false || calendar.enabled)
+  const visibleCalendarCount = filterableCalendars.filter((calendar) => enabledCalendars.includes(calendar.id)).length
   const visibleEvents = (snapshot?.events ?? []).filter((event) => enabledCalendars.includes(event.calendar_id))
   // Spanning events (all-day, plus anything crossing midnight) are pinned as banners rather
   // than interleaved with the timed agenda — they read as background context for the day.
@@ -492,6 +507,20 @@ function App() {
     setEnabledCalendars((current) => current.includes(calendarId) ? current.filter((id) => id !== calendarId) : [...current, calendarId])
   }
 
+  // Opt a non-primary calendar in or out of the display (people flyout). Unlike
+  // `toggleCalendar` above — a per-browser, in-memory show/hide filter — this
+  // persists on the backend: the account's extra calendar starts fetching (or
+  // stops fetching) events for every screen, not just this one.
+  function setCalendarEnabled(calendarId: string, enabled: boolean) {
+    fetch(`${API_URL}/api/calendar/calendars`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ calendar_id: calendarId, enabled }),
+    })
+      .then(() => setReloadKey((key) => key + 1))
+      .catch(() => undefined)
+  }
+
   function startTimerFromTouch(durationSeconds: number, label: string | null) {
     timers.start(durationSeconds, label).catch((error: unknown) => {
       setTimerNotice(error instanceof Error ? error.message : 'Could not start the timer.')
@@ -527,7 +556,7 @@ function App() {
         {mode === 'lists' && <ListsView list={lists.list} recentItems={lists.recentItems} redacted={redacting} onAdd={(name) => { if (!redacting) void lists.add(name) }} onToggle={(id, checked) => { if (!redacting) void lists.toggle(id, checked) }} onRemove={(id) => { if (!redacting) void lists.remove(id) }} onClear={(scope) => { if (!redacting) void lists.clear(scope) }} onReorder={(ids) => { if (!redacting) void lists.reorder(ids) }} />}
       </section>
 
-      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{enabledCalendars.length}/{calendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.map((calendar) => <button className="filter-row" onClick={() => toggleCalendar(calendar.id)} key={calendar.id}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={calendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} audioOutput={audioOutput} voiceConfig={voiceConfig} display={display} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onSetWakeGateEnabled={voice.setWakeGateEnabled} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
+      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{visibleCalendarCount}/{filterableCalendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.filter((calendar) => calendar.is_primary !== false).map((calendar) => <div key={calendar.id}><button className="filter-row" onClick={() => toggleCalendar(calendar.id)}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>{calendars.filter((extra) => extra.account_id === calendar.id).map((extra) => <button key={extra.id} className="filter-subrow" aria-pressed={extra.enabled} onClick={() => setCalendarEnabled(extra.id, !extra.enabled)}><span className={`calendar-swatch ${colorClass(extra.color)}`} /><span className="filter-name">{personName(extra)}</span><strong>{extra.enabled ? '✓' : ''}</strong></button>)}</div>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={filterableCalendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} audioOutput={audioOutput} voiceConfig={voiceConfig} display={display} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onSetWakeGateEnabled={voice.setWakeGateEnabled} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
       {selectedEvent && !redacting && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
       {selectedClip && !redacting && <CameraClipModal clip={selectedClip} apiBaseUrl={API_URL} onClose={() => setSelectedClip(null)} />}
       {connectOpen && auth && !redacting && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}

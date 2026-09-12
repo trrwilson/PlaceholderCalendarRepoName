@@ -66,6 +66,15 @@ backend/privacy.json
 privacy.json
 *.privacy.json
 
+# Non-primary Outlook calendar opt-ins (MISSION_CONTROL_CALENDAR_SECONDARY_STATE_FILE)
+backend/secondary_calendars.json
+secondary_calendars.json
+*.secondary_calendars.json
+
+# Headless uvicorn output when the backend is run detached (redirected stdout/stderr)
+backend/uvicorn.out.log
+backend/uvicorn.err.log
+
 # Local STT benchmark samples + downloaded model caches (provisioned per install)
 backend/voice-samples/
 voice-samples/

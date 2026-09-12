@@ -27,6 +27,7 @@ from app.models import (
     CalendarAuthStatus,
     CalendarRange,
     CalendarSnapshot,
+    CalendarVisibilityUpdate,
     CameraGallerySnapshot,
     DisplayConfigUpdate,
     DisplayState,
@@ -177,6 +178,25 @@ async def get_calendar(
         message = "; ".join(error["msg"] for error in exc.errors())
         raise HTTPException(status_code=422, detail=message) from exc
     return calendar_provider.snapshot(calendar_range)
+
+
+@router.put("/calendar/calendars", status_code=204)
+def set_calendar_visibility(
+    body: CalendarVisibilityUpdate,
+    request: Request,
+    calendar_provider: CalendarProvider = Depends(get_provider),
+) -> Response:
+    """Opt a non-primary calendar (see ``HouseholdCalendar.is_primary``) in or
+    out of the display — the people flyout's toggle for an account's extra
+    calendars. Off by default; rejected for a primary calendar's id, which is
+    always shown."""
+    _require_local(request)
+    _require_unlocked()
+    try:
+        calendar_provider.set_calendar_enabled(body.calendar_id, body.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(status_code=204)
 
 
 # -- calendar sign-in (outlook_personal provider) -----------------------------

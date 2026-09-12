@@ -214,6 +214,16 @@ class Settings(BaseSettings):
     def _parse_list(cls, value: object) -> object:
         return _split_csv(value)
 
+    # Non-primary Outlook calendars (a shared calendar, "Holidays", …) an
+    # account carries alongside its default one. Every provider always lists
+    # these so the people flyout can offer them, but a household member must
+    # turn one on there before its events are fetched — opt-in, off by
+    # default, so a noisy extra calendar never shows up uninvited. Persisted so
+    # a power-cycle does not lose the choice; relative -> backend working dir,
+    # alongside lists.json / privacy.json. Blank -> in-memory only (choices
+    # don't survive a restart). See app/calendar/secondary.py.
+    calendar_secondary_state_file: str = "secondary_calendars.json"
+
     # -- Voice assistant --------------------------------------------------------
     # Which conversational voice provider handles a turn after activation. This
     # is a bake-off (see docs/voice-provider-bakeoff-plan.md); the kiosk chooses

@@ -21,6 +21,12 @@ from app.models import CalendarEvent, CalendarRange, CalendarSnapshot
 CALENDAR_VIEW = "https://graph.microsoft.com/v1.0/me/calendarView"
 MASTER_CATEGORIES = "https://graph.microsoft.com/v1.0/me/outlook/masterCategories"
 ME_PROFILE = "https://graph.microsoft.com/v1.0/me"
+# The non-primary-calendar listing every snapshot() now makes alongside the
+# primary calendarView (see app/calendar/secondary.py) — mocked empty by
+# default so existing tests are unaffected by it. Same URL regardless of which
+# cached account's token is used ("/me" resolves per-bearer-token).
+ME_CALENDARS = "https://graph.microsoft.com/v1.0/me/calendars"
+NO_EXTRA_CALENDARS = httpx.Response(200, json={"value": []})
 
 
 def make_settings(tmp_path, **overrides: object) -> Settings:
@@ -101,6 +107,7 @@ def test_load_msal_app_round_trips_the_cache(tmp_path) -> None:
 @respx.mock
 def test_maps_me_calendar_view_to_snapshot(tmp_path) -> None:
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    respx.get(ME_CALENDARS).mock(return_value=NO_EXTRA_CALENDARS)
     provider = build_provider(tmp_path)
 
     snapshot = provider.snapshot(
@@ -126,6 +133,7 @@ def test_reads_each_cached_account_as_a_household_calendar(tmp_path) -> None:
             httpx.Response(200, json={"value": [timed_event(id="sam-event")]}),
         ]
     )
+    respx.get(ME_CALENDARS).mock(return_value=NO_EXTRA_CALENDARS)
     provider = PersonalOutlookCalendarProvider(make_settings(tmp_path))
 
     class FakeApp:
@@ -157,6 +165,7 @@ def test_display_name_comes_from_the_me_profile_given_name(tmp_path) -> None:
             200, json={"givenName": "Travis", "displayName": "Travis Wilson"}
         )
     )
+    respx.get(ME_CALENDARS).mock(return_value=NO_EXTRA_CALENDARS)
     provider = build_provider(tmp_path)
 
     snapshot = provider.snapshot(
@@ -171,6 +180,7 @@ def test_display_name_comes_from_the_me_profile_given_name(tmp_path) -> None:
 def test_display_name_prefers_id_token_claims_over_a_me_request(tmp_path) -> None:
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
     me = respx.get(ME_PROFILE).mock(return_value=httpx.Response(200, json={"givenName": "ignored"}))
+    respx.get(ME_CALENDARS).mock(return_value=NO_EXTRA_CALENDARS)
     provider = build_provider(tmp_path)
     # A silent auth would have stashed these; simulate that.
     provider._id_claims["outlook"] = {"given_name": "Travis", "name": "Travis Wilson"}
@@ -187,6 +197,7 @@ def test_display_name_prefers_id_token_claims_over_a_me_request(tmp_path) -> Non
 def test_display_name_falls_back_to_account_handle(tmp_path) -> None:
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
     respx.get(ME_PROFILE).mock(return_value=httpx.Response(403, json={"error": {"code": "Denied"}}))
+    respx.get(ME_CALENDARS).mock(return_value=NO_EXTRA_CALENDARS)
     provider = build_provider(tmp_path)
 
     snapshot = provider.snapshot(
@@ -254,6 +265,7 @@ def test_display_name_survives_a_warm_token_cache_without_id_token_claims(
         "shared_msal_app",
         lambda settings: (WarmApp(), cache, tmp_path / "cache.json"),
     )
+    respx.get(ME_CALENDARS).mock(return_value=NO_EXTRA_CALENDARS)
 
     provider = PersonalOutlookCalendarProvider(make_settings(tmp_path))
     snapshot = provider.snapshot(
@@ -275,6 +287,7 @@ def test_resolves_category_colors_from_master_categories(tmp_path) -> None:
             json={"value": [{"id": "Family", "displayName": "Family", "color": "preset5"}]},
         )
     )
+    respx.get(ME_CALENDARS).mock(return_value=NO_EXTRA_CALENDARS)
     provider = build_provider(tmp_path)
 
     snapshot = provider.snapshot(
@@ -300,6 +313,7 @@ def test_pagination_follows_next_link(tmp_path) -> None:
             httpx.Response(200, json={"value": [timed_event(id="evt-b")]}),
         ]
     )
+    respx.get(ME_CALENDARS).mock(return_value=NO_EXTRA_CALENDARS)
     provider = build_provider(tmp_path)
 
     snapshot = provider.snapshot(

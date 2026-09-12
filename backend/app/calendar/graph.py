@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from app.calendar.secondary import SecondaryCalendarStore, get_secondary_calendar_store
 from app.config import Settings
 from app.models import (
     CalendarEvent,
@@ -210,6 +211,35 @@ class ProfileNameCache:
         return name
 
 
+_CALENDAR_LIST_SELECT = "id,name,isDefaultCalendar"
+
+
+def list_calendars(client: httpx.Client, base_url: str, headers: dict[str, str]) -> list[dict[str, Any]]:
+    """List a mailbox's calendars (``{base_url}/calendars``, paged) — the ones
+    beyond the default calendar a household member can opt into displaying
+    (see ``app/calendar/secondary.py``)."""
+    params: dict[str, str] = {"$select": _CALENDAR_LIST_SELECT, "$top": str(_PAGE_SIZE)}
+    url: str | None = f"{base_url}/calendars"
+    calendars: list[dict[str, Any]] = []
+    while url:
+        response = client.get(url, params=params if url.endswith("/calendars") else None, headers=headers)
+        response.raise_for_status()
+        body = response.json()
+        calendars.extend(body.get("value", []))
+        url = body.get("@odata.nextLink")
+    return calendars
+
+
+def secondary_calendar_id(account_id: str, graph_calendar_id: str) -> str:
+    """Stable id for a non-primary calendar: ``{account}::{graph calendar id}``.
+
+    The ``::`` also marks a calendar as non-primary — a primary calendar's id
+    is always just the bare account email/UPN — so a provider's
+    ``set_calendar_enabled`` can reject an attempt to toggle a primary one.
+    """
+    return f"{account_id}::{graph_calendar_id}"
+
+
 def _map_event(
     raw: dict[str, Any],
     calendar_id: str,
@@ -240,7 +270,13 @@ def _map_event(
 
 
 class MicrosoftGraphCalendarProvider:
-    def __init__(self, settings: Settings, *, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        client: httpx.Client | None = None,
+        secondary_store: SecondaryCalendarStore | None = None,
+    ) -> None:
         missing = [
             name
             for name, value in (
@@ -266,6 +302,7 @@ class MicrosoftGraphCalendarProvider:
         self._token_expires_at: float = 0.0
         self._category_colors = CategoryColorCache(self._client)
         self._profile_names = ProfileNameCache(self._client)
+        self._secondary_store = secondary_store or get_secondary_calendar_store()
 
     def _household_calendar(self, user: str, index: int) -> HouseholdCalendar:
         account_name = user.split("@", 1)[0]
@@ -277,6 +314,11 @@ class MicrosoftGraphCalendarProvider:
             color=self._settings.calendar_color_for(index),
             source=CalendarSource.outlook,
         )
+
+    def set_calendar_enabled(self, calendar_id: str, enabled: bool) -> None:
+        if "::" not in calendar_id:
+            raise ValueError("only a non-primary calendar can be toggled")
+        self._secondary_store.set_enabled(calendar_id, enabled)
 
     # -- auth ---------------------------------------------------------------
 
@@ -308,14 +350,21 @@ class MicrosoftGraphCalendarProvider:
 
     # -- fetch ------------------------------------------------------------------
 
-    def _calendar_view(self, user: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    def _calendar_view(
+        self, user: str, start: datetime, end: datetime, *, calendar_id: str | None = None
+    ) -> list[dict[str, Any]]:
         params: dict[str, str] = {
             "startDateTime": start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "endDateTime": end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "$select": _SELECT_FIELDS,
             "$top": str(_PAGE_SIZE),
         }
-        url: str | None = f"{_GRAPH_BASE}/users/{user}/calendarView"
+        base = (
+            f"{_GRAPH_BASE}/users/{user}/calendars/{calendar_id}/calendarView"
+            if calendar_id
+            else f"{_GRAPH_BASE}/users/{user}/calendarView"
+        )
+        url: str | None = base
         raw_events: list[dict[str, Any]] = []
         while url:
             response = self._client.get(
@@ -342,6 +391,35 @@ class MicrosoftGraphCalendarProvider:
             colors = self._category_colors_for(user, raw_events)
             events.extend(_map_event(raw, user, colors) for raw in raw_events)
             calendars.append(self._household_calendar(user, index))
+
+            try:
+                raw_calendars = list_calendars(self._client, f"{_GRAPH_BASE}/users/{user}", self._headers())
+            except httpx.HTTPError:
+                raw_calendars = []
+            for raw_calendar in raw_calendars:
+                if raw_calendar.get("isDefaultCalendar") or not raw_calendar.get("id"):
+                    continue
+                graph_id = raw_calendar["id"]
+                extra_id = secondary_calendar_id(user, graph_id)
+                extra_name = (raw_calendar.get("name") or "").strip() or "Calendar"
+                is_enabled = self._secondary_store.is_enabled(extra_id)
+                calendars.append(
+                    HouseholdCalendar(
+                        id=extra_id,
+                        name=extra_name,
+                        display_name=extra_name,
+                        color=self._settings.calendar_color_for(index),
+                        source=CalendarSource.outlook,
+                        enabled=is_enabled,
+                        is_primary=False,
+                        account_id=user,
+                    )
+                )
+                if not is_enabled:
+                    continue
+                extra_raw_events = self._calendar_view(user, start, end, calendar_id=graph_id)
+                extra_colors = self._category_colors_for(user, extra_raw_events)
+                events.extend(_map_event(raw, extra_id, extra_colors) for raw in extra_raw_events)
 
         events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
         return CalendarSnapshot(calendars=calendars, events=events, range=calendar_range)

@@ -46,6 +46,18 @@ class HouseholdCalendar(BaseModel):
     color: CalendarColor
     source: CalendarSource = CalendarSource.mock
     enabled: bool = True
+    # False for a non-primary calendar — a shared calendar, "Holidays", or
+    # anything else an Outlook account carries alongside its default one. Every
+    # provider always emits one primary ``HouseholdCalendar`` per connected
+    # account (``is_primary=True``, ``enabled=True``); anything else it lists is
+    # additive and opt-in, so ``enabled`` there instead reflects whether a
+    # household member has turned it on (see ``app/calendar/secondary.py`` and
+    # ``PUT /api/calendar/calendars``) — off until they do.
+    is_primary: bool = True
+    # For a non-primary calendar, the ``id`` of the primary calendar it belongs
+    # to — lets the kiosk group "extra calendars" under the account they came
+    # from. ``None`` for a primary calendar.
+    account_id: str | None = None
 
     @model_validator(mode="after")
     def _fill_display_name(self) -> "HouseholdCalendar":
@@ -752,6 +764,15 @@ class VoiceDebugCaptureStored(BaseModel):
     """Where ``POST /api/voice/debug/capture`` wrote the WAV."""
 
     path: str
+
+
+class CalendarVisibilityUpdate(BaseModel):
+    """``PUT /api/calendar/calendars`` body — opt a non-primary calendar (see
+    ``HouseholdCalendar.is_primary``) in or out of the display. Rejected by the
+    provider for a primary calendar's id, which is always shown."""
+
+    calendar_id: str = Field(min_length=1)
+    enabled: bool
 
 
 class CalendarAuthStatus(BaseModel):
