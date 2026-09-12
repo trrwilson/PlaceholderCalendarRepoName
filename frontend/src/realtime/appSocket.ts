@@ -82,11 +82,18 @@ class AppSocket {
       const ws = new WebSocket(`${this.baseUrl.replace(/^http/, 'ws')}/api/ws`)
       this.ws = ws
       ws.addEventListener('open', () => {
+        if (this.ws !== ws) return
         this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
         this.setStatus('live')
       })
       ws.addEventListener('close', () => {
-        if (this.ws === ws) this.ws = null
+        // A superseded socket (replaced by a newer connect(), e.g. React
+        // StrictMode's dev-only double-invoke of the connect/disconnect
+        // effect) can still fire `close` after the current one is already
+        // live — without this guard that spuriously flips the shared status
+        // back to 'offline' and queues a redundant reconnect.
+        if (this.ws !== ws) return
+        this.ws = null
         this.setStatus('offline')
         this.scheduleReconnect()
       })
