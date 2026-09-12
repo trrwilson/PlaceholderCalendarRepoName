@@ -13,6 +13,7 @@
     "test": "node --test test/"
   },
   "dependencies": {
+    "@mega-yfue/eufy-sdk": "0.1.1",
     "eufy-security-client": "4.1.1-1",
     "ws": "^8.18.0"
   }

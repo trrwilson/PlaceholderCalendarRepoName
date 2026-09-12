@@ -1,5 +1,7 @@
 "use strict";
 
+const path = require("node:path");
+
 // Config from environment variables only — the backend (app/eufy/bridge_process.py)
 // spawns this process and passes credentials as env, never argv (argv is visible to
 // any other process via `ps` / Task Manager). See docs/eufy-sdk-integration.md §6.1.
@@ -46,11 +48,13 @@ function loadConfig() {
     }
   }
 
+  const sessionFile = requireEnv("EUFY_SESSION_FILE");
+
   return {
     email: requireEnv("EUFY_EMAIL"),
     password: requireEnv("EUFY_PASSWORD"),
     region: process.env.EUFY_REGION || "US",
-    sessionFile: requireEnv("EUFY_SESSION_FILE"),
+    sessionFile,
     stationLanIp: process.env.EUFY_STATION_LAN_IP || undefined,
     stationSerial: process.env.EUFY_STATION_SERIAL || undefined,
     cameraNames,
@@ -78,6 +82,30 @@ function loadConfig() {
     // primitive, not passive logging), so it gets its own flag rather than
     // riding along with that one.
     debugMegaCall: process.env.EUFY_DEBUG_MEGA_CALL === "1",
+    // Off by default: periodic P2P enumeration of `history_record_info` via a
+    // second SDK (@mega-yfue/eufy-sdk), feeding the same clip-discovery
+    // pipeline as the eufy-security-client `databaseQueryByDate` reconcile.
+    // Exists to work around that reconcile's documented freshness bug (a
+    // date-range query returns a stale cluster at the oldest edge of the
+    // window instead of the most recent events — docs/eufy-sdk-integration.md
+    // §16.2/§19.2) with a FULL_TABLE query that this investigation confirmed
+    // does not exhibit it (§19.1). Requires EUFY_STATION_SERIAL to be set —
+    // logs a warning and stays a no-op without it, same as the LAN-IP hint.
+    megaEnumerationEnabled: process.env.EUFY_MEGA_ENUMERATION_ENABLED === "1",
+    // Separate persisted session file — a different SDK, a different
+    // persistence format, never shared with EUFY_SESSION_FILE above.
+    megaSessionFile:
+      process.env.EUFY_MEGA_SESSION_FILE || path.join(path.dirname(sessionFile), ".eufy_mega_persistent.json"),
+    // How long to wait for a dbChunk reply per poll before giving up on that
+    // pass. §19.1's live testing saw a reply within ~1-2s; this leaves
+    // generous headroom without blocking the shared reconcile cadence badly.
+    megaQueryWindowMs: intEnv("EUFY_MEGA_QUERY_WINDOW_MS", 8000),
+    // How long to wait after opening the mega-yfue P2P session before
+    // assuming it's up and sending the query — mirrors the same pitfall
+    // §5.1 documents for the primary SDK (local P2P discovery can silently
+    // stall). Exposed as config (not a hardcoded constant) mainly so tests
+    // can shrink it; production should rarely need to change it.
+    megaP2pWarmupMs: intEnv("EUFY_MEGA_P2P_WARMUP_MS", 4000),
   };
 }
 

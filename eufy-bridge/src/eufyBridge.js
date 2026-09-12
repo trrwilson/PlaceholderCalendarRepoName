@@ -8,6 +8,7 @@ const crypto = require("node:crypto");
 const { EufySecurity, P2PConnectionType } = require("eufy-security-client");
 
 const { muxClip } = require("./ffmpeg");
+const { MegaEnumerator } = require("./megaEnumerator");
 
 // Real device event names the `EufySecurity` client emits, taken verbatim
 // from eufy-security-client 4.1.1-1's own type definitions (EufySecurityEvents
@@ -51,7 +52,7 @@ class EufyBridge {
    * and `node:test`'s `mock.module` (Node 22+), so constructor injection is
    * the seam, not module mocking. See test/eufyBridge.test.js.
    */
-  constructor(config, log, { initializeClient } = {}) {
+  constructor(config, log, { initializeClient, createMegaClient } = {}) {
     this.config = config;
     this.log = log;
     this.client = null;
@@ -63,6 +64,10 @@ class EufyBridge {
     this.reconcileTimer = null;
     this._downloadInFlight = null;
     this._initializeClient = initializeClient || ((cfg, logger) => EufySecurity.initialize(cfg, logger));
+    this.megaEnumerator = null;
+    this.megaPollTimer = null;
+    this._megaPollInFlight = false;
+    this._createMegaClient = createMegaClient; // undefined -> MegaEnumerator uses the real SDK
     /** Set by index.js to fan messages out over the control WebSocket. */
     this.onEvent = () => {};
   }
@@ -103,11 +108,63 @@ class EufyBridge {
     this._wireEvents();
     this.emit({ type: "status", state: "connecting" });
     await this.client.connect({ force: false });
+    this._startMegaEnumeration();
   }
 
   async stop() {
     this._stopReconciliation();
+    this._stopMegaEnumeration();
     if (this.client) this.client.close();
+  }
+
+  // See src/megaEnumerator.js and docs/eufy-sdk-integration.md §18-§19: a
+  // second, independent SDK/session used only to work around a documented
+  // freshness bug in the primary `databaseQueryByDate` reconcile above. Fully
+  // separate lifecycle from `this.client` — it has its own login and its own
+  // short-lived P2P connection per poll, so it starts/stops independently of
+  // the main client's connect/close events rather than piggybacking on them.
+  _startMegaEnumeration() {
+    if (!this.config.megaEnumerationEnabled) return;
+    if (!this.config.stationSerial) {
+      this.log("mega-enumerator: EUFY_MEGA_ENUMERATION_ENABLED=1 but no EUFY_STATION_SERIAL set — staying off");
+      return;
+    }
+    this.megaEnumerator = new MegaEnumerator({
+      email: this.config.email,
+      password: this.config.password,
+      region: this.config.region,
+      sessionFile: this.config.megaSessionFile,
+      stationSerial: this.config.stationSerial,
+      queryWindowMs: this.config.megaQueryWindowMs,
+      p2pWarmupMs: this.config.megaP2pWarmupMs,
+      log: this.log,
+      createClient: this._createMegaClient,
+    });
+    const runOnce = () => {
+      if (this._megaPollInFlight) return;
+      this._megaPollInFlight = true;
+      this.megaEnumerator
+        .poll()
+        .then((records) => {
+          if (records.length) this._onDatabaseQueryByDate(records);
+        })
+        .catch((err) => this.log(`mega-enumerator: unexpected error: ${err && err.stack}`))
+        .finally(() => {
+          this._megaPollInFlight = false;
+        });
+    };
+    this.log(`mega-enumerator: enabled, polling every ${this.config.reconcileIntervalSeconds}s`);
+    runOnce(); // don't wait a full interval for the first, more useful pass
+    this.megaPollTimer = setInterval(runOnce, this.config.reconcileIntervalSeconds * 1000);
+    this.megaPollTimer.unref();
+  }
+
+  _stopMegaEnumeration() {
+    if (this.megaPollTimer) {
+      clearInterval(this.megaPollTimer);
+      this.megaPollTimer = null;
+    }
+    this.megaEnumerator = null;
   }
 
   _logger() {

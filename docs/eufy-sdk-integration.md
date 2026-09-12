@@ -1,6 +1,6 @@
 ---
-status: built (clip gallery); events pipeline not yet built
-summary: The clip-review gallery (thumbnails + tap-to-play, replacing the old "garage door" placeholder) is built end-to-end — Node bridge, backend clip/thumbnail/retrieve pipeline, frontend gallery + modal player. Ambient events (motion/person/doorbell banners, contact-sensor exceptions, §2/§7.2) remain designed but unbuilt. SDK is `eufy-security-client`, verified against real HomeBase 3 / S380 hardware on 2026-09-10.
+status: built (clip gallery); freshness-bug workaround wired but off by default (§20); events pipeline not yet built
+summary: The clip-review gallery (thumbnails + tap-to-play, replacing the old "garage door" placeholder) is built end-to-end — Node bridge, backend clip/thumbnail/retrieve pipeline, frontend gallery + modal player. SDK is `eufy-security-client`, verified against real HomeBase 3 / S380 hardware on 2026-09-10. Its enumeration call has a documented freshness bug (§16.2); a second, isolated SDK (`@mega-yfue/eufy-sdk`) confirmed a working alternative query live (§18-§19) and is now wired in behind `MISSION_CONTROL_EUFY_MEGA_ENUMERATION_ENABLED` (default off, §20) pending a live test pass. Ambient events (motion/person/doorbell banners, contact-sensor exceptions, §2/§7.2) remain designed but unbuilt.
 ---
 
 # Eufy camera integration — verified capability + implementation plan
@@ -1797,3 +1797,99 @@ since §16 — not a hypothesis.
    front-door event happens), to confirm it keeps tracking "most recent" rather than having been
    a lucky match to a static cache this one afternoon — two clean successes in one session is
    good evidence, not yet longitudinal proof.
+
+## 20. Wired into the real bridge (2026-09-11): `MegaEnumerator`, off by default, ready to test live
+
+§19.3 option 2 is now built: `eufy-bridge/src/megaEnumerator.js`, a small, isolated module using
+`@mega-yfue/eufy-sdk` (added as a pinned dependency, `0.1.1` — the version this whole
+investigation verified against) purely for enumeration. It does not touch, replace, or share a
+session with the existing `eufy-security-client` client this bridge otherwise runs — two SDKs,
+two accounts' worth of credentials reused from the same `.env` (§19: the fix is the account_id
+read off the device's own record, not a different login), two independent P2P sessions to the
+same station.
+
+### 20.1 What's built
+
+- **`eufy-bridge/src/megaEnumerator.js`** — `MegaEnumerator.poll()`: one enumeration pass — login
+  (reusing `.eufy_mega_persistent.json` on a healthy run, a completely separate persisted-session
+  file from the main bridge's `.eufy_persistent.json`), find the configured station, read
+  `device.raw.member.admin_user_id` (§18.2/§19.1 — never the login `userId`), open/warm up its own
+  P2P session, send one `history_record_info` FULL_TABLE query on channel 255, collect whatever
+  `dbChunk`s arrive within a configurable window, map each raw record into the **exact same shape**
+  `station.databaseQueryByDate()` already emits (`device_sn`, `station_sn`, `record_id`,
+  `start_time` as a real `Date` — parsed using the record's own reported `time_zone` field, not the
+  bridge host's local time — `storage_path`, `thumb_path`, `cipher_id`, `frame_num`). One query per
+  fresh connection, matching the only pattern this investigation confirmed safe (§18.3/§18.6) —
+  never two queries reusing one P2P session.
+- **`eufy-bridge/src/eufyBridge.js`** — `_startMegaEnumeration()`/`_stopMegaEnumeration()`: runs
+  `MegaEnumerator.poll()` on the same `reconcileIntervalSeconds` cadence as the existing reconcile
+  loop (an immediate first pass on start, not waiting a full interval), feeding any records
+  straight into the existing `_onDatabaseQueryByDate()` — **zero new code path** for
+  dedup/sort/`clip_discovered` emission, since the record shapes already match by construction.
+  Skips cleanly with a logged reason if `stationSerial` isn't configured. Fully independent
+  lifecycle from the main `EufySecurity` client — starts once `start()` finishes connecting that
+  client, stops in `stop()`, never blocks or is blocked by the other SDK's own connect/reconnect
+  state.
+- **Config** (`eufy-bridge/src/config.js`, `app/config.py`, `app/eufy/bridge_process.py`,
+  `.env.example`): `EUFY_MEGA_ENUMERATION_ENABLED` / `eufy_mega_enumeration_enabled` (**off by
+  default**), `EUFY_MEGA_SESSION_FILE` / `eufy_mega_session_file` (default
+  `.eufy_mega_persistent.json`, git-ignored alongside the other session file), plus two bridge-only
+  tuning knobs not exposed to Python (`EUFY_MEGA_QUERY_WINDOW_MS`, default 8000ms;
+  `EUFY_MEGA_P2P_WARMUP_MS`, default 4000ms, mirroring the existing SDK's own local-discovery
+  warmup pitfall from §5.1).
+- **Tests**: `eufy-bridge/test/megaEnumerator.test.js` (10 cases — accountId resolution and its
+  fallback, the real captured record shape mapped correctly including timezone handling, NUL-padding
+  stripped, login/station-not-found/no-config short-circuits, always disconnects), plus 3 new cases
+  in `eufy-bridge/test/eufyBridge.test.js` asserting the end-to-end wiring (off by default even with
+  a station configured; enabled records flow through to `clip_discovered` with the right camera
+  name; missing station serial logs and stays off). All against a stubbed SDK — no real login, no
+  network, no hardware. 27/27 bridge tests green; full backend `pytest` (395) and `ruff` also green
+  after the `app/config.py`/`bridge_process.py` changes.
+
+### 20.2 What this does NOT change
+
+The existing `databaseQueryByDate` reconcile loop is untouched and still runs exactly as before —
+this is purely additive. If `EUFY_MEGA_ENUMERATION_ENABLED` is unset or `0` (the default), no
+`@mega-yfue/eufy-sdk` code runs at all, no second account activity occurs, and the bridge behaves
+identically to before this session. Turning it on does not disable the old path either — both feed
+the same dedup cache, so a clip either source finds only gets discovered once.
+
+### 20.3 How to test this against the real household hardware
+
+1. In `backend/.env`, set `MISSION_CONTROL_EUFY_MEGA_ENUMERATION_ENABLED=true`. Confirm
+   `MISSION_CONTROL_EUFY_STATION_SERIAL` is already set (it should be, from earlier phases) — the
+   enumerator stays off and logs why if it isn't.
+2. `cd eufy-bridge && npm install` if not already done (pulls the new pinned
+   `@mega-yfue/eufy-sdk` dependency).
+3. Restart the backend so it respawns the bridge child process with the new env vars.
+4. Watch backend logs (`[eufy-bridge] ...` lines) for `mega-enumerator: enabled, polling every
+   ...`, then `mega-enumerator: N record(s) from history_record_info FULL_TABLE` on each pass.
+   **First run needs a fresh login** for whichever account is configured against this new SDK/session
+   file — expect (per §19's live testing) either a clean silent success or a captcha/2FA prompt;
+   this module does not yet surface captcha/2FA to the control channel the way the main bridge does
+   (§20.4), so a first-run challenge will just log a failed pass and retry next cycle rather than
+   asking for the code — pre-authorize the identity out of band (e.g. via
+   `backend/.eufy-investigation/mega-sdk-probe/`'s existing login flow, same account, same
+   password) if that happens, so `.eufy_mega_persistent.json` already holds a valid session before
+   flipping this flag on for real.
+5. Confirm the gallery (`GET /api/household`, or the kiosk UI) surfaces a clip more recent than
+   whatever the old `databaseQueryByDate` path alone was finding — the concrete, observable fix for
+   §16.2/§16.4's freshness gap.
+6. If it works, this is the point to revisit §19.4 item 6 (verify longitudinally, not just once)
+   before calling the freshness bug closed for good.
+
+### 20.4 Known gaps, left for a follow-up pass
+
+- **No captcha/2FA control-channel wiring for this second SDK.** The main bridge already has a
+  `pendingAuth`/`answerCaptcha`/`answerTfa` flow (`src/eufyBridge.js`); `MegaEnumerator` has
+  nothing equivalent. Only matters for this account's *first* login to this SDK — pre-authorizing
+  it out of band (§20.3 step 4) sidesteps it for now.
+- **Concurrent P2P sessions to the same station, sustained over time, are still not stress-tested.**
+  This investigation's own several reconnects across one afternoon didn't show contention, which is
+  weak positive evidence, not a real soak test.
+- **`cipher_id: 0` on every record enumerated this way is still unconfirmed** against a real
+  `startDownload()` call (§19.4 item 2) — the existing `retrieveClip()` path is untouched by this
+  change, so a clip discovered via `MegaEnumerator` downloads through the exact same, already-proven
+  `station.startDownload(device, storage_path, cipher_id)` call as one discovered via
+  `databaseQueryByDate` — but nobody has actually tapped a `MegaEnumerator`-discovered clip in the
+  gallery yet to confirm it plays.

@@ -38,6 +38,12 @@ eufy-bridge/node_modules/
 persistent.json
 backend/persistent.json
 
+# @mega-yfue/eufy-sdk's own persisted session (docs/eufy-sdk-integration.md
+# §18-§20) -- a second, unrelated persistence format, never shared with the
+# eufy-security-client session file above.
+.eufy_mega_persistent.json
+*.eufy_mega_persistent.json
+
 # Eufy clip gallery: short-lived decrypted clip cache
 # (MISSION_CONTROL_EUFY_CLIP_CACHE_DIR) — never durable, evicted on a TTL by
 # the bridge itself. This is the one place this feature writes decrypted

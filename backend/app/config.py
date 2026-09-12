@@ -722,6 +722,23 @@ class Settings(BaseSettings):
             raise ValueError("must be a positive number of seconds/minutes")
         return value
 
+    # Off by default. `eufy_reconcile_interval_seconds`'s `databaseQueryByDate`
+    # call has a documented, reproducible freshness bug on this household's
+    # real hardware (docs/eufy-sdk-integration.md §16.2/§19.2): a date-range
+    # query returns a stale cluster at the OLDEST edge of the requested
+    # window, not the most recent events. This flag turns on a second,
+    # independent SDK/session (`@mega-yfue/eufy-sdk`, isolated inside
+    # `eufy-bridge/`) that instead issues a `history_record_info` FULL_TABLE
+    # query (no date bounds at all) on the same cadence, feeding the exact
+    # same clip-discovery pipeline — confirmed live against the real T8030 to
+    # not exhibit that bug (§19.1). Requires `eufy_station_serial` to be set;
+    # the bridge logs a warning and stays off without it. See §20 for how to
+    # test this against real hardware.
+    eufy_mega_enumeration_enabled: bool = False
+    # Separate persisted session file — a different SDK, a different
+    # persistence format, never shared with `eufy_session_file`.
+    eufy_mega_session_file: str = ".eufy_mega_persistent.json"
+
     # Bounded ring buffer of the most recent discovered clips (across all
     # cameras) kept in memory for the gallery; oldest drop off as new arrive.
     eufy_clip_ring_buffer_size: int = 20
