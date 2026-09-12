@@ -7,12 +7,14 @@ to naive local time at this boundary.
 
 from __future__ import annotations
 
+import logging
 import time as _time
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
+from pydantic import ValidationError
 
 from app.calendar.secondary import SecondaryCalendarStore, get_secondary_calendar_store
 from app.config import Settings
@@ -211,7 +213,7 @@ class ProfileNameCache:
         return name
 
 
-_CALENDAR_LIST_SELECT = "id,name,isDefaultCalendar"
+_CALENDAR_LIST_SELECT = "id,name,isDefaultCalendar,owner"
 
 
 def list_calendars(client: httpx.Client, base_url: str, headers: dict[str, str]) -> list[dict[str, Any]]:
@@ -230,6 +232,27 @@ def list_calendars(client: httpx.Client, base_url: str, headers: dict[str, str])
     return calendars
 
 
+def is_foreign_calendar(raw_calendar: dict[str, Any], account_email: str) -> bool:
+    """Whether a listed calendar is someone else's, shared into this mailbox.
+
+    A household member who shares their own calendar with another member's
+    account (e.g. so a partner can see it from their own sign-in) makes it
+    appear in that other account's ``/calendars`` listing too, owned by the
+    original member and named after them — e.g. Sarah's mailbox listing a
+    calendar named "Travis Wilson" that Travis shared with her. That calendar
+    is not "Sarah's non-primary calendar"; it is Travis's own, already shown
+    as his primary `HouseholdCalendar` from his own account, so offering it
+    again under Sarah's row would just duplicate his own name and his own
+    events. Graph reports the true owner's address on `owner.address`
+    regardless of which mailbox is listing it.
+    """
+    owner_address = ((raw_calendar.get("owner") or {}).get("address") or "").strip().casefold()
+    return bool(owner_address) and owner_address != account_email.strip().casefold()
+
+
+logger = logging.getLogger(__name__)
+
+
 def secondary_calendar_id(account_id: str, graph_calendar_id: str) -> str:
     """Stable id for a non-primary calendar: ``{account}::{graph calendar id}``.
 
@@ -244,7 +267,11 @@ def _map_event(
     raw: dict[str, Any],
     calendar_id: str,
     category_colors: dict[str, str] | None = None,
-) -> CalendarEvent:
+) -> CalendarEvent | None:
+    """Map one Graph event to the domain model, or ``None`` if Graph returned
+    something the domain model rejects (seen in practice: an all-day event
+    whose ``end`` is not after its ``start``). One malformed event from a
+    mailbox must never take down the whole snapshot."""
     all_day = bool(raw.get("isAllDay"))
     if all_day:
         starts_at = _parse_naive(raw["start"]["dateTime"])
@@ -257,16 +284,22 @@ def _map_event(
     colors = category_colors or {}
     categories = [_category(name, colors) for name in raw.get("categories", []) if name]
 
-    return CalendarEvent(
-        id=raw["id"],
-        calendar_id=calendar_id,
-        title=(raw.get("subject") or "").strip() or "(no title)",
-        starts_at=starts_at,
-        ends_at=ends_at,
-        location=location,
-        all_day=all_day,
-        categories=categories,
-    )
+    try:
+        return CalendarEvent(
+            id=raw["id"],
+            calendar_id=calendar_id,
+            title=(raw.get("subject") or "").strip() or "(no title)",
+            starts_at=starts_at,
+            ends_at=ends_at,
+            location=location,
+            all_day=all_day,
+            categories=categories,
+        )
+    except ValidationError as exc:
+        logger.warning(
+            "skipping malformed Graph event %s on calendar %s: %s", raw.get("id"), calendar_id, exc
+        )
+        return None
 
 
 class MicrosoftGraphCalendarProvider:
@@ -389,7 +422,9 @@ class MicrosoftGraphCalendarProvider:
         for index, user in enumerate(self._settings.graph_calendar_users):
             raw_events = self._calendar_view(user, start, end)
             colors = self._category_colors_for(user, raw_events)
-            events.extend(_map_event(raw, user, colors) for raw in raw_events)
+            events.extend(
+                event for raw in raw_events if (event := _map_event(raw, user, colors)) is not None
+            )
             calendars.append(self._household_calendar(user, index))
 
             try:
@@ -398,6 +433,8 @@ class MicrosoftGraphCalendarProvider:
                 raw_calendars = []
             for raw_calendar in raw_calendars:
                 if raw_calendar.get("isDefaultCalendar") or not raw_calendar.get("id"):
+                    continue
+                if is_foreign_calendar(raw_calendar, user):
                     continue
                 extra_name = (raw_calendar.get("name") or "").strip() or "Calendar"
                 if self._settings.is_calendar_name_hidden(extra_name):
@@ -421,7 +458,11 @@ class MicrosoftGraphCalendarProvider:
                     continue
                 extra_raw_events = self._calendar_view(user, start, end, calendar_id=graph_id)
                 extra_colors = self._category_colors_for(user, extra_raw_events)
-                events.extend(_map_event(raw, extra_id, extra_colors) for raw in extra_raw_events)
+                events.extend(
+                    event
+                    for raw in extra_raw_events
+                    if (event := _map_event(raw, extra_id, extra_colors)) is not None
+                )
 
         events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
         return CalendarSnapshot(calendars=calendars, events=events, range=calendar_range)

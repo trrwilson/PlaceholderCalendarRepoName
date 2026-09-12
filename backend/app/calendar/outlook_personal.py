@@ -33,6 +33,7 @@ from app.calendar.graph import (
     ProfileNameCache,
     _local_tz_name,
     _map_event,
+    is_foreign_calendar,
     list_calendars,
     secondary_calendar_id,
 )
@@ -326,7 +327,9 @@ class PersonalOutlookCalendarProvider:
             colors: dict[str, str] = {}
             if any(raw.get("categories") for raw in raw_events):
                 colors = self._category_colors.get(f"{_GRAPH_BASE}/me", headers, email)
-            events.extend(_map_event(raw, email, colors) for raw in raw_events)
+            events.extend(
+                event for raw in raw_events if (event := _map_event(raw, email, colors)) is not None
+            )
             account_name = email.split("@", 1)[0]
             natural = self._natural_name_for(email, headers)
             calendars.append(
@@ -345,6 +348,8 @@ class PersonalOutlookCalendarProvider:
                 raw_calendars = []
             for raw_calendar in raw_calendars:
                 if raw_calendar.get("isDefaultCalendar") or not raw_calendar.get("id"):
+                    continue
+                if is_foreign_calendar(raw_calendar, email):
                     continue
                 extra_name = (raw_calendar.get("name") or "").strip() or "Calendar"
                 if self._settings.is_calendar_name_hidden(extra_name):
@@ -370,7 +375,11 @@ class PersonalOutlookCalendarProvider:
                 extra_colors: dict[str, str] = {}
                 if any(raw.get("categories") for raw in extra_raw_events):
                     extra_colors = self._category_colors.get(f"{_GRAPH_BASE}/me", headers, email)
-                events.extend(_map_event(raw, extra_id, extra_colors) for raw in extra_raw_events)
+                events.extend(
+                    event
+                    for raw in extra_raw_events
+                    if (event := _map_event(raw, extra_id, extra_colors)) is not None
+                )
 
         events.sort(key=lambda event: (event.starts_at, event.ends_at, event.title))
         return CalendarSnapshot(calendars=calendars, events=events, range=calendar_range)

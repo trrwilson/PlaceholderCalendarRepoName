@@ -368,6 +368,78 @@ def test_hidden_calendar_names_are_excluded_entirely() -> None:
 
 
 @respx.mock
+def test_calendar_shared_from_another_account_is_excluded() -> None:
+    """A calendar another household member shared into this mailbox (Graph
+    reports its true owner on `owner.address`) is that member's own calendar,
+    already shown as their primary — offering it again here would duplicate
+    their name and double-count their events."""
+    respx.post(TOKEN_URL).mock(return_value=token_response())
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    respx.get(CALENDARS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "cal-shared",
+                        "name": "Jordan Rivera",
+                        "isDefaultCalendar": False,
+                        "owner": {"name": "Jordan Rivera", "address": "jordan@example.com"},
+                    },
+                    {
+                        "id": "cal-own",
+                        "name": "Birthday calendar",
+                        "isDefaultCalendar": False,
+                        "owner": {"name": "Alex", "address": "alex@example.com"},
+                    },
+                ]
+            },
+        )
+    )
+    respx.get(
+        "https://graph.microsoft.com/v1.0/users/alex@example.com/calendars/cal-own/calendarView"
+    ).mock(return_value=httpx.Response(200, json={"value": []}))
+
+    class AlwaysEnabled:
+        def is_enabled(self, calendar_id: str) -> bool:
+            return True
+
+        def set_enabled(self, calendar_id: str, enabled: bool) -> None:
+            raise AssertionError("not exercised")
+
+    provider = MicrosoftGraphCalendarProvider(make_settings(), secondary_store=AlwaysEnabled())
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    names = {calendar.name for calendar in snapshot.calendars}
+    assert names == {"alex", "Birthday calendar"}
+
+
+@respx.mock
+def test_malformed_event_is_skipped_without_failing_the_snapshot() -> None:
+    """Graph occasionally returns an event whose end isn't after its start;
+    one bad event from a mailbox must not take down the whole snapshot."""
+    respx.post(TOKEN_URL).mock(return_value=token_response())
+    backwards = timed_event(
+        id="evt-backwards",
+        start={"dateTime": "2026-09-05T09:00:00.0000000", "timeZone": "UTC"},
+        end={"dateTime": "2026-09-05T09:00:00.0000000", "timeZone": "UTC"},
+    )
+    respx.get(CALENDAR_VIEW).mock(
+        return_value=httpx.Response(200, json={"value": [backwards, timed_event()]})
+    )
+    respx.get(CALENDARS_URL).mock(return_value=NO_EXTRA_CALENDARS)
+    provider = MicrosoftGraphCalendarProvider(make_settings())
+
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    assert [event.id for event in snapshot.events] == ["evt-timed"]
+
+
+@respx.mock
 def test_household_calendar_uses_the_holders_given_name_and_outlook_source() -> None:
     respx.post(TOKEN_URL).mock(return_value=token_response())
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))

@@ -109,3 +109,37 @@ rather than left as an opt-in nobody wants.
    calendar data has only ever been polled, never pushed; wiring a push
    here felt like scope creep for what a `reloadKey` bump already handles
    adequately on the one screen that changed it.
+
+## Two live bugs found and fixed the same day
+
+Both real Outlook accounts (`trrwilson@hotmail.com`, `sshapro@live.com`) had
+already had a few non-primary calendars opted in via direct API calls before
+the frontend toggle ever shipped, which is how both of these surfaced
+immediately on the host once households actually used the feature:
+
+1. **One malformed event took down the whole snapshot.** `_map_event`
+   (`app/calendar/graph.py`) raised straight out of
+   `CalendarEvent`'s `end_follows_start` validator when Graph returned an
+   all-day event whose `end` was not after its `start` — real data from one
+   of Sarah's opted-in calendars had one. Because `snapshot()` builds the
+   whole `CalendarSnapshot` in one pass, that one bad event turned into a 500
+   on every `GET /api/calendar` call, for every account, for any date range
+   that included it — which from the kiosk looked like "nothing I tap in the
+   People flyout does anything" (the toggle's `PUT` succeeded, but the
+   `reloadKey`-triggered refetch that's supposed to show the result never
+   came back). Fixed by having `_map_event` catch `ValidationError` and
+   return `None` for that one event instead of raising; both providers now
+   filter `None`s out of `events.extend(...)` rather than letting one
+   mailbox's bad data fail every other calendar's snapshot too.
+2. **A calendar shared between household members duplicated itself.** Sarah's
+   mailbox had a calendar named "Travis Wilson" — Travis's own calendar,
+   shared into her account (a normal Outlook feature, e.g. so a partner can
+   see it from their own sign-in). The non-primary listing had no way to
+   distinguish that from a calendar of Sarah's own, so it showed up nested
+   under her row with the same name as Travis's real primary calendar, and
+   toggling it on double-counted his events. Fixed by adding `owner` to the
+   `$select` on `GET {mailbox}/calendars` and skipping any calendar whose
+   `owner.address` doesn't match the mailbox being listed
+   (`is_foreign_calendar` in `app/calendar/graph.py`) — a calendar owned by
+   someone else is that person's own calendar, already shown as their
+   primary, not a new one to offer.
