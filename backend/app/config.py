@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # Idle time with no kiosk-scope presence signal before the panel dims. A
     # much shorter fuse than `presence_inactivity_timeout_seconds` above (which
     # is the standing "is someone home" claim, not ambient screen dimming).
-    display_dim_after_seconds: float = 10.0
+    display_dim_after_seconds: float = 20.0
     # Target brightness (0-100) while dimmed.
     display_dim_level: int = 0
     # Target brightness (0-100) a presence signal restores to, *unless* night
@@ -134,8 +134,12 @@ class Settings(BaseSettings):
     presence_confidence_threshold: float = 0.6
     # Motion-detector cadence. One frame is captured and scored per interval —
     # deliberately far below the webcam's native frame rate (camera-support-plan.md
-    # -> "modest ... inference cadence").
-    presence_inference_interval_ms: int = 750
+    # -> "modest ... inference cadence"), but this is also the biggest lever on
+    # how long someone waits after stepping into frame before the panel
+    # brightens (the aggregator/display-policy hop is in-process and near-
+    # instant by comparison). 150 ms keeps that wait short while staying cheap:
+    # MOG2 over a 320x240 downscaled frame is well under a millisecond of CPU.
+    presence_inference_interval_ms: int = 150
     # Device name/path/index override; blank = auto-select (index 0).
     presence_camera_device: str | None = None
     # The motion gate: the smallest contiguous foreground blob, as a fraction of

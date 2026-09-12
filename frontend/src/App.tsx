@@ -19,6 +19,7 @@ import type { ListItem } from './lists/types'
 import { usePrivacy } from './privacy/usePrivacy'
 import { PrivacyPad } from './privacy/PrivacyPad'
 import { useDisplay } from './display/useDisplay'
+import { useActivityPing } from './presence/useActivityPing'
 import { useCameraActivity } from './camera/useCameraActivity'
 import type { StoredClip } from './camera/types'
 
@@ -311,6 +312,9 @@ function App() {
   // tab cannot set Windows brightness); this hook reconciles from GET /api/display
   // and the shared ws push. See docs/display-dimming-plan.md.
   const display = useDisplay(API_URL)
+  // Kiosk touch keeps the presence-driven idle-dim countdown alive alongside
+  // camera motion and voice turns. See docs/display-dimming-plan.md.
+  useActivityPing(API_URL)
 
   // The eufy camera clip gallery — a thumbnail review of the latest footage,
   // replacing the home view's "garage door" placeholder. Backend-owned (it

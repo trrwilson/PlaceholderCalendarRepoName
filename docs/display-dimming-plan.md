@@ -19,13 +19,12 @@ owned by [camera-support-plan.md](camera-support-plan.md); this plan shares its
 level below `awake`. See [§ Relationship](#relationship-to-presence-work).
 
 This document is the design target. **Stage 1 is built**, and a basic slice of
-the inactivity policy now exists too, driven by presence signals rather than
-this plan's own activity pulses — see [§ Implemented so
-far](#implemented-so-far). The *fuller* inactivity policy (touch/voice/timer
-activity pulses, `POST /api/presence/activity` as a throttled client-side
-seam, an active timer as a keep-awake vote), the `gamma` / `overlay`
-mechanisms, the `asleep` level, and the Settings diagnostics block are still
-not built.
+the inactivity policy now exists too, driven by presence signals — camera
+motion, plus touch and voice activity pulses (`POST /api/presence/activity`,
+throttled client-side) — rather than this plan's own separate policy; see
+[§ Implemented so far](#implemented-so-far). The *fuller* inactivity policy
+(an active timer as a keep-awake vote), the `gamma` / `overlay` mechanisms,
+the `asleep` level, and the Settings diagnostics block are still not built.
 
 ---
 
@@ -100,9 +99,14 @@ controller is cheap and stateless — construct it in lifespan startup when
 
 Frontend work:
 
-- **Activity pings** — a small `useActivityPing` hook: `pointerdown` / `touchstart`
-  on the shell, `useVoiceSession` active states (`listening` / `thinking` /
-  `speaking`), and `hasActiveTimer`. Throttled; plain `POST`, not the WS.
+- **Activity pings** — **implemented (2026-09-11)**: `frontend/src/presence/useActivityPing.ts`
+  posts on `pointerdown` anywhere in the shell, throttled to ~1 per 10 s
+  client-side; plain `POST`, not the WS. Voice turns are already covered
+  server-side (`note_activity(ActivitySource.voice)` at token grant / relay
+  start — see `app/api.py`), so no separate frontend ping is needed there.
+  Not yet wired: `useVoiceSession`'s listening/thinking/speaking states as a
+  *sustained* keep-awake vote (today a turn only resets the countdown at its
+  start) and `hasActiveTimer`.
 - **Overlay dimmer** — one fixed full-viewport `<div>`, `pointer-events: none`,
   `aria-hidden`, opacity = `DisplayState.overlay_opacity`, ~600 ms CSS transition.
   Applied only when `overlay_opacity > 0` (i.e. mechanism `overlay`), so hardware
@@ -136,7 +140,7 @@ keep-awake votes. Rules:
 | --- | --- | --- |
 | `MISSION_CONTROL_HOST_LOCAL_DISPLAY` | `false` | Formal assertion that this backend runs on the same host as the kiosk browser and owns the physically attached panel. Gates every OS / device-API display call (this plan and the presence-plan sleep path). |
 | `MISSION_CONTROL_DISPLAY_DIM_ENABLED` | **`true`** (implemented) | Master switch for idle dimming. This doc originally specced `false`; the *basic* slice actually built (below) defaults on, matching `presence_enabled`'s same on-by-default posture this session. |
-| `MISSION_CONTROL_DISPLAY_DIM_AFTER_SECONDS` | **`10`** (implemented) | Idle time before the panel dims. Originally specced `90`; `10` is what the basic slice ships with. |
+| `MISSION_CONTROL_DISPLAY_DIM_AFTER_SECONDS` | **`20`** (implemented) | Idle time before the panel dims. Originally specced `90`; shipped at `10`, then raised to `20` (2026-09-11) once touch/voice activity pulses were wired in — a fuse that short otherwise dims mid-interaction. |
 | `MISSION_CONTROL_DISPLAY_DIM_LEVEL` | **`0`** (implemented) | Target while dimmed. Originally specced `35` (+ overlay-opacity mapping, not built); the basic slice is hardware-brightness only, default `0`. |
 | `MISSION_CONTROL_DISPLAY_DIM_RESTORE_LEVEL` | **`80`** (implemented, new — not in the original design) | Target a presence signal restores to, *unless* night mode is on (its own level wins then). The original design restored to "whatever the panel was showing before dimming"; the basic slice uses a fixed level instead — see "Implemented so far". |
 | `MISSION_CONTROL_DISPLAY_CONTROL_MECHANISM` | `auto` | `auto` \| `wmi` \| `ddcci` \| `gamma` \| `overlay` \| `none`. `auto` probes `wmi` → `ddcci` → `overlay`; `gamma` is opt-in only. |
@@ -203,8 +207,8 @@ above, built ahead of the fuller design:
 
 - **`PresenceDisplayPolicy`** (`app/presence/display_policy.py`) dims the panel
   after `display_dim_after_seconds` with no *kiosk-scope presence signal at
-  all* (not touch/voice/timer activity pulses — those aren't wired yet), and
-  restores it the instant a new one arrives. It subscribes to
+  all* — camera motion, or (as of 2026-09-11, see below) a touch/voice
+  activity pulse; a timer keep-awake vote still isn't wired. It subscribes to
   `PresenceAggregator`'s new `on_signal` hook (fires on every `observe()` call,
   unlike `on_change` which only fires on a `present` transition) — necessary
   because this MVP's local-camera `motion` signals never flip `present` (see
@@ -229,14 +233,32 @@ above, built ahead of the fuller design:
   `loop.call_soon_threadsafe`, the same pattern `app/voice/wake_azure.py` uses
   for its own SDK-callback thread. `app/presence.bind_event_loop()` captures
   the loop once at lifespan startup.
-- **Not built**: touch/voice/timer activity pulses (only presence signals drive
-  this today), an active-timer keep-awake vote, restoring to "whatever it was"
-  instead of a fixed level, the `overlay`/perceptual-dim fallback, and any
-  Settings-visible diagnostics for it (state is only observable via
-  `GET /api/display`'s `brightness` field and this policy's own console logs).
+- **Not built**: a timer-activity pulse or active-timer keep-awake vote,
+  restoring to "whatever it was" instead of a fixed level, the
+  `overlay`/perceptual-dim fallback, and any Settings-visible diagnostics for
+  it (state is only observable via `GET /api/display`'s `brightness` field and
+  this policy's own console logs).
 - **Tests**: `backend/tests/test_display_policy.py` (the policy in isolation,
   injected short timeouts) and one end-to-end test in
   `backend/tests/test_presence.py` exercising the real lifespan wiring.
+
+**Touch activity pulse + tighter camera latency (2026-09-11).** Two follow-on
+changes, both aimed at making the idle-dim/restore cycle track actual kiosk
+use more closely:
+
+- **`useActivityPing`** (`frontend/src/presence/useActivityPing.ts`) posts
+  `POST /api/presence/activity {source: "touch"}` on any `pointerdown`,
+  throttled to ~1 per 10 s — the frontend half of the activity seam this doc
+  and `camera-support-plan.md` both left unbuilt. `display_dim_after_seconds`
+  moved `10 → 20` at the same time: a 10 s fuse dims mid-interaction between
+  two throttled pings.
+- **`presence_inference_interval_ms` moved `750 → 150`** (`app/config.py`) —
+  the local-camera motion detector now samples a frame every 150 ms instead of
+  750 ms, cutting the worst-case delay between someone entering frame and the
+  panel restoring by up to 600 ms. MOG2 over the already-downscaled 320×240
+  analysis frame is cheap enough that 5x the sampling rate is not a measurable
+  CPU concern. This does not touch the detector algorithm itself, only its
+  cadence.
 
 ---
 
