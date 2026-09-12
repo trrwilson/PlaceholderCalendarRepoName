@@ -328,6 +328,46 @@ def test_snapshot_returns_valid_snapshot_across_users() -> None:
 
 
 @respx.mock
+def test_hidden_calendar_names_are_excluded_entirely() -> None:
+    respx.post(TOKEN_URL).mock(return_value=token_response())
+    respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))
+    respx.get(CALENDARS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {"id": "cal-holidays", "name": "US Holidays", "isDefaultCalendar": False},
+                    {"id": "cal-family", "name": "Your family", "isDefaultCalendar": False},
+                    {"id": "cal-birthdays", "name": "Birthday calendar", "isDefaultCalendar": False},
+                ]
+            },
+        )
+    )
+    respx.get(
+        "https://graph.microsoft.com/v1.0/users/alex@example.com/calendars/cal-birthdays/calendarView"
+    ).mock(return_value=httpx.Response(200, json={"value": []}))
+
+    class AlwaysEnabled:
+        def is_enabled(self, calendar_id: str) -> bool:
+            return True
+
+        def set_enabled(self, calendar_id: str, enabled: bool) -> None:
+            raise AssertionError("not exercised")
+
+    provider = MicrosoftGraphCalendarProvider(
+        make_settings(calendar_hidden_names=["us holidays", " Your Family "]),
+        secondary_store=AlwaysEnabled(),
+    )
+    snapshot = provider.snapshot(
+        CalendarRange(starts_on=date(2026, 9, 5), ends_on=date(2026, 9, 5))
+    )
+
+    names = {calendar.name for calendar in snapshot.calendars}
+    assert names == {"alex", "Birthday calendar"}
+    assert {event.calendar_id for event in snapshot.events} == {"alex@example.com"}
+
+
+@respx.mock
 def test_household_calendar_uses_the_holders_given_name_and_outlook_source() -> None:
     respx.post(TOKEN_URL).mock(return_value=token_response())
     respx.get(CALENDAR_VIEW).mock(return_value=httpx.Response(200, json={"value": [timed_event()]}))

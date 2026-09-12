@@ -346,9 +346,11 @@ class PersonalOutlookCalendarProvider:
             for raw_calendar in raw_calendars:
                 if raw_calendar.get("isDefaultCalendar") or not raw_calendar.get("id"):
                     continue
+                extra_name = (raw_calendar.get("name") or "").strip() or "Calendar"
+                if self._settings.is_calendar_name_hidden(extra_name):
+                    continue
                 graph_id = raw_calendar["id"]
                 extra_id = secondary_calendar_id(email, graph_id)
-                extra_name = (raw_calendar.get("name") or "").strip() or "Calendar"
                 is_enabled = self._secondary_store.is_enabled(extra_id)
                 calendars.append(
                     HouseholdCalendar(

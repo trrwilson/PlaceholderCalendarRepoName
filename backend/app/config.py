@@ -208,8 +208,19 @@ class Settings(BaseSettings):
     graph_calendar_users: Annotated[list[str], NoDecode] = []
     # Optional parallel list of CalendarColor names, one per configured user.
     graph_calendar_colors: Annotated[list[str], NoDecode] = []
+    # Non-primary calendars to exclude outright — not listed, not toggleable,
+    # not fetched — matched case-insensitively against the calendar's display
+    # name as Graph reports it (e.g. "US Holidays", "Your family"). For a
+    # calendar that is never a household member's own and never should be
+    # offered (an account's auto-added holiday calendar, its built-in "family"
+    # shortcut, …), unlike the per-calendar opt-in in app/calendar/secondary.py,
+    # which is for a calendar someone *might* want to turn on. Comma-separated;
+    # blank means nothing is filtered.
+    calendar_hidden_names: Annotated[list[str], NoDecode] = []
 
-    @field_validator("graph_calendar_users", "graph_calendar_colors", mode="before")
+    @field_validator(
+        "graph_calendar_users", "graph_calendar_colors", "calendar_hidden_names", mode="before"
+    )
     @classmethod
     def _parse_list(cls, value: object) -> object:
         return _split_csv(value)
@@ -840,6 +851,14 @@ class Settings(BaseSettings):
             return CalendarColor(name)
         palette = list(CalendarColor)
         return palette[index % len(palette)]
+
+    def is_calendar_name_hidden(self, name: str) -> bool:
+        """Whether a non-primary calendar's display name matches
+        ``calendar_hidden_names`` (case-insensitive, whitespace-trimmed)."""
+        if not self.calendar_hidden_names:
+            return False
+        needle = name.strip().casefold()
+        return any(needle == hidden.strip().casefold() for hidden in self.calendar_hidden_names)
 
 
 @lru_cache
