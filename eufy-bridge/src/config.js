@@ -106,6 +106,16 @@ function loadConfig() {
     // stall). Exposed as config (not a hardcoded constant) mainly so tests
     // can shrink it; production should rarely need to change it.
     megaP2pWarmupMs: intEnv("EUFY_MEGA_P2P_WARMUP_MS", 4000),
+    // Minimum spacing between two mega-enumerator passes triggered by a real
+    // device push (docs/eufy-sdk-integration.md §19-§20's freshness fix,
+    // fired early instead of waiting up to reconcileIntervalSeconds). Guards
+    // against a burst of pushes -- more than one event name fires per
+    // physical trigger (§17.1), or several cameras fire close together --
+    // opening a pile of short-lived P2P sessions to the station instead of
+    // at most one extra one. Deliberately independent of, and much shorter
+    // than, reconcileIntervalSeconds*1000 (the periodic cadence), since it
+    // only rate-limits the event-triggered path.
+    megaEventCooldownMs: intEnv("EUFY_MEGA_EVENT_COOLDOWN_MS", 15000),
   };
 }
 

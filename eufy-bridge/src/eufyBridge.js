@@ -67,6 +67,10 @@ class EufyBridge {
     this.megaEnumerator = null;
     this.megaPollTimer = null;
     this._megaPollInFlight = false;
+    this._runMegaPollOnce = null; // set in _startMegaEnumeration; shared by the periodic timer and event triggers
+    this._megaEventPending = false;
+    this._megaEventCooldownTimer = null;
+    this._megaLastEventPollAt = 0; // last time an event trigger actually started a pass -- NOT touched by the periodic timer
     this._createMegaClient = createMegaClient; // undefined -> MegaEnumerator uses the real SDK
     /** Set by index.js to fan messages out over the control WebSocket. */
     this.onEvent = () => {};
@@ -140,7 +144,7 @@ class EufyBridge {
       log: this.log,
       createClient: this._createMegaClient,
     });
-    const runOnce = () => {
+    this._runMegaPollOnce = () => {
       if (this._megaPollInFlight) return;
       this._megaPollInFlight = true;
       this.megaEnumerator
@@ -151,11 +155,17 @@ class EufyBridge {
         .catch((err) => this.log(`mega-enumerator: unexpected error: ${err && err.stack}`))
         .finally(() => {
           this._megaPollInFlight = false;
+          // A device-event trigger arrived while this pass was running --
+          // run exactly one follow-up rather than dropping it silently.
+          if (this._megaEventPending) {
+            this._megaEventPending = false;
+            this._triggerMegaPollFromEvent();
+          }
         });
     };
     this.log(`mega-enumerator: enabled, polling every ${this.config.reconcileIntervalSeconds}s`);
-    runOnce(); // don't wait a full interval for the first, more useful pass
-    this.megaPollTimer = setInterval(runOnce, this.config.reconcileIntervalSeconds * 1000);
+    this._runMegaPollOnce(); // don't wait a full interval for the first, more useful pass
+    this.megaPollTimer = setInterval(this._runMegaPollOnce, this.config.reconcileIntervalSeconds * 1000);
     this.megaPollTimer.unref();
   }
 
@@ -164,7 +174,57 @@ class EufyBridge {
       clearInterval(this.megaPollTimer);
       this.megaPollTimer = null;
     }
+    if (this._megaEventCooldownTimer) {
+      clearTimeout(this._megaEventCooldownTimer);
+      this._megaEventCooldownTimer = null;
+    }
+    this._megaEventPending = false;
+    this._megaLastEventPollAt = 0;
+    this._runMegaPollOnce = null;
     this.megaEnumerator = null;
+  }
+
+  // Off-schedule accelerant for a real device push: asks the SAME poll the
+  // periodic timer uses to run right now instead of waiting up to
+  // reconcileIntervalSeconds (docs/eufy-sdk-integration.md §19-§20 -- the
+  // mega-enumerator FULL_TABLE query is the one enumeration path confirmed
+  // to actually surface fresh clips on this hardware; the classic
+  // databaseQueryByDate re-query in _onDeviceEvent below is not, §17.2).
+  // No-op when mega enumeration is disabled or unconfigured.
+  //
+  // Debounced against two things independently: an already-running pass (any
+  // source), and a previous EVENT-triggered pass that started less than
+  // megaEventCooldownMs ago -- deliberately not gated by the periodic
+  // timer's own runs, so an event arriving right after a scheduled poll
+  // still fires right away rather than inheriting that poll's cooldown. A
+  // burst of pushes (more than one event name per physical trigger, §17.1,
+  // or several cameras firing close together) collapses into at most one
+  // extra pass, never a pile-up. At most one follow-up is queued; repeated
+  // triggers while one is already queued are coalesced into that same
+  // follow-up.
+  _triggerMegaPollFromEvent() {
+    if (!this._runMegaPollOnce) return;
+    if (this._megaPollInFlight) {
+      this._megaEventPending = true;
+      return;
+    }
+    const remaining = this.config.megaEventCooldownMs - (Date.now() - this._megaLastEventPollAt);
+    if (remaining > 0) {
+      this._megaEventPending = true;
+      if (!this._megaEventCooldownTimer) {
+        this._megaEventCooldownTimer = setTimeout(() => {
+          this._megaEventCooldownTimer = null;
+          if (this._megaEventPending) {
+            this._megaEventPending = false;
+            this._triggerMegaPollFromEvent();
+          }
+        }, remaining);
+        this._megaEventCooldownTimer.unref();
+      }
+      return;
+    }
+    this._megaLastEventPollAt = Date.now();
+    this._runMegaPollOnce();
   }
 
   _logger() {
@@ -309,14 +369,21 @@ class EufyBridge {
     const stationSerial = this.deviceStation.get(device.getSerial());
     const station = stationSerial && this.stations.get(stationSerial);
     if (!station) return;
-    // Low-latency accelerant: re-list a narrow window around now for just
-    // this camera. Any real match lands in the same de-dup cache the
-    // periodic reconciliation uses (`_onDatabaseQueryByDate`), so overlapping
-    // windows from both paths cost nothing.
+    // Low-latency accelerant #1: re-list a narrow window around now for just
+    // this camera, on the already-open primary session. Free, and any real
+    // match lands in the same de-dup cache the periodic reconciliation uses
+    // (`_onDatabaseQueryByDate`) -- but not, on its own, a fix: this specific
+    // query is the one documented as unreliable on this hardware
+    // (docs/eufy-sdk-integration.md §16.2/§17.2). Kept because it costs
+    // nothing on a connection that's already up.
     const now = new Date();
     const since = new Date(now.getTime() - 2 * 60 * 1000);
     const until = new Date(now.getTime() + 2 * 60 * 1000);
     station.databaseQueryByDate([device.getSerial()], since, until);
+    // Low-latency accelerant #2, the one that actually surfaces fresh clips
+    // on this hardware (docs §19-§20): pull the mega-enumerator's next pass
+    // forward instead of waiting up to reconcileIntervalSeconds for it.
+    this._triggerMegaPollFromEvent();
   }
 
   _startReconciliation() {

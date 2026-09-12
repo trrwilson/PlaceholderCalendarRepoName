@@ -79,7 +79,14 @@ class FakeClient extends EventEmitter {
   }
 }
 
-function makeBridge({ stations, devices, megaEnumerationEnabled = false, createMegaClient, stationSerial } = {}) {
+function makeBridge({
+  stations,
+  devices,
+  megaEnumerationEnabled = false,
+  createMegaClient,
+  stationSerial,
+  megaEventCooldownMs = 50,
+} = {}) {
   const fakeClient = new FakeClient({ stations, devices });
   const logs = [];
   const events = [];
@@ -100,6 +107,7 @@ function makeBridge({ stations, devices, megaEnumerationEnabled = false, createM
       megaSessionFile: path.join(clipCacheDir, "mega-session.json"),
       megaQueryWindowMs: 200,
       megaP2pWarmupMs: 5,
+      megaEventCooldownMs,
       stationSerial,
     },
     (message) => logs.push(message),
@@ -396,5 +404,128 @@ test("mega enumeration stays off without a configured station serial, logging wh
   });
   await bridge.start();
   assert.ok(logs.some((line) => line.includes("no EUFY_STATION_SERIAL set")));
+  await bridge.stop();
+});
+
+// Realtime-event-driven off-schedule re-enumeration (docs/eufy-sdk-integration.md
+// §19-§20's freshness fix, pulled forward instead of waiting up to
+// reconcileIntervalSeconds for the periodic timer): a real device push
+// should kick an extra mega-enumerator pass right away, but bursts of pushes
+// must not be able to pile up concurrent/rapid-fire P2P sessions against the
+// station.
+
+async function waitForDisconnectCalls(megaClient, expected, { timeoutMs = 2000 } = {}) {
+  const start = Date.now();
+  while (megaClient.disconnectCalls < expected) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`timed out waiting for ${expected} disconnect call(s), saw ${megaClient.disconnectCalls}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  // Give a settled pass a moment to also run its (synchronous) finally-block
+  // follow-up check before the caller asserts nothing further happens.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+test("a device event pulls an off-schedule mega-enumerator pass forward instead of waiting for the periodic timer", async () => {
+  const station = new FakeStation("STATION1");
+  const device = new FakeDevice("CAM1", "Front Door", "STATION1");
+  const megaClient = new FakeMegaClient({
+    devices: [{ sn: "STATION1", raw: { member: { admin_user_id: "station-admin-id" } } }],
+  });
+  const { bridge, fakeClient } = makeBridge({
+    stations: [station],
+    devices: [device],
+    megaEnumerationEnabled: true,
+    stationSerial: "STATION1",
+    createMegaClient: () => megaClient,
+    megaEventCooldownMs: 50,
+  });
+  await bridge.start();
+  fakeClient.emit("connect");
+  await new Promise((resolve) => setImmediate(resolve));
+  // Let the immediate start-up pass finish before measuring.
+  await waitForDisconnectCalls(megaClient, 1);
+
+  fakeClient.emit("device motion detected", device);
+  await waitForDisconnectCalls(megaClient, 2);
+
+  await bridge.stop();
+});
+
+test("a burst of device events collapses into exactly one immediate pass plus one deferred follow-up, never one pass per event", async () => {
+  const station = new FakeStation("STATION1");
+  const device = new FakeDevice("CAM1", "Front Door", "STATION1");
+  const megaClient = new FakeMegaClient({
+    devices: [{ sn: "STATION1", raw: { member: { admin_user_id: "station-admin-id" } } }],
+  });
+  // A cooldown well longer than one pass's own duration (~megaP2pWarmupMs +
+  // megaQueryWindowMs, ~205ms here) mirrors production (default 15s cooldown
+  // vs. ~12s worst-case pass duration): the coalesced follow-up must still
+  // be waiting when the triggering pass finishes, not fire immediately.
+  const { bridge, fakeClient } = makeBridge({
+    stations: [station],
+    devices: [device],
+    megaEnumerationEnabled: true,
+    stationSerial: "STATION1",
+    createMegaClient: () => megaClient,
+    megaEventCooldownMs: 2000,
+  });
+  await bridge.start();
+  fakeClient.emit("connect");
+  await new Promise((resolve) => setImmediate(resolve));
+  await waitForDisconnectCalls(megaClient, 1); // the start-up pass
+
+  // One physical trigger commonly fires more than one device-event name
+  // (docs §17.1: "device motion detected" then "device person detected").
+  fakeClient.emit("device motion detected", device);
+  fakeClient.emit("device person detected", device);
+  fakeClient.emit("device motion detected", device);
+  await waitForDisconnectCalls(megaClient, 2); // the first event's pass runs right away
+
+  // The second and third events landed while that pass was in flight and
+  // are still within its own cooldown window once it finishes -- they must
+  // not each cost a pass while the cooldown is still running.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(megaClient.disconnectCalls, 2, "queued events must wait out the cooldown, not fire immediately");
+
+  // Once the cooldown elapses, the coalesced follow-up (standing in for
+  // BOTH queued events, not one each) finally runs -- and only once.
+  await waitForDisconnectCalls(megaClient, 3, { timeoutMs: 3000 });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(megaClient.disconnectCalls, 3, "three events in one burst must cost at most two extra passes total");
+
+  await bridge.stop();
+});
+
+test("a device event during an in-flight mega-enumerator pass queues exactly one follow-up pass", async () => {
+  const station = new FakeStation("STATION1");
+  const device = new FakeDevice("CAM1", "Front Door", "STATION1");
+  const megaClient = new FakeMegaClient({
+    devices: [{ sn: "STATION1", raw: { member: { admin_user_id: "station-admin-id" } } }],
+  });
+  const { bridge, fakeClient } = makeBridge({
+    stations: [station],
+    devices: [device],
+    megaEnumerationEnabled: true,
+    stationSerial: "STATION1",
+    createMegaClient: () => megaClient,
+    megaEventCooldownMs: 50,
+  });
+  await bridge.start();
+  fakeClient.emit("connect");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // Fire while the start-up pass (megaQueryWindowMs=200ms + megaP2pWarmupMs=5ms,
+  // from makeBridge's defaults) is still running.
+  assert.equal(megaClient.disconnectCalls, 0);
+  fakeClient.emit("device motion detected", device);
+  fakeClient.emit("device motion detected", device); // a second one while still pending -- must not double-queue
+
+  await waitForDisconnectCalls(megaClient, 2); // the in-flight pass, then exactly one follow-up
+
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(megaClient.disconnectCalls, 2, "the second overlapping trigger must not queue a third pass");
+
   await bridge.stop();
 });

@@ -1,6 +1,6 @@
 ---
-status: built (clip gallery); freshness-bug fix wired, live-verified, still off by default (§20); events pipeline not yet built
-summary: The clip-review gallery (thumbnails + tap-to-play, replacing the old "garage door" placeholder) is built end-to-end — Node bridge, backend clip/thumbnail/retrieve pipeline, frontend gallery + modal player. SDK is `eufy-security-client`, verified against real HomeBase 3 / S380 hardware on 2026-09-10. Its enumeration call has a documented freshness bug (§16.2); a second, isolated SDK (`@mega-yfue/eufy-sdk`) confirmed a working alternative query live (§18-§19), is wired in behind `MISSION_CONTROL_EUFY_MEGA_ENUMERATION_ENABLED` (§20), and was live-verified against the real household backend on 2026-09-11 (§20.5) — the gallery now surfaces same-day events the classic path alone could not. Still defaults to off pending longer-running confirmation. Ambient events (motion/person/doorbell banners, contact-sensor exceptions, §2/§7.2) remain designed but unbuilt.
+status: built (clip gallery); freshness-bug fix wired, live-verified, still off by default (§20); realtime-triggered off-schedule re-enumeration wired (§21), not yet live-verified; events pipeline not yet built
+summary: The clip-review gallery (thumbnails + tap-to-play, replacing the old "garage door" placeholder) is built end-to-end — Node bridge, backend clip/thumbnail/retrieve pipeline, frontend gallery + modal player. SDK is `eufy-security-client`, verified against real HomeBase 3 / S380 hardware on 2026-09-10. Its enumeration call has a documented freshness bug (§16.2); a second, isolated SDK (`@mega-yfue/eufy-sdk`) confirmed a working alternative query live (§18-§19), is wired in behind `MISSION_CONTROL_EUFY_MEGA_ENUMERATION_ENABLED` (§20), and was live-verified against the real household backend on 2026-09-11 (§20.5) — the gallery now surfaces same-day events the classic path alone could not. Still defaults to off pending longer-running confirmation. §21 (2026-09-11) wires the already-fixed device push events (§17.1) to pull the mega-enumerator's next pass forward instead of waiting for its periodic timer, debounced/cooldown-limited so a burst of pushes costs at most one extra short-lived P2P session — closing the last piece of the "reflected within a few seconds" freshness goal, on top of §20's fix. Not yet live-verified against real hardware (this session had no Node ≥24 host); logic verified via the existing fake-client unit-test harness. Ambient events (motion/person/doorbell banners, contact-sensor exceptions, §2/§7.2) remain designed but unbuilt.
 ---
 
 # Eufy camera integration — verified capability + implementation plan
@@ -1928,3 +1928,112 @@ manual testing). This is the freshness bug (§16.2/§16.4), closed and hardware-
 designed — the household's real gallery, right now, shows an event from hours ago that the classic
 path alone could never have surfaced (its own lookback window is pinned to whole days and lands on
 the oldest one in range, per §16.2).
+
+## 21. Realtime-triggered off-schedule re-enumeration (2026-09-11): closing the "reflected within a
+few seconds" gap on top of §20
+
+§20 fixed *what* enumeration finds (FULL_TABLE via the mega-enumerator, not the broken by-date
+query) but left *when* it runs on a fixed clock: a new clip only shows up after the next
+`eufy_reconcile_interval_seconds` tick (120s default) — real-hardware device push events
+(`DEVICE_EVENT_NAMES`, correctly wired since §17.1) were still only feeding the classic,
+documented-broken `databaseQueryByDate` narrow re-query (§17.2), so they did nothing for
+freshness. This section closes that gap: a real push now pulls the mega-enumerator's *next* pass
+forward instead of waiting for the timer, bounded so a burst of pushes can't turn into a burst of
+P2P sessions against the station.
+
+### 21.1 Does the realtime event itself carry enough to skip re-enumeration entirely? No.
+
+Checked before building anything, per this task's own framing (see also §17.7's independent
+finding, reused here): the device-push events this bridge already subscribes to
+(`"device motion detected"`, `"device person detected"`, etc., `EufySecurity`'s own client-level
+events) hand the handler only the `Device` object that fired — no `storage_path`, `cipher_id`,
+`record_id`, or any other field `retrieveClip()`/the gallery needs to list or play the resulting
+clip. `@mega-yfue/eufy-sdk`'s own realtime surface (`eufy.on("motion", ...)`) is the same shape for
+the same reason — §17.7 already confirmed it's a live P2P/push/property-poll signal, not a
+clip/event-history read. Neither SDK's realtime event is a substitute for a database query; a push
+is a *signal that something worth enumerating just happened*, never the enumeration result itself.
+So the only correct move, per this task's own fallback instruction, is what §21.2 builds: use the
+event to trigger an off-schedule re-enumeration, not to populate the gallery directly.
+
+### 21.2 What's built
+
+- **`eufy-bridge/src/eufyBridge.js`** — `_startMegaEnumeration()` now stores its poll closure as
+  `this._runMegaPollOnce` (previously a local `runOnce`) so it can be shared between the periodic
+  `setInterval` and a new event-triggered path, both funneling through the same
+  `_megaPollInFlight` single-flight guard as before (never two mega-enumerator P2P sessions to the
+  station at once, regardless of trigger source).
+- **`_onDeviceEvent(device)`** now does two things instead of one: the existing (known-unreliable,
+  §16.2/§17.2, but free on the already-open primary session) narrow `databaseQueryByDate`
+  re-query, **and** a call to the new `_triggerMegaPollFromEvent()`.
+- **`_triggerMegaPollFromEvent()`** — the actual fix. Three cases:
+  1. **No pass running, cooldown elapsed:** runs `_runMegaPollOnce()` immediately.
+  2. **A pass is already running (any source):** marks one follow-up as pending; the running
+     pass's own `.finally()` re-invokes `_triggerMegaPollFromEvent()` when it completes, so exactly
+     one deferred pass is guaranteed to run for it, never zero and never a pile-up regardless of
+     how many pushes arrived while busy.
+  3. **No pass running, but the last EVENT-triggered pass started less than
+     `megaEventCooldownMs` ago:** defers the same way (pending flag + a single `setTimeout` sized
+     to the remaining cooldown), so a rapid string of pushes collapses into at most one pass per
+     cooldown window rather than one pass per push.
+
+  Deliberately scoped to *event-triggered* passes only — a pass the periodic timer itself just ran
+  does not start this cooldown, so a push arriving right after a scheduled tick still gets serviced
+  right away instead of inheriting that tick's cooldown.
+- **`eufy-bridge/src/config.js`** — `EUFY_MEGA_EVENT_COOLDOWN_MS` / `megaEventCooldownMs`, default
+  `15000` (15s). Bridge-only, not threaded through `app/config.py`/`bridge_process.py`, matching
+  the existing convention for `EUFY_MEGA_QUERY_WINDOW_MS`/`EUFY_MEGA_P2P_WARMUP_MS` (§20.1) — set
+  it directly in the bridge's own environment if it ever needs tuning.
+- **Tests** (`eufy-bridge/test/eufyBridge.test.js`, 3 new cases, all against the existing stubbed
+  `EufySecurity`/`@mega-yfue/eufy-sdk`-shaped fakes, no real SDK/network/hardware): a device event
+  pulls an extra pass forward instead of waiting for the periodic timer; a burst of several device
+  events (mirroring §17.1's "more than one event name per physical trigger") collapses into exactly
+  one immediate pass plus one deferred follow-up, never one pass per event; a device event arriving
+  while a pass is already in flight queues exactly one follow-up, and a second overlapping trigger
+  does not queue a second one. 33/33 bridge tests green.
+
+### 21.3 What this does NOT change
+
+The periodic mega-enumerator timer, the classic `databaseQueryByDate` reconcile loop, and §20's
+freshness fix itself are all untouched — this is purely an additional, bounded way to make the
+existing mega-enumerator pass run sooner. `MISSION_CONTROL_EUFY_MEGA_ENUMERATION_ENABLED=false`
+(the default) means none of this code path runs at all, identical to before this session.
+
+### 21.4 Performance/blast-radius reasoning (why this isn't degenerate)
+
+- **At most one mega-enumerator P2P session open at a time, ever** — the same `_megaPollInFlight`
+  guard §20 already relied on for the periodic timer now also gates every event-triggered attempt.
+- **At most one *extra* event-triggered session per `megaEventCooldownMs` window** — regardless of
+  how many pushes arrive (one camera flapping, several cameras firing together, or both event names
+  for one physical trigger per §17.1), the debounce collapses them to a single follow-up pass.
+  15s default is comfortably longer than a single pass's own worst-case duration (`megaP2pWarmupMs`
+  + `megaQueryWindowMs`, 4s + 8s = 12s default) so a queued follow-up still has to wait out real
+  remaining cooldown, not fire back-to-back with the pass that triggered it.
+- **No new always-on connection or polling loop** — the event-triggered path only ever calls the
+  same short-lived, connect-query-disconnect `MegaEnumerator.poll()` §19/§20 already established as
+  the safe pattern; it never keeps a session open across triggers.
+- **No cloud-facing traffic added** — like the rest of the mega-enumerator, this is LAN-local P2P
+  (plus the SDK's own already-accounted-for session-reuse login); nothing here adds authenticated
+  cloud calls.
+
+### 21.5 What's still unverified — check first on real hardware
+
+This session had no Node ≥24 host or real household credentials/hardware available (same
+constraint as §15.2's original gap) — logic was verified against the existing Node-`node:test`
+fake-client harness only (`eufy-bridge/test/eufyBridge.test.js`), executed by seeding Node 20's
+CJS module cache with a throwaway stub for `@mega-yfue/eufy-sdk` (that package's real build is
+ESM-only, unloadable via `require()` before Node 24) so the tests could run at all in this
+sandbox — not a code change, just a local verification workaround, and not something a real
+Node ≥24 CI/dev run needs.
+
+- **Actual end-to-end latency from a real motion/person trigger to the clip appearing in
+  `GET /api/household`** is still a design estimate, not a measurement: roughly one pass duration
+  (~12-15s with default `megaP2pWarmupMs`/`megaQueryWindowMs`) after the push fires, a large
+  improvement over waiting up to `eufy_reconcile_interval_seconds` (120s default) but not
+  independently confirmed against the wall clock on real hardware.
+- **Whether a genuinely dense burst of real pushes (not just this session's synthetic test bursts)
+  behaves as designed** — the debounce logic is unit-tested with scripted event timing, not
+  observed against real, irregular firmware event timing.
+- **Concurrent P2P sessions to the same station under this new, more frequent trigger pattern** —
+  §20.4 already flagged this as not stress-tested for the periodic-only case; this session adds
+  more potential session frequency on top of it, still unconfirmed against the real station's
+  tolerance for it.
