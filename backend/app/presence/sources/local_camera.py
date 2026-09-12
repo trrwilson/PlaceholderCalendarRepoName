@@ -240,7 +240,7 @@ class LocalCameraMotionSource:
             return
         confidence = min(1.0, ratio / (self._min_area_ratio * _CONFIDENCE_SATURATION_MULTIPLE))
         detail = f"largest contour {ratio:.1%} of frame"
-        logger.info("presence: motion observed confidence=%.2f (%s)", confidence, detail)
+        logger.debug("presence: motion observed confidence=%.2f (%s)", confidence, detail)
         self._observe(
             PresenceSignal(
                 source_id="local_camera",
