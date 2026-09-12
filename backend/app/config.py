@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     # the restore target in that case, so a household that dimmed the panel for
     # the evening does not get jolted back to full brightness by someone
     # walking past (see `PresenceDisplayPolicy`).
-    display_dim_restore_level: int = 80
+    display_dim_restore_level: int = 60
 
     @field_validator("display_dim_after_seconds")
     @classmethod

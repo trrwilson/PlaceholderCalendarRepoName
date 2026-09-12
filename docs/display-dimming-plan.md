@@ -142,7 +142,7 @@ keep-awake votes. Rules:
 | `MISSION_CONTROL_DISPLAY_DIM_ENABLED` | **`true`** (implemented) | Master switch for idle dimming. This doc originally specced `false`; the *basic* slice actually built (below) defaults on, matching `presence_enabled`'s same on-by-default posture this session. |
 | `MISSION_CONTROL_DISPLAY_DIM_AFTER_SECONDS` | **`20`** (implemented) | Idle time before the panel dims. Originally specced `90`; shipped at `10`, then raised to `20` (2026-09-11) once touch/voice activity pulses were wired in — a fuse that short otherwise dims mid-interaction. |
 | `MISSION_CONTROL_DISPLAY_DIM_LEVEL` | **`0`** (implemented) | Target while dimmed. Originally specced `35` (+ overlay-opacity mapping, not built); the basic slice is hardware-brightness only, default `0`. |
-| `MISSION_CONTROL_DISPLAY_DIM_RESTORE_LEVEL` | **`80`** (implemented, new — not in the original design) | Target a presence signal restores to, *unless* night mode is on (its own level wins then). The original design restored to "whatever the panel was showing before dimming"; the basic slice uses a fixed level instead — see "Implemented so far". |
+| `MISSION_CONTROL_DISPLAY_DIM_RESTORE_LEVEL` | **`60`** (implemented, new — not in the original design) | Target a presence signal restores to, *unless* night mode is on (its own level wins then). The original design restored to "whatever the panel was showing before dimming"; the basic slice uses a fixed level instead — see "Implemented so far". |
 | `MISSION_CONTROL_DISPLAY_CONTROL_MECHANISM` | `auto` | `auto` \| `wmi` \| `ddcci` \| `gamma` \| `overlay` \| `none`. `auto` probes `wmi` → `ddcci` → `overlay`; `gamma` is opt-in only. |
 
 Config is read through an accessor (the future runtime-store hook), shaped so a
