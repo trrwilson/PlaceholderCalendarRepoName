@@ -1,0 +1,36 @@
+name: Bug report
+description: Report something that is not working as expected
+title: "[Bug] "
+labels: ["intake", "bug"]
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened?
+      description: Describe what you observed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: Describe what you expected to happen instead.
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Describe what you were doing when it happened. Approximate steps are fine.
+
+  - type: textarea
+    id: frequency
+    attributes:
+      label: How often does it happen?
+      placeholder: Always, sometimes, once, or unknown
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add screenshots, error messages, device information, or anything else that might help.

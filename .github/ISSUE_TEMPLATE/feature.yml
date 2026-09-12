@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest an improvement or new capability
+title: "[Feature] "
+labels: ["intake", "feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to accomplish?
+      description: Describe the problem, need, or situation in your own words.
+      placeholder: I would like Mission Control to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What would good behavior look like?
+      description: Describe the outcome you want. You do not need to propose an implementation.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: When, where, or why would this be useful?
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Examples or additional information
+      description: Add screenshots, examples, related products, or anything else that might help.
