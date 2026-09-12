@@ -22,6 +22,7 @@ an agent gets wrong without it. `.github/copilot-instructions.md` points here.
 | `frontend/AGENTS.md` | UI/UX judgement: chrome, event legibility, holidays, colour |
 | `backend/AGENTS.md` | Calendar providers, auth, persistence, real-time, feature stores |
 | `backend/app/voice/AGENTS.md` | Voice assistant, local/hybrid pipeline, wake word |
+| `eufy-bridge/AGENTS.md` | Node sidecar: process boundary, config, SDK/testing conventions |
 | `docs/README.md` | Index of the deep-dive docs (design records vs history vs plans) |
 | `docs/audio-pipeline.md` | The authority on mic capture, gain, and playout |
 
