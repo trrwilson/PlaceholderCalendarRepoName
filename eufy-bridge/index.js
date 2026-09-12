@@ -53,6 +53,16 @@ async function main() {
           socket.send(JSON.stringify(payload));
           break;
         }
+        case "mega_call": {
+          if (!config.debugMegaCall) {
+            log(`mega_call rejected: EUFY_DEBUG_MEGA_CALL is not set`);
+            socket.send(JSON.stringify({ type: "mega_call_result", request_id: requestId, error: "disabled" }));
+            break;
+          }
+          const result = await bridge.megaCall(message.service, message.path, message.payload);
+          socket.send(JSON.stringify({ type: "mega_call_result", request_id: requestId, ...result }));
+          break;
+        }
         default:
           log(`unrecognised control message type: ${message.type}`);
       }

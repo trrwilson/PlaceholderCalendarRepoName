@@ -60,6 +60,13 @@ class EufyBridgeProcess:
                 "EUFY_RECONCILE_LOOKBACK_MINUTES": str(settings.eufy_reconcile_lookback_minutes),
                 "EUFY_CLIP_CACHE_DIR": str(Path(settings.eufy_clip_cache_dir).resolve()),
                 "EUFY_CLIP_CACHE_TTL_SECONDS": str(settings.eufy_clip_cache_ttl_seconds),
+                # See docs/eufy-sdk-integration.md §16.2/§19-§20: a second,
+                # independent SDK/session used only to work around the
+                # primary databaseQueryByDate reconcile's freshness bug.
+                "EUFY_MEGA_ENUMERATION_ENABLED": "1"
+                if settings.eufy_mega_enumeration_enabled
+                else "0",
+                "EUFY_MEGA_SESSION_FILE": str(Path(settings.eufy_mega_session_file).resolve()),
             }
         )
         return env

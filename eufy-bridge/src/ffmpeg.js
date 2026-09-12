@@ -33,8 +33,18 @@ function runFfmpeg(args) {
 // with and without the audio track, and take the first attempt that succeeds —
 // audio muxing was proven-decryptable but not exercised by that spike, so
 // treat it as best-effort: a clip with unmuxable audio still plays, silently.
+//
+// Video is transcoded to H.264 (`libx264`), never copied: this household's
+// real clips are HEVC (§5.1), and the kiosk plays clips in stock Chrome/Edge
+// (scripts/kiosk-start.ps1), which has no HEVC decoder — `-c:v copy` produced
+// a file that played audio with a black video frame, since the browser opened
+// the MP4, decoded the (universally-supported) AAC track, and silently failed
+// to decode the video track (docs/eufy-sdk-integration.md §16.6). Hardware
+// HEVC decode (e.g. Windows' HEVC Video Extensions, which Edge but not Chrome
+// can use) is a deferred follow-up, not done here — see §16.6.
 async function muxClip({ videoPath, audioPath, outPath }) {
   const hasAudio = Boolean(audioPath) && fs.existsSync(audioPath) && fs.statSync(audioPath).size > 0;
+  const videoArgs = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"];
   const attempts = [];
   for (const videoFormat of ["hevc", "h264"]) {
     if (hasAudio) {
@@ -52,8 +62,7 @@ async function muxClip({ videoPath, audioPath, outPath }) {
           "0:v:0",
           "-map",
           "1:a:0",
-          "-c:v",
-          "copy",
+          ...videoArgs,
           "-c:a",
           "aac",
           "-movflags",
@@ -64,7 +73,7 @@ async function muxClip({ videoPath, audioPath, outPath }) {
     }
     attempts.push({
       hasAudio: false,
-      args: ["-y", "-f", videoFormat, "-i", videoPath, "-c:v", "copy", "-movflags", "+faststart", outPath],
+      args: ["-y", "-f", videoFormat, "-i", videoPath, ...videoArgs, "-movflags", "+faststart", outPath],
     });
   }
   let lastError;

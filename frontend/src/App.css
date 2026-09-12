@@ -475,7 +475,20 @@
 
 /* -- Eufy camera clip gallery — replaces the old "garage door" exception --
    card. Same base chrome as its neighbours (.next-card / .tomorrow-card);   */
-.camera-review { border: 2px solid var(--line); border-radius: 16px; background: var(--surface); padding: clamp(16px, 1.2vw, 40px); min-height: 0; overflow: hidden; }
+.camera-review { border: 2px solid var(--line); border-radius: 16px; background: var(--surface); padding: clamp(12px, .9vw, 28px); min-height: 0; overflow: hidden; }
+/* Smaller than the shared .view-heading h2 default -- this heading sits above
+   a 2x2 grid of up to four clips, sharing rail height with two cards above
+   it, so it gets less weight than a primary section heading. */
+.camera-review .view-heading h2 { font-size: clamp(16px, 1vw, 32px); }
+/* 2x2 (not a single row): true 16:9 per thumbnail at a legible size is worth
+   more than fitting smaller viewports. Target is 4K at 100% OS scaling
+   (3840x2160) ONLY -- verified: 173px of headroom there. 2560x1440 was tried
+   and explicitly rejected: the whole rail (not just this card) needs ~101px
+   more than it has at that size, since next-card/tomorrow-card's own
+   vw/vh-based clamp() sizing hasn't plateaued yet at 1440p and only fully
+   does so near 4K. Below 4K, this card's bottom row may clip silently (no
+   document-level scrolling) -- a deliberate, accepted tradeoff, not a bug to
+   chase. */
 .camera-thumb-row { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(8px, .8vw, 18px); margin-top: 10px; }
 .camera-thumb { position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; padding: 0; border: 0; border-radius: 12px; overflow: hidden; background: var(--canvas); cursor: pointer; }
 .camera-thumb:active { transform: scale(.97); }
@@ -496,6 +509,19 @@
    scrim / outside-tap / Escape dismiss convention as the rest of the app. */
 .clip-modal-scrim { position: fixed; z-index: 20; inset: 0; display: flex; align-items: center; justify-content: center; padding: 6vh 6vw; background: #1d303366; }
 .clip-modal { position: relative; width: min(1400px, 100%); max-height: 100%; padding: clamp(16px, 1.4vw, 34px); border: 2px solid var(--line-dark); border-radius: 20px; background: var(--surface); box-shadow: 0 20px 70px #14201e4d; display: flex; flex-direction: column; gap: 10px; }
-.clip-modal-video { width: 100%; aspect-ratio: 16 / 9; max-height: 74vh; border-radius: 12px; background: #000; }
+.clip-modal-video-wrap { position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 74vh; border-radius: 12px; overflow: hidden; background: #000; }
+.clip-modal-video { display: block; width: 100%; height: 100%; }
+.clip-modal-status { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; gap: clamp(10px, .8vw, 20px); background: #14201e77; color: #fbfcf8; font-size: clamp(13px, .8vw, 24px); font-weight: 600; pointer-events: none; }
+.clip-spinner { width: clamp(36px, 2.8vw, 60px); height: clamp(36px, 2.8vw, 60px); border: clamp(4px, .3vw, 6px) solid #fbfcf855; border-top-color: #fbfcf8; border-radius: 50%; animation: clip-spinner-spin .8s linear infinite; }
+@keyframes clip-spinner-spin { to { transform: rotate(360deg); } }
+/* The base .close-detail (top:14/right:18, cream fill) was built for
+   .detail-sheet, which has a header above its content. Here the video sits
+   flush against the card's padding edge, so that button nearly touches the
+   video's top-right corner with almost no clearance -- a light circle
+   half-overlapping dark video reads as misplaced. Give it real clearance and
+   the same translucent-dark overlay language already used for the gallery
+   thumbnails' play glyph/duration pill (#14201e66 / #14201eb3), so it reads
+   as a deliberate video-overlay control instead. */
+.clip-modal .close-detail { top: clamp(24px, 2vw, 42px); right: clamp(24px, 2vw, 42px); width: clamp(38px, 2.6vw, 50px); height: clamp(38px, 2.6vw, 50px); border: 0; background: #14201eb3; color: #fbfcf8; font-size: 1.6em; }
 .clip-modal-caption { display: flex; align-items: baseline; gap: 10px; margin: 0; color: var(--ink-soft); font-size: clamp(13px, .8vw, 24px); }
 .clip-modal-caption strong { color: var(--ink); }

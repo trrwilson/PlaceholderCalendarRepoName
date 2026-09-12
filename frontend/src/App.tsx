@@ -815,11 +815,11 @@ function CameraGalleryCard({ camera, redacting, onSelectClip, apiBaseUrl }: { ca
     return () => window.clearInterval(id)
   }, [])
   if (!camera.available) return null
-  // The rail is narrow and shares vertical space with two cards above it, so
-  // the thumbnail count is a real layout constraint, not a style choice — two
-  // wide 16:9 crops read clearly at both 4K and 1080p without pushing the
-  // card past the rail's height budget (no document-level scrolling allowed).
-  const shown = camera.clips.slice(0, 2)
+  // A 2x2 grid of up to four true 16:9 crops. Target is 4K at 100% OS scaling
+  // (3840x2160) ONLY -- 2560x1440 was tried and rejected (the whole rail is
+  // ~101px short there, not just this card; see App.css). Anything below 4K
+  // may clip this card's bottom row silently (no document-level scrolling).
+  const shown = camera.clips.slice(0, 4)
   if (shown.length === 0) return null
   return (
     <section className="camera-review">
@@ -845,6 +845,13 @@ function CameraGalleryCard({ camera, redacting, onSelectClip, apiBaseUrl }: { ca
 // every other overlay in this app. A plain <video> is the whole player —
 // playback is a solved problem, no library needed.
 function CameraClipModal({ clip, apiBaseUrl, onClose }: { clip: StoredClip; apiBaseUrl: string; onClose: () => void }) {
+  // Retrieval is a real P2P download + decrypt + transcode on the backend
+  // (docs/eufy-sdk-integration.md §16.6) — the video request can sit for
+  // several seconds before the browser gets a single byte. Without feedback
+  // that looks identical to the black-screen bug it replaced, just from a
+  // different cause, so track load state explicitly rather than trust the
+  // video element's own (silent) buffering.
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
@@ -854,7 +861,11 @@ function CameraClipModal({ clip, apiBaseUrl, onClose }: { clip: StoredClip; apiB
     <div className="clip-modal-scrim" role="presentation" onClick={onClose}>
       <section className="clip-modal" role="dialog" aria-label={`${clip.camera_name} clip`} onClick={(event) => event.stopPropagation()}>
         <button className="close-detail" onClick={onClose} aria-label="Close video">×</button>
-        <video className="clip-modal-video" src={`${apiBaseUrl}/api/camera/clip/${encodeURIComponent(clip.clip_id)}/video`} controls autoPlay playsInline />
+        <div className="clip-modal-video-wrap">
+          <video className="clip-modal-video" src={`${apiBaseUrl}/api/camera/clip/${encodeURIComponent(clip.clip_id)}/video`} controls autoPlay playsInline onCanPlay={() => setStatus('ready')} onPlaying={() => setStatus('ready')} onError={() => setStatus('error')} />
+          {status === 'loading' && <div className="clip-modal-status" role="status" aria-live="polite"><span className="clip-spinner" aria-hidden /><span>Loading clip…</span></div>}
+          {status === 'error' && <div className="clip-modal-status" role="status"><span>Couldn't load this clip.</span></div>}
+        </div>
         <p className="clip-modal-caption"><strong>{clip.camera_name}</strong><span>{new Date(clip.occurred_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span></p>
       </section>
     </div>

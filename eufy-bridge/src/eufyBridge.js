@@ -8,27 +8,35 @@ const crypto = require("node:crypto");
 const { EufySecurity, P2PConnectionType } = require("eufy-security-client");
 
 const { muxClip } = require("./ffmpeg");
+const { MegaEnumerator } = require("./megaEnumerator");
 
-// Real device event names, verified against eufy-security-client 4.1.1-1's
-// own type definitions (EufySecurityEvents in build/interfaces.d.ts,
-// inspected 2026-09-11) — NOT exercised against a real device by the
-// 2026-09-10 hardware spike, which proved login / device listing / local P2P
-// / database query / clip download + decrypt, but not these specific push
-// events actually firing. Confirm on first real run against the household's
-// S330/HB3. A missing or renamed event here only costs latency (the periodic
-// reconciliation poll still finds any new clip within
-// `reconcileIntervalSeconds`), never correctness — this list is purely a
-// low-latency accelerant, not the source of truth for what's on the station.
+// Real device event names the `EufySecurity` client emits, taken verbatim
+// from eufy-security-client 4.1.1-1's own type definitions (EufySecurityEvents
+// in build/interfaces.d.ts). Each is emitted on the *client*, not the device,
+// with the device passed as the first argument — e.g.
+// `client.on("device motion detected", (device, state) => ...)`.
+//
+// This list previously used the bare names ("motion detected" etc., without
+// the "device " prefix) based on a misreading of the type definitions during
+// the 2026-09-10 verification spike — an easy mistake, since each map key is
+// one indivisible string, not a "device" namespace plus a suffix. That meant
+// `client.on(eventName, ...)` was subscribing to an event that never exists
+// under any firmware, so every real push (docs/eufy-sdk-integration.md
+// §16.4's "push events do not fire" finding) was silently dropped — not an
+// account/firmware/migration problem as originally suspected. Confirmed live
+// 2026-09-11 with a wildcard listener on `client.emit` (see `debugRawEvents`
+// in src/config.js): a real motion trigger produced "device motion detected"
+// and "device person detected" on the client, matching the type defs exactly.
 const DEVICE_EVENT_NAMES = [
-  "motion detected",
-  "person detected",
-  "stranger person detected",
-  "pet detected",
-  "dog detected",
-  "vehicle detected",
-  "crying detected",
-  "sound detected",
-  "rings",
+  "device motion detected",
+  "device person detected",
+  "device stranger person detected",
+  "device pet detected",
+  "device dog detected",
+  "device vehicle detected",
+  "device crying detected",
+  "device sound detected",
+  "device rings",
 ];
 
 const DOWNLOAD_START_TIMEOUT_MS = 20_000;
@@ -44,7 +52,7 @@ class EufyBridge {
    * and `node:test`'s `mock.module` (Node 22+), so constructor injection is
    * the seam, not module mocking. See test/eufyBridge.test.js.
    */
-  constructor(config, log, { initializeClient } = {}) {
+  constructor(config, log, { initializeClient, createMegaClient } = {}) {
     this.config = config;
     this.log = log;
     this.client = null;
@@ -56,6 +64,10 @@ class EufyBridge {
     this.reconcileTimer = null;
     this._downloadInFlight = null;
     this._initializeClient = initializeClient || ((cfg, logger) => EufySecurity.initialize(cfg, logger));
+    this.megaEnumerator = null;
+    this.megaPollTimer = null;
+    this._megaPollInFlight = false;
+    this._createMegaClient = createMegaClient; // undefined -> MegaEnumerator uses the real SDK
     /** Set by index.js to fan messages out over the control WebSocket. */
     this.onEvent = () => {};
   }
@@ -92,24 +104,92 @@ class EufyBridge {
     // `new EufySecurity(config)` does not work — the static factory is
     // required (verified 2026-09-10, see docs/eufy-sdk-integration.md §5.1).
     this.client = await this._initializeClient(eufyConfig, this._logger());
+    if (this.config.debugRawEvents) this._wireRawEventLogging();
     this._wireEvents();
     this.emit({ type: "status", state: "connecting" });
     await this.client.connect({ force: false });
+    this._startMegaEnumeration();
   }
 
   async stop() {
     this._stopReconciliation();
+    this._stopMegaEnumeration();
     if (this.client) this.client.close();
+  }
+
+  // See src/megaEnumerator.js and docs/eufy-sdk-integration.md §18-§19: a
+  // second, independent SDK/session used only to work around a documented
+  // freshness bug in the primary `databaseQueryByDate` reconcile above. Fully
+  // separate lifecycle from `this.client` — it has its own login and its own
+  // short-lived P2P connection per poll, so it starts/stops independently of
+  // the main client's connect/close events rather than piggybacking on them.
+  _startMegaEnumeration() {
+    if (!this.config.megaEnumerationEnabled) return;
+    if (!this.config.stationSerial) {
+      this.log("mega-enumerator: EUFY_MEGA_ENUMERATION_ENABLED=1 but no EUFY_STATION_SERIAL set — staying off");
+      return;
+    }
+    this.megaEnumerator = new MegaEnumerator({
+      email: this.config.email,
+      password: this.config.password,
+      region: this.config.region,
+      sessionFile: this.config.megaSessionFile,
+      stationSerial: this.config.stationSerial,
+      queryWindowMs: this.config.megaQueryWindowMs,
+      p2pWarmupMs: this.config.megaP2pWarmupMs,
+      log: this.log,
+      createClient: this._createMegaClient,
+    });
+    const runOnce = () => {
+      if (this._megaPollInFlight) return;
+      this._megaPollInFlight = true;
+      this.megaEnumerator
+        .poll()
+        .then((records) => {
+          if (records.length) this._onDatabaseQueryByDate(records);
+        })
+        .catch((err) => this.log(`mega-enumerator: unexpected error: ${err && err.stack}`))
+        .finally(() => {
+          this._megaPollInFlight = false;
+        });
+    };
+    this.log(`mega-enumerator: enabled, polling every ${this.config.reconcileIntervalSeconds}s`);
+    runOnce(); // don't wait a full interval for the first, more useful pass
+    this.megaPollTimer = setInterval(runOnce, this.config.reconcileIntervalSeconds * 1000);
+    this.megaPollTimer.unref();
+  }
+
+  _stopMegaEnumeration() {
+    if (this.megaPollTimer) {
+      clearInterval(this.megaPollTimer);
+      this.megaPollTimer = null;
+    }
+    this.megaEnumerator = null;
   }
 
   _logger() {
     const log = this.log;
+    const verbose = this.config.debugRawEvents;
     return {
-      trace() {},
-      debug() {},
+      trace: verbose ? (...args) => log(`[eufy-security-client] TRACE ${args.map(String).join(" ")}`) : () => {},
+      debug: verbose ? (...args) => log(`[eufy-security-client] DEBUG ${args.map(String).join(" ")}`) : () => {},
       info: (...args) => log(`[eufy-security-client] ${args.map(String).join(" ")}`),
       warn: (...args) => log(`[eufy-security-client] WARN ${args.map(String).join(" ")}`),
       error: (...args) => log(`[eufy-security-client] ERROR ${args.map(String).join(" ")}`),
+    };
+  }
+
+  // Diagnostic-only (see `debugRawEvents` in src/config.js): logs the name and
+  // arg count of every event the client emits, including ones this bridge has
+  // no handler for. Wraps `emit` rather than adding a listener because Node's
+  // EventEmitter has no built-in wildcard subscription.
+  _wireRawEventLogging() {
+    const client = this.client;
+    const log = this.log;
+    const originalEmit = client.emit.bind(client);
+    client.emit = (eventName, ...args) => {
+      log(`[raw-event] "${eventName}" (${args.length} arg${args.length === 1 ? "" : "s"})`);
+      return originalEmit(eventName, ...args);
     };
   }
 
@@ -187,7 +267,14 @@ class EufyBridge {
     });
 
     for (const eventName of DEVICE_EVENT_NAMES) {
-      client.on(eventName, (device) => this._onDeviceEvent(device));
+      client.on(eventName, (device) => {
+        // Logged explicitly -- without this line there's no way to tell a
+        // push ever arrived: the narrow re-query it triggers logs nothing of
+        // its own, and its result folds silently into the same
+        // clip_discovered stream the periodic reconcile also feeds.
+        this.log(`"${eventName}" from ${device.getSerial()}`);
+        this._onDeviceEvent(device);
+      });
     }
   }
 
@@ -261,11 +348,26 @@ class EufyBridge {
       .filter(([, stationSn]) => stationSn === station.getSerial())
       .map(([deviceSn]) => deviceSn);
     if (serials.length === 0) return;
+    // Logged explicitly -- without this there's no way to tell "no query ran"
+    // from "a query ran and the station's response didn't include what we
+    // expected" (docs/eufy-sdk-integration.md §15.5/§15.6: the response is
+    // not reliably correlated to the requested window on this household's
+    // real hardware, so that distinction matters for diagnosis).
+    this.log(`local reconcile: querying ${since.toISOString()} -> ${now.toISOString()} (lookback ${this.config.reconcileLookbackMinutes}m)`);
     station.databaseQueryByDate(serials, since, now);
   }
 
   _onDatabaseQueryByDate(records) {
-    for (const record of records || []) {
+    this.log(`local reconcile: ${(records || []).length} record(s) returned`);
+    // `clip_discovered` events must be emitted oldest-first: the backend's
+    // ring buffer (`EufyEventService._add_clip`) does an unconditional
+    // `appendleft` per event and relies on that ordering to end up
+    // newest-first itself. The SDK's own return order isn't documented, so
+    // sort explicitly rather than assume it matches.
+    const sorted = [...(records || [])].sort(
+      (a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime(),
+    );
+    for (const record of sorted) {
       const clipId = `${record.device_sn}:${record.record_id}`;
       if (this.clipCache.has(clipId)) continue;
       this.clipCache.set(clipId, record);
@@ -278,6 +380,24 @@ class EufyBridge {
         occurred_at: new Date(record.start_time).toISOString(),
         frame_num: record.frame_num,
       });
+    }
+  }
+
+  // Diagnostic-only, gated by `debugMegaCall` in src/config.js (off by
+  // default): probes `MegaHTTPApi.callDecrypted` directly for chasing
+  // docs/eufy-sdk-integration.md §17's "what does the one HTTP call that
+  // actually works look like" question. `megaTransition` is TypeScript
+  // `private` on EufySecurity (compile-time only — erased at runtime, a
+  // plain accessible property on the actual object), and `getMegaApi()`
+  // lazily creates/reuses the already-persisted v6 session, so this needs no
+  // separate login and opens no second connection to the account.
+  async megaCall(service, path, payload) {
+    try {
+      const megaApi = await this.client.megaTransition.getMegaApi();
+      const data = await megaApi.callDecrypted(service, path, payload || {});
+      return { data };
+    } catch (err) {
+      return { error: String(err && err.message ? err.message : err) };
     }
   }
 

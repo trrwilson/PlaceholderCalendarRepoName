@@ -16,6 +16,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+const { LoginStatus } = require("@mega-yfue/eufy-sdk");
+
 const { EufyBridge } = require("../src/eufyBridge");
 
 class FakeStation extends EventEmitter {
@@ -77,7 +79,7 @@ class FakeClient extends EventEmitter {
   }
 }
 
-function makeBridge({ stations, devices }) {
+function makeBridge({ stations, devices, megaEnumerationEnabled = false, createMegaClient, stationSerial } = {}) {
   const fakeClient = new FakeClient({ stations, devices });
   const logs = [];
   const events = [];
@@ -94,9 +96,14 @@ function makeBridge({ stations, devices }) {
       clipCacheDir,
       clipCacheTtlSeconds: 600,
       pollingIntervalMinutes: 1440,
+      megaEnumerationEnabled,
+      megaSessionFile: path.join(clipCacheDir, "mega-session.json"),
+      megaQueryWindowMs: 200,
+      megaP2pWarmupMs: 5,
+      stationSerial,
     },
     (message) => logs.push(message),
-    { initializeClient: async () => fakeClient }
+    { initializeClient: async () => fakeClient, createMegaClient }
   );
   bridge.onEvent = (message) => events.push(message);
   return { bridge, fakeClient, logs, events };
@@ -161,6 +168,44 @@ test("a database-query-by-date response emits clip_discovered once per new recor
   assert.equal(discovered[0].frame_num, 300);
 });
 
+test("a database-query-by-date response emits clip_discovered oldest-first regardless of record order", async () => {
+  // The backend's ring buffer (EufyEventService._add_clip) does an
+  // unconditional appendleft per clip_discovered event and relies on
+  // oldest-first emission to end up newest-first itself. The SDK's actual
+  // return order for databaseQueryByDate isn't documented, so this asserts
+  // the bridge sorts rather than trusting it — records here arrive
+  // newest-first, the opposite of what's required.
+  const station = new FakeStation("STATION1");
+  const device = new FakeDevice("CAM1", "Front Door", "STATION1");
+  const { bridge, fakeClient, events } = makeBridge({ stations: [station], devices: [device] });
+  await bridge.start();
+  fakeClient.emit("connect");
+  await new Promise((resolve) => setImmediate(resolve));
+  events.length = 0;
+
+  const recordAt = (id, iso) => ({
+    device_sn: "CAM1",
+    station_sn: "STATION1",
+    record_id: id,
+    start_time: new Date(iso),
+    storage_path: "/path/to/clip",
+    thumb_path: "/path/to/thumb",
+    cipher_id: 7,
+    frame_num: 300,
+  });
+  const newest = recordAt(3, "2026-09-07T18:30:00Z");
+  const middle = recordAt(2, "2026-09-06T18:30:00Z");
+  const oldest = recordAt(1, "2026-09-05T18:30:00Z");
+  fakeClient.emit("station database query by date", station, 0, [newest, middle, oldest]);
+
+  const discovered = events.filter((e) => e.type === "clip_discovered");
+  assert.deepEqual(
+    discovered.map((e) => e.clip_id),
+    ["CAM1:1", "CAM1:2", "CAM1:3"],
+    "must emit oldest-first even when the SDK returned newest-first"
+  );
+});
+
 test("a device event triggers a narrow re-query for that camera's station", async () => {
   const station = new FakeStation("STATION1");
   const device = new FakeDevice("CAM1", "Front Door", "STATION1");
@@ -170,7 +215,7 @@ test("a device event triggers a narrow re-query for that camera's station", asyn
   await new Promise((resolve) => setImmediate(resolve));
   station.queries.length = 0; // clear the initial "station connect" reconcile, if any
 
-  fakeClient.emit("motion detected", device);
+  fakeClient.emit("device motion detected", device);
 
   assert.equal(station.queries.length, 1);
   assert.deepEqual(station.queries[0].serials, ["CAM1"]);
@@ -240,4 +285,116 @@ test("getThumbnail for an unknown clip id fails fast without touching the statio
   await bridge.start();
   const result = await bridge.getThumbnail("does-not-exist");
   assert.equal(result.error, "unknown clip");
+});
+
+// The mega-enumerator wiring: see docs/eufy-sdk-integration.md §18-§20. A
+// second, independent SDK/session used only to work around the primary
+// databaseQueryByDate reconcile's documented freshness bug. Its records feed
+// the SAME clip_discovered pipeline as that reconcile, so tests here assert
+// end-to-end behaviour through EufyBridge, not MegaEnumerator's internals
+// (already covered by test/megaEnumerator.test.js).
+
+class FakeMegaP2PSession extends EventEmitter {
+  queryDatabase() {}
+}
+
+class FakeMegaClient {
+  constructor({ devices = [] } = {}) {
+    this._devices = devices;
+    this._session = new FakeMegaP2PSession();
+    this.disconnectCalls = 0;
+  }
+  async login() {
+    return { status: LoginStatus.Ok, session: { userId: "login-user" } };
+  }
+  async getDevices() {
+    return this._devices;
+  }
+  async getDevice() {
+    return undefined;
+  }
+  getP2pSessions() {
+    return new Map([[this._devices[0] && this._devices[0].sn, this._session]]);
+  }
+  async disconnect() {
+    this.disconnectCalls += 1;
+  }
+}
+
+test("mega enumeration is off by default even with a station serial configured", async () => {
+  const station = new FakeStation("STATION1");
+  const device = new FakeDevice("CAM1", "Front Door", "STATION1");
+  let created = false;
+  const { bridge, fakeClient } = makeBridge({
+    stations: [station],
+    devices: [device],
+    stationSerial: "STATION1",
+    createMegaClient: () => {
+      created = true;
+      return new FakeMegaClient({ devices: [{ sn: "STATION1", raw: {} }] });
+    },
+  });
+  await bridge.start();
+  fakeClient.emit("connect");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(created, false, "no mega client should be constructed when the feature flag is off");
+  await bridge.stop();
+});
+
+test("mega enumeration, when enabled, feeds clip_discovered through the same pipeline as databaseQueryByDate", async () => {
+  const station = new FakeStation("STATION1");
+  const device = new FakeDevice("CAM1", "Front Door", "STATION1");
+  const megaClient = new FakeMegaClient({
+    devices: [{ sn: "STATION1", raw: { member: { admin_user_id: "station-admin-id" } } }],
+  });
+  const { bridge, fakeClient, events } = makeBridge({
+    stations: [station],
+    devices: [device],
+    megaEnumerationEnabled: true,
+    stationSerial: "STATION1",
+    createMegaClient: () => megaClient,
+  });
+  await bridge.start();
+  fakeClient.emit("connect");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const record = {
+    device_sn: "CAM1",
+    station_sn: "STATION1",
+    record_id: 2026091100009,
+    start_time: "2026-09-11 16:11:04",
+    storage_path: "/zx/emmcdata/Camera00/202609/20260911161103/20260911161103.zxvideo",
+    thumb_path: "/thumb.jpg",
+    cipher_id: 0,
+    frame_num: 203,
+    time_zone: "-0700",
+  };
+  const body = JSON.stringify({ cmd: 10000, count: 1, data: [record] });
+  // Let the mega poll's own (test-shortened) P2P-warmup/query-send elapse.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  megaClient._session.emit("dbChunk", { text: body });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  const discovered = events.filter((e) => e.type === "clip_discovered");
+  assert.equal(discovered.length, 1);
+  assert.equal(discovered[0].clip_id, "CAM1:2026091100009");
+  assert.equal(discovered[0].camera_name, "Front Door");
+
+  await bridge.stop();
+});
+
+test("mega enumeration stays off without a configured station serial, logging why", async () => {
+  const { bridge, logs } = makeBridge({
+    stations: [],
+    devices: [],
+    megaEnumerationEnabled: true,
+    stationSerial: undefined,
+    createMegaClient: () => {
+      throw new Error("must not be called");
+    },
+  });
+  await bridge.start();
+  assert.ok(logs.some((line) => line.includes("no EUFY_STATION_SERIAL set")));
+  await bridge.stop();
 });
