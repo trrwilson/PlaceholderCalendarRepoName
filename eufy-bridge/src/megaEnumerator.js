@@ -40,16 +40,45 @@ const DEFAULT_QUERY_WINDOW_MS = 8_000;
 const DEFAULT_P2P_WARMUP_MS = 4_000;
 
 /**
- * Strip trailing NUL padding bytes from the AES block alignment on the wire
- * (confirmed in this investigation's raw captures — the decrypted chunk text
- * is padded out to a 16-byte boundary). Checks char codes directly rather
- * than a regex literal containing the NUL escape, to avoid any ambiguity
- * about how that escape survives a round trip through this file.
+ * The decrypted dbChunk text can carry trailing bytes past the last 16-byte
+ * AES block boundary that were never decrypted at all (the SDK's own
+ * `p2p-session.ts` comment: CMD_DATABASE reply chunks "are NOT 16-aligned...
+ * a trailing byte past the block boundary" is decrypted only up to the
+ * aligned head). Those bytes are leftover ciphertext, not a fixed padding
+ * character — sometimes they happen to decode as clean NUL, sometimes as
+ * other non-JSON noise (confirmed live: a production poll hit
+ * `Unexpected non-whitespace character after JSON at position 5957` because
+ * this investigation's own earlier NUL-only stripping assumed the padding
+ * was always zero bytes). Rather than guess at what the garbage looks like,
+ * scan for the end of the first complete top-level JSON value (respecting
+ * string literals/escapes) and ignore everything after it.
  */
-function stripTrailingNuls(text) {
-  let end = text.length;
-  while (end > 0 && text.charCodeAt(end - 1) === 0) end -= 1;
-  return text.slice(0, end);
+function extractLeadingJson(text) {
+  let depth = 0;
+  let started = false;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      started = true;
+    } else if (ch === "}" || ch === "]") {
+      depth -= 1;
+      if (started && depth === 0) return text.slice(0, i + 1);
+    }
+  }
+  return text; // no balanced close found -- let JSON.parse report the real error
 }
 
 /**
@@ -190,7 +219,7 @@ class MegaEnumerator {
       }
       let parsed;
       try {
-        parsed = JSON.parse(stripTrailingNuls(chunks.join("")));
+        parsed = JSON.parse(extractLeadingJson(chunks.join("")));
       } catch (err) {
         this.log(`mega-enumerator: failed to parse dbChunk reply: ${err.message}`);
         return [];
@@ -216,5 +245,5 @@ module.exports = {
   FULL_TABLE_QUERY,
   parseStationTimestamp,
   toDatabaseQueryByDateShape,
-  stripTrailingNuls,
+  extractLeadingJson,
 };

@@ -13,7 +13,7 @@ const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const { LoginStatus } = require("@mega-yfue/eufy-sdk");
 
-const { MegaEnumerator, FULL_TABLE_QUERY, parseStationTimestamp, stripTrailingNuls } = require("../src/megaEnumerator");
+const { MegaEnumerator, FULL_TABLE_QUERY, parseStationTimestamp, extractLeadingJson } = require("../src/megaEnumerator");
 
 const NUL = String.fromCharCode(0);
 
@@ -129,8 +129,14 @@ test("poll() maps a real dbChunk reply into the databaseQueryByDate record shape
     time_zone: "-0700",
   };
   const body = JSON.stringify({ cmd: 10000, count: 1, data: [record] });
+  // Trailing garbage past the last decrypted 16-byte block is leftover
+  // ciphertext, not reliably NUL -- confirmed live in production (a real
+  // poll hit "Unexpected non-whitespace character after JSON" because an
+  // earlier version of this code assumed the padding was always zero
+  // bytes). Use non-NUL noise here specifically to guard against that
+  // regression.
   client._session.emit("dbChunk", { text: body.slice(0, 10) });
-  client._session.emit("dbChunk", { text: body.slice(10) + NUL.repeat(3) });
+  client._session.emit("dbChunk", { text: body.slice(10) + "\x07\x9f\x03" });
 
   const results = await pending;
   assert.equal(results.length, 1);
@@ -180,10 +186,21 @@ test("poll() is a no-op when no station serial is configured", async () => {
   assert.equal(client.disconnectCalls, 0, "must not even construct/login a client with no station configured");
 });
 
-test("stripTrailingNuls removes only trailing NUL padding", () => {
-  assert.equal(stripTrailingNuls(`hello${NUL.repeat(3)}`), "hello");
-  assert.equal(stripTrailingNuls("hello"), "hello");
-  assert.equal(stripTrailingNuls(NUL.repeat(2)), "");
+test("extractLeadingJson trims trailing NUL padding", () => {
+  assert.equal(extractLeadingJson(`{"a":1}${NUL.repeat(3)}`), '{"a":1}');
+});
+
+test("extractLeadingJson trims trailing non-NUL ciphertext noise (the real production failure mode)", () => {
+  assert.equal(extractLeadingJson('{"a":1}\x07\x9f\x03'), '{"a":1}');
+});
+
+test("extractLeadingJson does not get confused by braces inside a string value", () => {
+  const withBraces = '{"a":"looks like json: {\\"b\\":2}"}';
+  assert.equal(extractLeadingJson(withBraces + NUL.repeat(2)), withBraces);
+});
+
+test("extractLeadingJson is a no-op when there is no trailing garbage", () => {
+  assert.equal(extractLeadingJson('{"a":1}'), '{"a":1}');
 });
 
 test("parseStationTimestamp applies the record's own reported timezone", () => {
