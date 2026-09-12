@@ -55,10 +55,10 @@ backend/                FastAPI service (Python 3.12+)
   app/main.py            ASGI app + CORS
   app/api.py             HTTP + WebSocket routes under /api; provider selection; LAN + privacy gates
   app/config.py          MISSION_CONTROL_* settings (pydantic-settings)
-  app/models.py          Pydantic v2 domain + API models — the frontend/backend contract
+  app/models.py          Pydantic v2 domain + API models
   app/calendar/          CalendarProvider protocol + mock / Graph / personal-Outlook providers
-  app/voice/             shared voice plumbing + providers/ adapters; local/ hybrid pipeline; wake*
-  app/eufy/              eufy clip gallery: bridge client, event mapping, EufyEventService
+  app/voice/             voice pipeline; see app/voice/AGENTS.md
+  app/eufy/              eufy clip gallery backend
   app/timers.py  app/lists.py  app/privacy.py    backend-owned feature stores
   tests/                pytest
 frontend/               React 19 + TypeScript (strict) + Vite
@@ -66,7 +66,7 @@ frontend/               React 19 + TypeScript (strict) + Vite
   src/App.css           Design tokens + layout + semantic markers (single stylesheet)
   src/voice/            tap-to-talk session, audio pipeline, wake word, tools
   src/camera/            eufy clip gallery hook + mirrored types
-  src/timers/  src/lists/  src/realtime/         feature UIs + one shared /api/ws socket
+  src/timers/  src/lists/  src/realtime/         feature UIs + shared socket
   e2e/                  Playwright kiosk-layout checks
 eufy-bridge/            Node >= 24 sidecar wrapping eufy-security-client — not a Python dep,
                         spawned/supervised by app/eufy/bridge_process.py; see docs/eufy-sdk-integration.md
@@ -122,13 +122,9 @@ method and a maintained catalogue.
   Anker's ToS) stay feature-flagged, isolated in their own package/sidecar, and
   severable — failure must never degrade the core calendar experience. Full
   account credentials server-side is heavier than this repo's other read-only
-  OAuth flows; justified only when there is no official API. Any config value
-  feeding a timer/interval must be validated against platform limits before
-  shipping (a too-large `pollingIntervalMinutes` overflowed Node's 32-bit
-  `setTimeout` and burst extra authenticated cloud calls — see
-  docs/eufy-sdk-integration.md §5.6.1). The eufy clip gallery is the first
-  capability that writes decrypted media to disk, however briefly (a
-  short-lived, TTL-evicted cache, never persisted).
+  OAuth flows; justified only when there is no official API. See
+  `eufy-bridge/AGENTS.md` for sidecar/config conventions and `backend/AGENTS.md`
+  for the clip-gallery disk cache.
 - **Voice/AI calls explicit application tools** (`get_events`, `start_timer`, …), never
   a provider directly. See `backend/app/voice/AGENTS.md`.
 - **Privacy mode is a global read-only lock.** Every mutating endpoint calls

@@ -35,7 +35,9 @@ No general datastore. Durable state is single JSON files — the MSAL token cach
 `lists.json` (`app/lists.py`), `privacy.json` (`app/privacy.py`) — atomic write,
 reloaded at startup, corrupt file reseeds. A SQLite-backed store must drop in behind
 the existing store shapes with no frontend change. Do not add more stores, Redis,
-Postgres, or a broker.
+Postgres, or a broker. The one exception: the eufy clip gallery (`app/eufy/`) caches
+decrypted media briefly on disk in a short-lived, TTL-evicted cache — never
+persisted, so it doesn't change this section's "no datastore" rule.
 
 ## Real-time (`/api/ws`)
 
