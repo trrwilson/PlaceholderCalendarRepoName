@@ -1513,3 +1513,287 @@ plausible-sounding but wrong theory is closed off in writing rather than left to
   eufy's own firmware-changelog pages 404/redirect incorrectly and public search found nothing
   authoritative. Check directly in the app (HomeBase settings → General → About Device → Check for
   firmware update) rather than via further web research.
+
+## 18. `queryDatabase` over raw `P2PSession` (2026-09-11): what `-104` means, and a new failure mode found live
+
+Follow-up to §17, using `@mega-yfue/eufy-sdk`'s low-level `P2PSession.queryDatabase()` directly
+(not through `EufyMega`'s capability surface) to try `history_record_info` /
+`event_person_list` — the tables §17's `mega_call` HTTP chase never reached. This section is
+sourced from the SDK's own bundled source map (technique in §18.1) plus one live, deliberately
+small experiment against the real T8030 (§18.3) — not from guessing.
+
+### 18.1 How to read this SDK's real source, not just its `.d.ts`
+
+`node_modules/@mega-yfue/eufy-sdk` ships only compiled output
+(`dist/index.js` + per-module `.d.ts`), but `dist/index.js.map` embeds the full original
+TypeScript in its `sourcesContent` array — every file under `src/`, comments included. Extract it
+with a short Node script that reads the map, iterates `sources`/`sourcesContent`, and writes each
+back out under its `../src/...` relative path. This is how every file/line citation below and in
+§18.2 was obtained; do this again for any future question about this SDK's actual behavior rather
+than re-deriving it from the public `.d.ts` surface or guessing from symbol names.
+
+### 18.2 Why `-104`: `accountId` must be the STATION's `member.admin_user_id`, not the logged-in account's `userId`
+
+`P2PSession.queryDatabase(table, opts)` (`src/transport/p2p/p2p-session.ts:1490-1519`) sends
+`CMD_SET_PAYLOAD` (1350) wrapping `{account_id: opts.accountId ?? "", cmd: CMD_DATABASE (1306),
+mChannel: opts.channel ?? STATION_CHANNEL (255, line 77), payload: {cmd: opts.innerCmd ??
+DB_QUERY.FULL_TABLE (10000), table, payload: opts.query, transaction}}` — matching this
+investigation's own captured wire shape exactly (channel 255, inner cmd 1306).
+
+The method's own doc comment on the public `requestFaces()` wrapper
+(`p2p-session.ts:1541-1551`), which calls `queryDatabase("person_basic_info", {innerCmd:
+FULL_TABLE, query: fullTableQuery()})` — the same shape this session's failed calls used, minus
+one field (see §18.4) — states directly:
+
+> "`account_id` must be the station `admin_user_id` (a wrong/absent id or a camera session
+> answers result `-104`)."
+
+`-104` itself is generically documented two hundred lines later
+(`p2p-session.ts:1804-1819`, the comment on the `commandResult` emitter): "negative is a failure
+(-104 file not found, -108 refused)" — i.e. `-104` is not `CMD_DATABASE`-specific, it is this
+protocol's general "the thing you asked for by id/account doesn't resolve" code, and the
+`accountId` **is** the id being resolved for a database query.
+
+Critically, that `admin_user_id` is **not** the SDK's own `mega.auth.userId` (the currently
+logged-in account's id) — it is a separate field read off the *device's own cloud record*:
+`(raw.member as any)?.admin_user_id`, falling back to `mega.auth?.userId` only when the device
+record carries no `member.admin_user_id` at all. This exact fallback expression is duplicated
+three times, independently, for three different subsystems that all need the same id:
+
+- P2P cipher-key resolution: `command-router.ts:383` (`makeSession()`, feeds
+  `getCiphers(cipherIds, adminUserId, stationSn)` — the call that resolves the level-2 AES key,
+  confirmed working in every session so far including this one).
+- MQTT command signing: `mqtt/command-router.ts:228,680` and `eufy-mega.ts:362-368`
+  (`resolveAccountId`, explicitly commented "the owning member's `admin_user_id`, falling back to
+  the logged-in account's user id").
+- Generic capability commands: `eufy-mega.ts:1985-2019` (`commandContext()`, which exposes it as
+  `CommandContext.adminUserId` for capabilities like `lock`).
+
+`EufyDevice.raw` is `unknown` but public (`src/core/types.ts:94`), and `get_devs_list` (the call
+behind `DeviceRegistry.getDevices()`, `device-registry.ts:270-289`) is what actually populates
+`raw.member` from the cloud — so any caller can read `device.raw.member?.admin_user_id` for a
+station the same way the SDK's own internals do, without a separate API call.
+
+### 18.3 Live result: the two ids really do differ, even under the real owner's own account — but the station didn't answer with `-104` this time, it dropped the session
+
+Ran a small isolated script (`backend/.eufy-investigation/mega-sdk-probe/check-history-db.mjs`,
+new this session, own session-store file, never touches the production bridge or the
+`dissonance@cheerful.com` probe) against the real account, per this session's explicit
+instruction to use `trrwilson@hotmail.com` (this repo's own account owner) with the same
+password as `dissonance@cheerful.com`. Login succeeded first try, no captcha/2FA — this identity
+was apparently already trusted.
+
+For the real T8030 (`T8030P13232003FB`):
+
+- `device.raw.member.admin_user_id` = `8b9897b79506b6a4f0c12440063d026bfee9131d`
+- `session.userId` (this login's own account id) = `57b6c73ec34908065047f4033106cc7a291adcd3`
+
+**These are different strings, even though `trrwilson@hotmail.com` is the actual account owner** —
+confirming the SDK's warning is not just a shared/member-account artifact (§17.7 already showed
+`dissonance@cheerful.com` is a member, not the owner; this shows the distinction matters even for
+the owner). `admin_user_id` is a house-membership identifier, not the OAuth/login account id, and
+the two are never safe to assume equal.
+
+That said, this run did **not** reproduce this session's originally-reported clean `-104`
+`commandResult`. Four `queryDatabase("person_basic_info", ...)` /
+`queryDatabase("history_record_info", ...)` calls were sent on one P2P session (blank accountId,
+the station's real `admin_user_id`, the login `userId`, then `history_record_info` with the best
+id) with a 6-second wait each. Only the **first** call got any reply at all: a 4-byte inbound
+packet whose 2-byte message-type header is `0xf1f0` — which is `RequestMessageType.END` /
+`ResponseMessageType.END` in this SDK's own wire-protocol table (`p2p/codec.ts:33,46`, "every UDP
+packet is `[msgType:2][payloadLen:2 BE][payload]`" — this is the type field, not a `CMD_DATABASE`
+data frame, so it never reaches the `commandResult`/`dbChunk` decode path in `handleFrame()` at
+all; the SDK's own `onMessage()` switch has no case for it and logs it as `UNHANDLED payload hex`,
+`p2p-session.ts:781-812`). The other three calls got **zero** bytes back in their 6-second
+windows — consistent with the station having ended the P2P association after that first query
+rather than answering it, silently dropping everything sent afterward on the same socket.
+
+This is a different failure mode than a clean `-104` reply, not a confirmation or refutation of
+§18.2's accountId theory — the session likely never survived long enough to test the corrected
+`accountId` meaningfully (it was the *second* call in the sequence). Do not read "no `dbChunk`"
+here as "the fix didn't work"; read it as "this probe used one session for four sequential
+queries and the station stopped talking after the first."
+
+### 18.4 A second untested variable: the query payload itself
+
+This session's original failed calls (`session.queryDatabase("history_record_info")` /
+`("person_basic_info")` with no `opts.query`) omit the `payload` field inside the inner command
+entirely — `queryDatabase()`'s own body only sets `inner.payload` `if (opts.query)`
+(`p2p-session.ts:1503`). The SDK's own verified-shape callers, `requestFaces()` /
+`requestFaceFeatures()` (`p2p-session.ts:1552-1574`), always pass a full `fullTableQuery()`
+object (`count, start_date, end_date, start_id, end_id, flag, need_ai, res_unzip, update_time,
+start_time, alarm_id` — `p2p-session.ts:1525-1539`, private, so an external caller must
+reconstruct the literal shape rather than calling it). Nothing in the source confirms whether an
+absent `payload` alone can also produce `-104`/a dropped session independent of `accountId` — but
+since the only shape this SDK's own comments call "verified live against the app's own decrypted
+request" includes both a correct `accountId` **and** this exact query object, the next experiment
+should supply both together rather than varying one at a time against real hardware.
+
+### 18.5 Next concrete experiment (not yet run further this session — see §18.6 for why)
+
+One query per fresh P2P connection, not several down one session (§18.3's likely lesson):
+
+```js
+// Fresh session per attempt. accountId = device.raw.member.admin_user_id (§18.2), NOT session.userId.
+session.queryDatabase("history_record_info", {
+  channel: 255,
+  accountId: "8b9897b79506b6a4f0c12440063d026bfee9131d", // this station's real admin_user_id, confirmed §18.3
+  query: {
+    count: 2000, start_date: "", end_date: "", start_id: 0, end_id: 1,
+    flag: 0, need_ai: 1, res_unzip: 1, update_time: "0", start_time: "0", alarm_id: "",
+  },
+});
+```
+
+Listen for both `dbChunk` (success) and `commandResult` (a clean numeric rejection) for at least
+10-15s (this session's 6s wait may simply have been too short even for the first, answered call),
+and treat receiving `0xf1f0`/`END` again with zero further traffic as "the station ended this
+session" rather than a silent timeout — worth adding an explicit check for that exact 2-byte
+header to `check-history-db.mjs` (currently it only special-cases `dbChunk`/`commandResult`,
+so an `END` shows up only in the SDK's own debug log, easy to miss). If `history_record_info`
+still fails this way even isolated + with the right id + with a full query payload, try
+`person_basic_info` alone first (the one combination the SDK's own comments claim was directly
+verified against the real app) as a narrower control before concluding the table itself is the
+problem.
+
+### 18.6 Why this session stopped here instead of iterating live
+
+`check-history-db.mjs` already sent four real P2P commands to the household's real HomeBase in
+one run, one of which coincided with the station ending the session. Given §5.6's standing
+principle (minimize cloud/P2P-facing traffic against this account, and multiple prior sessions'
+near-misses and dead ends from over-probing this exact device), repeating single-shot experiments
+back-to-back without knowing whether `0xf1f0` reflects a per-session, per-account, or time-boxed
+cooldown risks compounding whatever the station just did rather than isolating it. §18.5's
+experiment is ready to run; running it (and any further iteration on it) is left for a future
+pass with the household's go-ahead, rather than continued automatic probing in this one.
+
+## 19. `history_record_info` retrieval WORKS (2026-09-11): §18.5 confirmed, plus a decisive negative result on the by-date bug
+
+Continuation of §18, run with the household's go-ahead. `§18.5`'s experiment — one query per
+fresh P2P connection (`backend/.eufy-investigation/mega-sdk-probe/single-shot-db-query.mjs`, new
+this session), `accountId` = the station's own `device.raw.member.admin_user_id`
+(`8b9897b79506b6a4f0c12440063d026bfee9131d`, not the login `userId`), channel 255, the full
+`fullTableQuery()`-shaped payload — **worked, twice, cleanly, with zero `END`/`-104`.**
+
+### 19.1 What came back
+
+Two separate single-shot runs of `queryDatabase("history_record_info", {accountId, channel:255,
+query: fullTableQuery})` (inner `cmd` defaulting to `DB_QUERY.FULL_TABLE`/10000) both returned a
+real `dbChunk` — `{"cmd":10000,"count":6,"data":[...]}` — six genuine event records for the Front
+Door camera (`T8160P11231428D3`), all from earlier the same day (2026-09-11), newest first:
+
+| start_time | record_id | storage_path |
+| --- | --- | --- |
+| 16:11:04 | `2026091100009` | `/zx/emmcdata/Camera00/202609/20260911161103/20260911161103.zxvideo` |
+| 14:35:11 | `2026091100008` | … |
+| 12:31:05 | `2026091100007` | … |
+| 12:19:44 | `2026091100006` | … |
+| 12:09:46 | `2026091100005` | … |
+| 10:56:51 | `2026091100001` | … |
+
+Two of these — `2026091100005` and `2026091100001` — are the **exact same `record_id`s** §17.3's
+live capture found in the official app's own `Phase2_EventAPI`/`refreshEventData` response
+(logged there as `megaEventId: "T8030P13232003FB~local~2026091100005"` etc.). That response was
+never decrypted (§17.4 — pinning blocked it); this session reaches the same underlying local
+event index by a completely different, already-public, already-implemented path, with no rooting,
+no MITM, no reverse engineering of the native app. **§17's open question — "what does the one
+working call actually request" — is answered for practical purposes: you don't need to find it,
+`history_record_info` FULL_TABLE over P2P gets the same data.**
+
+Every record has `cipher_id: 0` and `storage_type: 1` (local, not cloud) — worth confirming before
+assuming `startDownload`'s decrypt step is meaningful for a `cipher_id` of exactly zero; it may
+mean "unencrypted on this firmware for local-only storage" rather than "cipher id not yet
+resolved." Don't assume either without checking against a real download attempt.
+
+### 19.2 Decisive negative result: the §16.2 by-date bug is neither an `accountId` nor a `channel` bug
+
+Before concluding "use the right `accountId`" also fixes date-scoped queries, ran one more
+single-shot test: the exact `CMD_DATABASE_QUERY_BY_DATE` (10006) payload shape
+`eufy-security-client` itself builds (`node_modules/eufy-security-client/build/http/station.js:
+13339-13367` — `count, detection_type, device_info, end_date, event_type, flag, res_unzip,
+start_date, start_time, storage_cloud, ai_type`), but sent via `queryDatabase()` on **channel 255**
+or a 7-day window (2026-09-04 .. 2026-09-11) against the Front Door camera. Also checked, for the
+first time, whether `eufy-security-client` itself was even sending the right `accountId` for this
+call — it was: `station.databaseQueryByDate()` already reads `this.rawStation.member.admin_user_id`
+for every P2P write it makes (confirmed by grep — over 60 call sites in `station.js` all use this
+exact field), so §16.2's bug was never explained by a wrong account id in that SDK.
+
+**Result: reproduced §16.2's bug exactly, even with correct `accountId` and channel 255.** Asked
+for 7 days (09-04..09-11); got 8 records, **every one from 2026-09-04 — the oldest day in the
+window** — despite already knowing (§19.1, queried minutes earlier) that real events exist on at
+least four *later* days in that same range, including one from today. Zero records from
+09-05 through 09-11.
+
+This rules out both of this investigation's two live client-side variables (`accountId`,
+`mChannel`) as the cause. Whatever makes `CMD_DATABASE_QUERY_BY_DATE` return a stale cluster at
+the oldest edge of the requested window is either in the exact query-payload fields themselves
+(the by-date shape has 10 fields FULL_TABLE's doesn't: `event_type`, `detection_type`,
+`device_info`, `storage_cloud`, `ai_type` — any could matter) or a genuine firmware-side windowing
+defect independent of the caller. **FULL_TABLE (10000, no date bounds at all) is the reliable
+primitive for "what's recent" on this hardware; QUERY_BY_DATE (10006) is not, for reasons still
+unconfirmed.** Don't re-attempt "fix by-date with X" without a new, specific hypothesis for one of
+those five extra fields — repeating the by-date shape with only account/channel changed has now
+been tried and ruled out.
+
+### 19.3 The practical fix this unlocks for the shipped clip gallery, and how to wire it without a second always-on SDK
+
+The shipped clip gallery (`eufy-bridge/`, §15-§16) uses `eufy-security-client` exclusively and its
+`station.databaseQueryByDate()`, which has exactly the §16.2/§19.2 bug. Two ways to use today's
+finding to fix it, in order of how much new surface each adds:
+
+1. **Cleanest, but needs a small patch to a vendored dependency's behavior:** `Station` exposes
+   `p2pSession.sendCommandWithStringPayload({commandType: CMD_SET_PAYLOAD, value, channel}, ...)`
+   as a public method (`eufy-bridge/node_modules/eufy-security-client/build/p2p/session.js:523`)
+   — the same primitive `databaseQueryByDate()` itself calls, so `eufy-bridge` could send the
+   FULL_TABLE-shaped request directly, no new SDK/session/account needed. **But** the response
+   side needs equal care: `P2PClientProtocol`'s own `CMD_DATABASE` reply switch
+   (`session.js:3093-3270`) has explicit cases for `CMD_DATABASE_QUERY_LATEST_INFO` (10013,
+   → `"database query latest"`), `CMD_DATABASE_QUERY_LOCAL` (10017, → `"database query local"`),
+   and `CMD_DATABASE_QUERY_BY_DATE` (10006, → `"database query by date"`) — **not** 10000
+   (FULL_TABLE). A reply to a hand-sent FULL_TABLE request falls through to the `default` branch,
+   which only debug-logs `"Not implemented - CMD_DATABASE message"` and drops it. Getting real
+   data out of this path means either patching that switch (a fork/monkeypatch of a vendored
+   dependency — exactly the kind of thing `AGENTS.md` says to re-check licensing/upstream on) or
+   reading the raw frame at a lower level than the SDK's own typed events expose.
+2. **No patch, one extra short-lived process:** run a small `@mega-yfue/eufy-sdk`-based
+   enumeration step (this session's `single-shot-db-query.mjs`, generalized) on demand or on the
+   existing `eufy_reconcile_interval_seconds` cadence — connect, one `queryDatabase("history_record_info", …)`
+   FULL_TABLE call, read `storage_path`/`cipher_id`/`record_id` per record, disconnect — and feed
+   the resulting `storage_path`/`cipher_id` into the **already-running, already-verified**
+   `eufy-security-client` bridge's `station.startDownload(device, storage_path, cipher_id)`
+   (§5.4) for the actual decrypt+mux, unchanged. Two SDKs, but only one (`eufy-security-client`)
+   holds a long-lived P2P session; the other opens, asks one question, and closes. Untested this
+   session: whether a short-lived second P2P session to the same station while the long-lived one
+   is already connected causes any contention (the station accepted overlapping level-2 sessions
+   fine across this session's *own* several reconnects, for whatever that's worth as a weak
+   positive signal).
+
+Either way, this is a real, demonstrated fix for the freshness bug that has blocked the gallery
+since §16 — not a hypothesis.
+
+### 19.4 Good lines of further inquiry, ranked
+
+1. **Wire up §19.3 option 2 as a real fix** (lowest-risk path to closing §16.2/§16.4's freshness
+   gap in the shipped feature) — a short script already exists to build on
+   (`single-shot-db-query.mjs`).
+2. **Confirm the `cipher_id: 0` / `storage_type: 1` meaning** before trusting `startDownload` on a
+   record enumerated this way — try one real download of the newest record
+   (`2026091100009`, `storage_path`
+   `/zx/emmcdata/Camera00/202609/20260911161103/20260911161103.zxvideo`) through
+   `eufy-security-client`'s already-verified `startDownload()` and confirm it decodes as real
+   footage, the same way §5's original spike did.
+3. **Check whether FULL_TABLE is capped at "recent ~6-8" regardless of `count`,** or whether a
+   different `start_id`/`end_id`/`flag` actually pages further back — matters only for
+   "browse older history," not for the ambient gallery's actual need (recent clips), so lower
+   priority than 1-2.
+4. **Isolate which of the by-date query's five extra fields** (`event_type`, `detection_type`,
+   `device_info`, `storage_cloud`, `ai_type`) trips the stale-window bug, if anyone ever wants
+   proper date-range history browsing rather than "recent N." Vary one field at a time from the
+   now-known-working FULL_TABLE baseline rather than from the known-broken by-date baseline.
+5. **Try `event_person_list`** (the fourth table this SDK's `queryDatabase` doc-comment names,
+   never yet queried) with the now-confirmed-working shape — plausibly the per-event face/person
+   tagging table, complementary to `history_record_info` rather than a duplicate.
+6. **Re-run the FULL_TABLE query once more, well-separated in time** (e.g. after a real new
+   front-door event happens), to confirm it keeps tracking "most recent" rather than having been
+   a lucky match to a static cache this one afternoon — two clean successes in one session is
+   good evidence, not yet longitudinal proof.
