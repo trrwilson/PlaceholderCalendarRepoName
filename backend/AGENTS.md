@@ -35,9 +35,19 @@ No general datastore. Durable state is single JSON files — the MSAL token cach
 `lists.json` (`app/lists.py`), `privacy.json` (`app/privacy.py`) — atomic write,
 reloaded at startup, corrupt file reseeds. A SQLite-backed store must drop in behind
 the existing store shapes with no frontend change. Do not add more stores, Redis,
-Postgres, or a broker. The one exception: the eufy clip gallery (`app/eufy/`) caches
-decrypted media briefly on disk in a short-lived, TTL-evicted cache — never
-persisted, so it doesn't change this section's "no datastore" rule.
+Postgres, or a broker.
+
+The eufy clip gallery (`app/eufy/`) writes decrypted media to disk in two places,
+with opposite retention: the bridge's own `EUFY_CLIP_CACHE_DIR` scratch copy is
+short-lived and TTL-evicted, never persisted; `EufyClipCache`
+(`app/eufy/cache.py`, `EUFY_GALLERY_CACHE_DIR`) is a small **durable** cache of
+the last `eufy_clip_ring_buffer_size` clips' metadata/thumbnail/video, following
+this same manifest-JSON + atomic-write shape, that deliberately survives a
+restart — required because neither upstream discovery path (the reconcile's
+stale-cluster bug, the mega-enumerator's drain-once query — see
+docs/eufy-sdk-integration.md) can be re-queried for history after the fact.
+`EufyEventService` loads it synchronously in `__init__` so `snapshot()` is
+cache-backed before the bridge is even touched.
 
 ## Real-time (`/api/ws`)
 

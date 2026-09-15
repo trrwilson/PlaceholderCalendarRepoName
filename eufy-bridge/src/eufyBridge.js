@@ -437,6 +437,18 @@ class EufyBridge {
     for (const record of sorted) {
       const clipId = `${record.device_sn}:${record.record_id}`;
       if (this.clipCache.has(clipId)) continue;
+      // A brand-new record's start_time has come back unparseable on a first
+      // sighting before (transient -- clean on the very next poll, likely a
+      // dbChunk decode glitch on a just-created record). Don't cache it as
+      // seen until it actually emits cleanly, so a bad read gets retried
+      // next poll instead of permanently blacklisting a real event; and keep
+      // this per-record, so one bad record in a batch can't abort the rest
+      // of the (oldest-first) loop the way an uncaught throw here used to.
+      const occurredAt = new Date(record.start_time);
+      if (Number.isNaN(occurredAt.getTime())) {
+        this.log(`local reconcile: skipping ${clipId} -- unparseable start_time, will retry next poll`);
+        continue;
+      }
       this.clipCache.set(clipId, record);
       const cameraName = this.deviceNames.get(record.device_sn) || record.device_sn;
       this.emit({
@@ -444,7 +456,7 @@ class EufyBridge {
         clip_id: clipId,
         camera_id: record.device_sn,
         camera_name: cameraName,
-        occurred_at: new Date(record.start_time).toISOString(),
+        occurred_at: occurredAt.toISOString(),
         frame_num: record.frame_num,
       });
     }

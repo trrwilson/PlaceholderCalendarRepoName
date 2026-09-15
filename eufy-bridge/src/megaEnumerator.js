@@ -27,7 +27,7 @@ const FULL_TABLE_QUERY = {
   start_date: "",
   end_date: "",
   start_id: 0,
-  end_id: 1,
+  end_id: 2000,
   flag: 0,
   need_ai: 1,
   res_unzip: 1,

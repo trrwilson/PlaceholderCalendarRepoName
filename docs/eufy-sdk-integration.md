@@ -2037,3 +2037,75 @@ Node ≥24 CI/dev run needs.
   §20.4 already flagged this as not stress-tested for the periodic-only case; this session adds
   more potential session frequency on top of it, still unconfirmed against the real station's
   tolerance for it.
+
+## 22. Two more live-hardware findings (2026-09-14/15), and a durable gallery cache
+
+### 22.1 `end_id: 1` in the mega-enumerator's "FULL_TABLE" query was never actually full-table
+
+`eufy-bridge/src/megaEnumerator.js`'s `FULL_TABLE_QUERY` hardcoded `start_id: 0, end_id: 1` —
+despite the name and the comment claiming "no date bounds at all," this is a record-**ID** bound,
+and `[0, 1)` caps the result to sequence `0` only (record IDs are `<date><sequence>`, e.g.
+`2026091400000`). In practice this meant the query only ever returned the *first* detection of
+whatever date bucket the station handed back, never anything after it — confirmed live: a missing
+same-day detection event never appeared via this path no matter how long the bridge ran. Fixed by
+raising `end_id` to `2000` (matching the existing `count: 2000`). Verified against a live account
+via an isolated one-shot probe (a copied session file, no shared state with the running bridge)
+before and after: before, one fixed record forever; after, the query tracked new detections as
+they occurred through the day.
+
+### 22.2 `history_record_info` is a drain-once queue, not a replayable read — and neither
+discovery path survives a process restart
+
+Two bugs compounded to make a restart lose most of a day's history:
+
+- **The primary `databaseQueryByDate` reconcile's documented stale-cluster bug (§16.2/§19.2)**
+  doesn't go away with more lookback or a restart — it returns the exact same fixed old cluster
+  every time, restart or not, because it's a pure query/SDK bug, not a state issue.
+- **The mega-enumerator's `history_record_info` FULL_TABLE query behaves as a drain-once queue.**
+  Once *any* successful query (from *any* login/session, including a completely independent
+  probe) returns a record, the station stops offering that record to *future* queries — even a
+  brand-new login after a restart. Confirmed live: a probe using a fresh copy of the session file
+  returned only the single newest undrained record, not the day's full history, immediately after
+  a restart that should have had a completely empty in-memory dedup cache.
+
+Net effect: **nothing upstream can be reliably re-asked for history after the fact.** Whatever was
+in the previous process's in-memory `EufyEventService._clips` (entirely non-persistent before this
+session) was the *only* record of it that ever existed on our side. This is why a manual restart
+(`backend/dev.ps1`) showed an empty gallery that only repopulated with the next brand-new event —
+everything older had already been drained from the upstream queue by the previous process, and the
+new process had nothing durable to fall back on.
+
+Separately, §22.1's fix was itself hit by a related bug that session: `_onDatabaseQueryByDate`
+(`eufy-bridge/src/eufyBridge.js`) marked a record as seen (`clipCache.set`) *before* confirming its
+`clip_discovered` emit actually succeeded. A record whose `start_time` came back transiently
+unparseable (`RangeError: Invalid time value` — a P2P dbChunk decode hiccup on a just-created
+record, clean on the very next poll) got permanently blacklisted the moment it first appeared,
+even though later polls decoded it fine. Fixed by validating the timestamp *before* touching
+`clipCache`, so a bad read is retried next poll instead of being blacklisted, and scoped per-record
+so one bad record in a batch can't abort the rest of the (oldest-first) loop the way an uncaught
+throw used to.
+
+### 22.3 `app/eufy/cache.py` — a durable last-few-clips cache
+
+Given 22.2, a restart-safe local cache stopped being a nice-to-have and became the only way a
+restart doesn't lose real history. `EufyClipCache` (`backend/app/eufy/cache.py`) persists the last
+`eufy_clip_ring_buffer_size` clips' metadata + thumbnail (+ video, once fetched) to
+`EUFY_GALLERY_CACHE_DIR`, following the existing single-JSON-manifest + atomic-write pattern
+(`app/lists.py`/`app/privacy.py`) plus a media file per retained clip:
+
+- **Loaded synchronously in `EufyEventService.__init__`** (cheap local disk I/O), so `snapshot()`
+  is cache-backed the instant the singleton is constructed — before `run()` has even been
+  scheduled, let alone connected to the bridge. This is what makes "last known clips visible
+  immediately on restart" true even if the bridge is slow to come up or the network is down.
+- **`get_thumbnail`/`get_video_path`** check the durable cache before asking the bridge (so a
+  disconnected bridge still serves already-known thumbnails/video) and write through to it after a
+  successful bridge fetch. A newly-discovered clip also proactively pre-warms its thumbnail via a
+  tracked background task, so the cache fills in without waiting on a UI request.
+- **Eviction is manifest-driven only**: `remember()` is the one place that drops the oldest entry
+  past capacity, deleting its media files at the same time, so cache size and on-disk contents
+  can't drift apart. `load()` additionally sweeps any on-disk file the loaded manifest doesn't
+  name, covering a crash between writing a media file and persisting the manifest.
+- This is a deliberate, narrow exception to `EUFY_CLIP_CACHE_DIR` staying "short-lived,
+  TTL-evicted, never persisted" (root `AGENTS.md`) — that note now describes the bridge's own
+  scratch copy specifically, not the feature as a whole. See `backend/AGENTS.md` and the root
+  `AGENTS.md` eufy bullet for the updated framing.

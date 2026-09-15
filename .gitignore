@@ -45,11 +45,19 @@ backend/persistent.json
 *.eufy_mega_persistent.json
 
 # Eufy clip gallery: short-lived decrypted clip cache
-# (MISSION_CONTROL_EUFY_CLIP_CACHE_DIR) — never durable, evicted on a TTL by
-# the bridge itself. This is the one place this feature writes decrypted
-# media to disk, however briefly (docs/eufy-sdk-integration.md).
+# (MISSION_CONTROL_EUFY_CLIP_CACHE_DIR) — evicted on a TTL by the bridge
+# itself. This is the one place this feature writes decrypted media to disk
+# on a short-lived basis (docs/eufy-sdk-integration.md).
 .eufy_clip_cache/
 backend/.eufy_clip_cache/
+
+# Eufy clip gallery: the SEPARATE durable gallery cache
+# (MISSION_CONTROL_EUFY_GALLERY_CACHE_DIR, app/eufy/cache.py) — the last few
+# clips' metadata/thumbnail/video, deliberately persisted across restarts so
+# a restart shows the same gallery instead of an empty one. Local device
+# state, never committed.
+.eufy_gallery_cache/
+backend/.eufy_gallery_cache/
 
 # Voice debug audio captures (MISSION_CONTROL_VOICE_DEBUG_CAPTURE_DIR)
 backend/voice-captures/
@@ -71,8 +79,11 @@ backend/secondary_calendars.json
 secondary_calendars.json
 *.secondary_calendars.json
 
-# Headless uvicorn output when the backend is run detached (redirected stdout/stderr)
+# Headless uvicorn output when the backend is run detached (redirected
+# stdout/stderr), and dev.ps1's own mirrored copy (+ one rotated .previous)
+# of the same -- see backend/dev.ps1.
 backend/uvicorn.out.log
+backend/uvicorn.out.log.previous
 backend/uvicorn.err.log
 
 # Local STT benchmark samples + downloaded model caches (provisioned per install)

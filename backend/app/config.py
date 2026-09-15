@@ -786,6 +786,14 @@ class Settings(BaseSettings):
     # interrupted; this only bounds how long a *finished* clip lingers on disk.
     eufy_clip_cache_ttl_seconds: int = 600
 
+    # A SEPARATE, durable cache from `eufy_clip_cache_dir` above: the last
+    # `eufy_clip_ring_buffer_size` clips' metadata + thumbnail (+ video, once
+    # fetched), persisted across restarts (`app/eufy/cache.py`). Neither
+    # upstream discovery path can be re-asked for history after the fact
+    # (docs/eufy-sdk-integration.md), so this is the only way a restart shows
+    # the same gallery instead of an empty one.
+    eufy_gallery_cache_dir: str = ".eufy_gallery_cache"
+
     @field_validator(
         "eufy_clip_ring_buffer_size", "eufy_thumbnail_cache_size", "eufy_clip_cache_ttl_seconds"
     )

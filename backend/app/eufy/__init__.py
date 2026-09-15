@@ -37,16 +37,21 @@ def get_eufy_service() -> EufyEventService | None:
         return None
     if _service is None:
         from app.eufy.bridge_process import EufyBridgeProcess
+        from app.eufy.cache import EufyClipCache
         from app.eufy.service import EufyEventService
         from app.realtime import connections
 
         Path(settings.eufy_clip_cache_dir).mkdir(parents=True, exist_ok=True)
         _bridge = EufyBridgeProcess(settings)
+        cache = EufyClipCache(
+            settings.eufy_gallery_cache_dir, capacity=settings.eufy_clip_ring_buffer_size
+        )
         _service = EufyEventService(
             settings=settings,
             broadcast=connections.broadcast,
             start_bridge=_bridge.start,
             stop_bridge=_bridge.stop,
+            cache=cache,
         )
     return _service
 

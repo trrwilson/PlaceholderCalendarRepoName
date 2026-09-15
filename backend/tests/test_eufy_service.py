@@ -10,8 +10,9 @@ import base64
 import pytest
 
 from app.config import Settings
+from app.eufy.cache import EufyClipCache
 from app.eufy.service import EufyEventService
-from app.models import ApplicationMessage
+from app.models import ApplicationMessage, StoredClip
 
 CLIP1 = {
     "type": "clip_discovered",
@@ -54,7 +55,7 @@ class FakeBridgeClient:
         self._queue.put_nowait(message)
 
 
-def make_service(**settings_overrides):
+def make_service(*, cache=None, **settings_overrides):
     broadcasts: list[ApplicationMessage] = []
 
     async def broadcast(message: ApplicationMessage) -> None:
@@ -66,7 +67,7 @@ def make_service(**settings_overrides):
     settings_overrides.setdefault("eufy_bridge_restart_backoff_max_seconds", 0.02)
     settings = Settings(_env_file=None, **settings_overrides)
     service = EufyEventService(
-        settings=settings, broadcast=broadcast, client_factory=lambda: client
+        settings=settings, broadcast=broadcast, client_factory=lambda: client, cache=cache
     )
     return service, client, broadcasts
 
@@ -335,3 +336,146 @@ async def test_start_and_stop_bridge_are_invoked():
         with pytest.raises(asyncio.CancelledError):
             await task
     assert stops == 1
+
+
+# -- durable cache wiring (app/eufy/cache.py) ---------------------------------
+
+
+async def test_snapshot_is_seeded_from_durable_cache_before_run(tmp_path):
+    cache = EufyClipCache(tmp_path / "cache", capacity=5)
+    cache.load()
+    cache.remember(
+        StoredClip(
+            clip_id="a:1",
+            camera_id="a",
+            camera_name="Front Door",
+            occurred_at="2026-09-14T09:51:47",
+        )
+    )
+    service, _client, _broadcasts = make_service(cache=cache)
+    # No run(), no connect -- the cache-backed snapshot must already be there.
+    assert [c.clip_id for c in service.snapshot().clips] == ["a:1"]
+
+
+async def test_new_clip_is_written_through_to_durable_cache(tmp_path):
+    cache = EufyClipCache(tmp_path / "cache", capacity=5)
+    cache.load()
+    service, client, _broadcasts = make_service(cache=cache)
+    task = asyncio.create_task(service.run())
+    try:
+        await _wait_until(lambda: client.connected)
+        client.push(CLIP1)
+        await _wait_until(lambda: service.has_clip("a:1"))
+        assert [c.clip_id for c in cache.clips] == ["a:1"]
+    finally:
+        await _stop(service, task)
+
+
+async def test_new_clip_beyond_capacity_evicts_from_durable_cache_too(tmp_path):
+    cache = EufyClipCache(tmp_path / "cache", capacity=2)
+    cache.load()
+    service, client, _broadcasts = make_service(cache=cache, eufy_clip_ring_buffer_size=2)
+    task = asyncio.create_task(service.run())
+    try:
+        await _wait_until(lambda: client.connected)
+        for i in range(3):
+            client.push({**CLIP1, "clip_id": f"a:{i}"})
+        await _wait_until(lambda: len(service.snapshot().clips) == 2)
+        assert [c.clip_id for c in cache.clips] == ["a:2", "a:1"]
+    finally:
+        await _stop(service, task)
+
+
+async def test_get_thumbnail_falls_back_to_durable_cache_without_asking_bridge(tmp_path):
+    cache = EufyClipCache(tmp_path / "cache", capacity=5)
+    cache.load()
+    cache.remember(
+        StoredClip(
+            clip_id="a:1",
+            camera_id="a",
+            camera_name="Front Door",
+            occurred_at="2026-09-14T09:00:00",
+        )
+    )
+    cache.save_thumbnail("a:1", b"already-known-thumbnail")
+    service, client, _broadcasts = make_service(cache=cache)
+    # No run(), no bridge connection at all.
+    data = await service.get_thumbnail("a:1")
+    assert data == b"already-known-thumbnail"
+    assert client.sent == []
+
+
+async def test_get_thumbnail_prewarms_durable_cache_on_discovery(tmp_path):
+    cache = EufyClipCache(tmp_path / "cache", capacity=5)
+    cache.load()
+    service, client, _broadcasts = make_service(cache=cache)
+    task = asyncio.create_task(service.run())
+    try:
+        await _wait_until(lambda: client.connected)
+        client.push(CLIP1)
+        await _wait_until(lambda: service.has_clip("a:1"))
+
+        await _wait_until(lambda: any(m["type"] == "get_thumbnail" for m in client.sent))
+        request = next(m for m in client.sent if m["type"] == "get_thumbnail")
+        payload = base64.b64encode(b"prewarmed-bytes").decode()
+        client.push(
+            {"type": "thumbnail", "request_id": request["request_id"], "data_base64": payload}
+        )
+
+        await _wait_until(lambda: cache.thumbnail("a:1") is not None)
+        assert cache.thumbnail("a:1") == b"prewarmed-bytes"
+    finally:
+        await _stop(service, task)
+
+
+async def test_get_video_path_falls_back_to_durable_cache_without_asking_bridge(tmp_path):
+    directory = tmp_path / "cache"
+    cache = EufyClipCache(directory, capacity=5)
+    cache.load()
+    cache.remember(
+        StoredClip(
+            clip_id="a:1",
+            camera_id="a",
+            camera_name="Front Door",
+            occurred_at="2026-09-14T09:00:00",
+        )
+    )
+    source = tmp_path / "downloaded.mp4"
+    source.write_bytes(b"already-decoded")
+    cache.save_video("a:1", source)
+
+    service, client, _broadcasts = make_service(cache=cache)
+    path = await service.get_video_path("a:1")
+    assert path is not None
+    assert path.read_bytes() == b"already-decoded"
+    assert client.sent == []
+
+
+async def test_get_video_path_persists_to_durable_cache_after_bridge_fetch(tmp_path):
+    cache = EufyClipCache(tmp_path / "cache", capacity=5)
+    cache.load()
+    service, client, _broadcasts = make_service(cache=cache)
+    task = asyncio.create_task(service.run())
+    try:
+        await _wait_until(lambda: client.connected)
+        client.push(CLIP1)
+        await _wait_until(lambda: service.has_clip("a:1"))
+
+        clip_file = tmp_path / "clip.mp4"
+        clip_file.write_bytes(b"decoded-from-bridge")
+
+        async def answer():
+            await _wait_until(lambda: any(m["type"] == "retrieve_clip" for m in client.sent))
+            request = next(m for m in client.sent if m["type"] == "retrieve_clip")
+            client.push(
+                {"type": "clip_file", "request_id": request["request_id"], "path": str(clip_file)}
+            )
+
+        answerer = asyncio.create_task(answer())
+        path = await service.get_video_path("a:1")
+        await answerer
+        assert path.read_bytes() == b"decoded-from-bridge"
+        assert cache.video_path("a:1") is not None
+        assert cache.video_path("a:1").read_bytes() == b"decoded-from-bridge"
+    finally:
+        await _stop(service, task)

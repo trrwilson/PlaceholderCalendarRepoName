@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.config import Settings
+from app.eufy.cache import EufyClipCache
 from app.eufy.events import parse_clip_discovered, parse_ready, parse_status
 from app.models import ApplicationMessage, CameraGallerySnapshot, EufySourceStatus, StoredClip
 
@@ -68,6 +69,7 @@ class EufyEventService:
         client_factory: Callable[[], _BridgeClient] | None = None,
         start_bridge: Callable[[], Awaitable[None]] | None = None,
         stop_bridge: Callable[[], Awaitable[None]] | None = None,
+        cache: EufyClipCache | None = None,
     ) -> None:
         self._settings = settings
         self._broadcast = broadcast
@@ -76,14 +78,27 @@ class EufyEventService:
         self._start_bridge = start_bridge
         self._stop_bridge = stop_bridge
 
+        # `cache` is None in every existing test (no disk I/O, current
+        # behaviour unchanged) and real only via `get_eufy_service()`, which
+        # builds one from `eufy_gallery_cache_dir`. Loaded synchronously here
+        # (cheap local disk I/O) so `snapshot()` is cache-backed the instant
+        # the singleton is constructed — before `run()` has even been
+        # scheduled, let alone connected to the bridge.
+        self._cache = cache
+        if self._cache is not None:
+            self._cache.load()
+        ring_buffer_size = max(1, settings.eufy_clip_ring_buffer_size)
+        seed = self._cache.clips[:ring_buffer_size] if self._cache is not None else []
+
         self._client: _BridgeClient | None = None
-        self._clips: deque[StoredClip] = deque(maxlen=max(1, settings.eufy_clip_ring_buffer_size))
-        self._clip_ids: set[str] = set()
+        self._clips: deque[StoredClip] = deque(seed, maxlen=ring_buffer_size)
+        self._clip_ids: set[str] = {clip.clip_id for clip in self._clips}
         self._thumbnail_cache: OrderedDict[str, bytes] = OrderedDict()
         self._status: EufySourceStatus = "connecting"
         self._cameras_online = False
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._stopped = asyncio.Event()
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     def _default_client_factory(self) -> _BridgeClient:
         from app.eufy.client import EufyBridgeClient
@@ -108,14 +123,23 @@ class EufyEventService:
 
     async def get_thumbnail(self, clip_id: str) -> bytes | None:
         """Cached-decoded-JPEG bytes for one clip, or ``None`` if the clip is
-        unknown or the bridge could not resolve it in time. Decoded once per
-        clip — a repeat render of the gallery never re-asks the bridge."""
+        unknown or the bridge could not resolve it in time. Checked in order:
+        the in-memory LRU (decoded once per clip, never re-asked of the
+        bridge on a repeat render), then the durable on-disk cache (so a
+        disconnected/restarted bridge still serves an already-known
+        thumbnail), then finally the bridge itself — whose result is written
+        through to both caches."""
         cached = self._thumbnail_cache.get(clip_id)
         if cached is not None:
             self._thumbnail_cache.move_to_end(clip_id)
             return cached
         if not self.has_clip(clip_id):
             return None
+        if self._cache is not None:
+            on_disk = self._cache.thumbnail(clip_id)
+            if on_disk is not None:
+                self._cache_thumbnail(clip_id, on_disk)
+                return on_disk
         try:
             response = await self._request(
                 "get_thumbnail", {"clip_id": clip_id}, timeout=THUMBNAIL_REQUEST_TIMEOUT_SECONDS
@@ -130,15 +154,24 @@ class EufyEventService:
         except (ValueError, binascii.Error):
             return None
         self._cache_thumbnail(clip_id, data)
+        if self._cache is not None:
+            self._cache.save_thumbnail(clip_id, data)
         return data
 
     async def get_video_path(self, clip_id: str) -> Path | None:
         """Trigger (or reuse) a decrypted, muxed local file for one clip.
         ``None`` if the clip is unknown, the bridge could not retrieve it, or
         it timed out — the caller never distinguishes why, only that the video
-        isn't available right now."""
+        isn't available right now. Checked in order: the durable on-disk
+        cache (works even with the bridge offline), then the bridge — whose
+        result is copied into the durable cache before returning, so the
+        *next* restart/disconnect can serve it too."""
         if not self.has_clip(clip_id):
             return None
+        if self._cache is not None:
+            on_disk = self._cache.video_path(clip_id)
+            if on_disk is not None:
+                return on_disk
         try:
             response = await self._request(
                 "retrieve_clip", {"clip_id": clip_id}, timeout=VIDEO_REQUEST_TIMEOUT_SECONDS
@@ -152,7 +185,13 @@ class EufyEventService:
         if not isinstance(path, str):
             return None
         candidate = Path(path)
-        return candidate if candidate.is_file() else None
+        if not candidate.is_file():
+            return None
+        if self._cache is not None:
+            persisted = self._cache.save_video(clip_id, candidate)
+            if persisted is not None:
+                return persisted
+        return candidate
 
     # -- the run loop ---------------------------------------------------------
 
@@ -194,6 +233,8 @@ class EufyEventService:
 
     async def stop(self) -> None:
         self._stopped.set()
+        for task in list(self._background_tasks):
+            task.cancel()
         if self._client is not None:
             await self._client.close()
         self._fail_pending("the eufy service is stopping")
@@ -238,7 +279,23 @@ class EufyEventService:
             self._thumbnail_cache.pop(evicted.clip_id, None)
         self._clips.appendleft(clip)
         self._clip_ids.add(clip.clip_id)
+        if self._cache is not None:
+            self._cache.remember(clip)
+            # Best-effort pre-warm so the thumbnail is already on disk before
+            # anyone asks — `get_thumbnail` writes through to the durable
+            # cache itself, so this is the only place that needs to trigger
+            # it. Tracked so a mid-fetch `stop()` cancels it cleanly instead
+            # of leaking a dangling task.
+            task = asyncio.create_task(self._prefetch_thumbnail(clip.clip_id))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         await self._broadcast_snapshot()
+
+    async def _prefetch_thumbnail(self, clip_id: str) -> None:
+        try:
+            await self.get_thumbnail(clip_id)
+        except Exception:  # noqa: BLE001 - best-effort cache warm, never surfaces
+            logger.debug("eufy: thumbnail pre-warm failed for %s", clip_id, exc_info=True)
 
     async def _set_status(self, status: EufySourceStatus) -> None:
         if status == self._status:
