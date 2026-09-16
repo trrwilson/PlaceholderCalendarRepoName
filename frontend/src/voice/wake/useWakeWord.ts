@@ -69,6 +69,14 @@ interface Options {
 }
 
 const USER_PREF_KEY = 'mission-control.wake-word'
+// A one-shot failure of either loop below (the backend not answering yet at
+// kiosk page-load, a network blip) must not permanently disable wake word for
+// the rest of this always-on session — both retry with capped backoff instead
+// of latching an error forever.
+const CONFIG_RETRY_INITIAL_MS = 3_000
+const CONFIG_RETRY_MAX_MS = 30_000
+const DETECTOR_RETRY_INITIAL_MS = 2_000
+const DETECTOR_RETRY_MAX_MS = 30_000
 
 function readUserPref(): boolean {
   try {
@@ -121,16 +129,30 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
 
   useEffect(() => {
     let cancelled = false
-    fetch(`${apiBaseUrl}/api/voice/wake-config`)
-      .then((r) => (r.ok ? (r.json() as Promise<WakeConfigResponse>) : Promise.reject(new Error(String(r.status)))))
-      .then((c) => {
-        if (!cancelled) setConfig(c)
-      })
-      .catch(() => {
-        if (!cancelled) setConfigFailed(true)
-      })
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retryDelayMs = CONFIG_RETRY_INITIAL_MS
+
+    const load = () => {
+      fetch(`${apiBaseUrl}/api/voice/wake-config`)
+        .then((r) => (r.ok ? (r.json() as Promise<WakeConfigResponse>) : Promise.reject(new Error(String(r.status)))))
+        .then((c) => {
+          if (cancelled) return
+          setConfigFailed(false)
+          setConfig(c)
+        })
+        .catch(() => {
+          if (cancelled) return
+          setConfigFailed(true)
+          retryTimer = setTimeout(() => {
+            retryDelayMs = Math.min(retryDelayMs * 2, CONFIG_RETRY_MAX_MS)
+            load()
+          }, retryDelayMs)
+        })
+    }
+    load()
     return () => {
       cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
     }
   }, [apiBaseUrl])
 
@@ -143,59 +165,86 @@ export function useWakeWord({ apiBaseUrl, voiceBusy, onWake }: Options) {
       return
     }
     let disposed = false
-    setState('loading')
-    setDetail(null)
-    const detector = createWakeDetector(
-      {
-        provider,
-        apiBaseUrl,
-        modelPath,
-        modelsBaseUrl,
-        threshold,
-        cooldownMs,
-        invokeGateEnabled,
-      },
-      micSource,
-    )
-    detectorRef.current = detector
-    detector
-      .start({
-        onWake: (event) => {
-          if (disposed) return
-          pendingWakeAtRef.current = event.at
-          setLastScore(event.score)
-          setLastDetectionAt(Date.now())
-          onWakeRef.current(event)
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retryDelayMs = DETECTOR_RETRY_INITIAL_MS
+
+    const scheduleRetry = () => {
+      if (disposed || retryTimer) return
+      retryTimer = setTimeout(() => {
+        retryTimer = null
+        retryDelayMs = Math.min(retryDelayMs * 2, DETECTOR_RETRY_MAX_MS)
+        detectorRef.current?.dispose()
+        detectorRef.current = null
+        bringUp()
+      }, retryDelayMs)
+    }
+
+    const bringUp = () => {
+      if (disposed) return
+      setState('loading')
+      setDetail(null)
+      const detector = createWakeDetector(
+        {
+          provider,
+          apiBaseUrl,
+          modelPath,
+          modelsBaseUrl,
+          threshold,
+          cooldownMs,
+          invokeGateEnabled,
         },
-        onScore: (score) => {
-          if (!disposed) setLastScore(score)
-        },
-        onError: (error) => {
-          if (!disposed) {
+        micSource,
+      )
+      detectorRef.current = detector
+      detector
+        .start({
+          onWake: (event) => {
+            if (disposed) return
+            pendingWakeAtRef.current = event.at
+            setLastScore(event.score)
+            setLastDetectionAt(Date.now())
+            onWakeRef.current(event)
+          },
+          onScore: (score) => {
+            if (!disposed) setLastScore(score)
+          },
+          // A detector that started fine can still fail later (the socket
+          // went stale, the backend restarted) — retry rather than sitting
+          // in `error` for the rest of the kiosk session.
+          onError: (error) => {
+            if (disposed) return
             setState('error')
             setDetail(error.message)
-          }
-        },
-      })
-      .then(() => {
-        if (!disposed) setState(voiceBusyRef.current ? 'suspended' : 'armed')
-      })
-      .catch((cause: unknown) => {
-        if (disposed) return
-        detectorRef.current = null
-        setState('error')
-        setDetail(
-          cause instanceof WakeUnavailableError
-            ? cause.message
-            : cause instanceof Error
+            scheduleRetry()
+          },
+        })
+        .then(() => {
+          if (disposed) return
+          retryDelayMs = DETECTOR_RETRY_INITIAL_MS
+          setState(voiceBusyRef.current ? 'suspended' : 'armed')
+        })
+        .catch((cause: unknown) => {
+          if (disposed) return
+          detectorRef.current = null
+          setState('error')
+          setDetail(
+            cause instanceof WakeUnavailableError
               ? cause.message
-              : 'wake detector failed to start',
-        )
-      })
+              : cause instanceof Error
+                ? cause.message
+                : 'wake detector failed to start',
+          )
+          scheduleRetry()
+        })
+    }
+
+    bringUp()
+
     return () => {
       disposed = true
-      detector.dispose()
-      if (detectorRef.current === detector) detectorRef.current = null
+      if (retryTimer) clearTimeout(retryTimer)
+      detectorRef.current?.dispose()
+      detectorRef.current = null
     }
   }, [
     shouldRun,

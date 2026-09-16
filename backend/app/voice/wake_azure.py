@@ -123,6 +123,11 @@ async def run_wake_relay(client: WebSocket) -> None:
                 suspended = True
             elif kind == "resume":
                 suspended = False
+            elif kind == "ping":
+                # Keepalive (frontend/src/voice/wake/azureKeyword.ts): this
+                # background socket can sit idle for a whole voice turn while
+                # suspended, with no audio frames to prove it is still alive.
+                await _safe_send_json(client, {"type": "pong"})
 
     async def _pump_events() -> None:
         while True:

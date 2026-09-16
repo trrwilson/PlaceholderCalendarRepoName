@@ -173,6 +173,19 @@ async def test_relay_ignores_a_non_keyword_result(fake_speechsdk) -> None:
     assert not any(m.get("type") == "wake" for m in ws.sent)
 
 
+async def test_relay_replies_to_a_keepalive_ping(fake_speechsdk) -> None:
+    """frontend/src/voice/wake/azureKeyword.ts pings while suspended (a whole
+    voice turn can pass with no audio frames to otherwise prove the socket is
+    still alive); the relay must answer so a silently-dead connection is
+    distinguishable from a quiet one."""
+    from app.voice.wake_azure import run_wake_relay
+
+    ws = _FakeWS([{"type": "ping"}, {"type": "audio", "pcm": ""}])
+    await asyncio.wait_for(run_wake_relay(ws), timeout=2)
+
+    assert {"type": "pong"} in ws.sent
+
+
 async def test_relay_forwards_audio_into_the_push_stream(fake_speechsdk) -> None:
     from app.voice.wake_azure import run_wake_relay
 

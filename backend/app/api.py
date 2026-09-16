@@ -1,4 +1,5 @@
 import ipaddress
+import json
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 
@@ -1041,7 +1042,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 ).model_dump(mode="json", exclude_none=True)
             )
         while True:
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            # The only inbound frame today is the kiosk's keepalive ping (see
+            # frontend/src/realtime/appSocket.ts) — a long-idle connection can go
+            # silently half-open with neither side noticing, so the client pings
+            # and watches for this reply to tell a real drop from a quiet one.
+            try:
+                frame = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(frame, dict) and frame.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
         return
     finally:

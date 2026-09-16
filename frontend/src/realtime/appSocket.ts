@@ -17,6 +17,15 @@ type StatusListener = (status: SocketStatus) => void
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000
 const MAX_RECONNECT_DELAY_MS = 15_000
+// A long-idle WebSocket can go silently half-open (a network blip, a sleep/
+// wake cycle) with neither side ever seeing a `close` event — the backend
+// keeps broadcasting into a socket nobody is reading, and this client sits
+// forever believing it's 'live'. Ping periodically and require *some* traffic
+// (any message, not just a pong) within a generous multiple of that interval;
+// if none arrives, force the socket closed so the existing reconnect path
+// (above) replaces it. See app/api.py's `/api/ws` ping handling.
+const PING_INTERVAL_MS = 15_000
+const STALE_TIMEOUT_MS = 40_000
 
 class AppSocket {
   private ws: WebSocket | null = null
@@ -27,12 +36,15 @@ class AppSocket {
   private readonly statusListeners = new Set<StatusListener>()
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private lastMessageAt = 0
 
   /** Register interest in the connection; (re)opens it for the first caller. */
   connect(apiBaseUrl: string): void {
     this.refs += 1
     this.baseUrl = apiBaseUrl
     if (this.refs === 1) {
+      this.stopHeartbeat()
       if (this.ws) {
         try {
           this.ws.close()
@@ -52,6 +64,7 @@ class AppSocket {
     this.refs = Math.max(0, this.refs - 1)
     if (this.refs === 0) {
       this.clearReconnectTimer()
+      this.stopHeartbeat()
       if (this.ws) {
         const ws = this.ws
         this.ws = null
@@ -84,7 +97,9 @@ class AppSocket {
       ws.addEventListener('open', () => {
         if (this.ws !== ws) return
         this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
+        this.lastMessageAt = Date.now()
         this.setStatus('live')
+        this.startHeartbeat(ws)
       })
       ws.addEventListener('close', () => {
         // A superseded socket (replaced by a newer connect(), e.g. React
@@ -93,11 +108,13 @@ class AppSocket {
         // live — without this guard that spuriously flips the shared status
         // back to 'offline' and queues a redundant reconnect.
         if (this.ws !== ws) return
+        this.stopHeartbeat()
         this.ws = null
         this.setStatus('offline')
         this.scheduleReconnect()
       })
       ws.addEventListener('message', (event: MessageEvent) => {
+        this.lastMessageAt = Date.now()
         let data: Record<string, unknown>
         try {
           data = JSON.parse(String(event.data)) as Record<string, unknown>
@@ -110,6 +127,38 @@ class AppSocket {
       this.ws = null
       this.setStatus('offline')
       this.scheduleReconnect()
+    }
+  }
+
+  /** Ping on an interval and force-close a socket that's gone quiet for too
+   * long — the browser never delivers a `close` event for this on its own. */
+  private startHeartbeat(ws: WebSocket): void {
+    this.stopHeartbeat()
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws !== ws) return
+      if (Date.now() - this.lastMessageAt > STALE_TIMEOUT_MS) {
+        try {
+          ws.close()
+        } catch {
+          // already gone; the close handler (if it ever fires) is a no-op
+        }
+        return
+      }
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: 'ping' }))
+        } catch {
+          // a send failure here means the socket is on its way out; the
+          // close handler will pick up the pieces
+        }
+      }
+    }, PING_INTERVAL_MS)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
     }
   }
 
@@ -140,7 +189,9 @@ class AppSocket {
   /** Test-only: drop all state so a stubbed WebSocket doesn't leak between tests. */
   __resetForTests(): void {
     this.clearReconnectTimer()
+    this.stopHeartbeat()
     this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
+    this.lastMessageAt = 0
     this.ws = null
     this.refs = 0
     this.status = 'connecting'
