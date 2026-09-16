@@ -811,8 +811,33 @@ function HolidayNote({ date, className }: { date: Date; className: string }) {
 }
 
 function HomeView({ now, todayEvents, todaySpans, upcoming, calendarById, onSelect, colorMode, calendarAlert, camera, redacting, onSelectClip, apiBaseUrl }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; upcoming: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null; camera: ReturnType<typeof useCameraActivity>; redacting: boolean; onSelectClip: (clip: StoredClip) => void; apiBaseUrl: string }) {
-  const tomorrow = upcoming.filter((event) => !isSpanningEvent(event) && isSameDay(new Date(event.starts_at), addDays(now, 1))).slice(0, 3)
-  return <div className="home-view"><div className="home-grid"><section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><h2>{todayEvents.length} things on the rhythm</h2><HolidayNote date={now} className="holiday-note-home" /></div><span className="date-pill">{formatShortDate(now)}</span></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section><aside className="home-rail"><section className="next-card"><div className="view-heading"><div><p className="section-kicker">Coming up</p><h2>Next</h2></div><span className="arrow-mark">→</span></div><div className="next-list">{upcoming.slice(0, 4).map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div></section><section className="tomorrow-card"><p className="section-kicker">Tomorrow</p><h2>{formatWeekday(addDays(now, 1))}</h2><HolidayNote date={addDays(now, 1)} className="holiday-note-home" />{tomorrow.length ? tomorrow.map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />) : <p>No events planned yet.</p>}</section>{calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} />}</aside></div></div>
+  const upcomingGroups = groupUpcomingByDay(upcoming, now, NEXT_CARD_EVENT_LIMIT)
+  return <div className="home-view"><div className="home-grid"><section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><HolidayNote date={now} className="holiday-note-home" /></div></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section><aside className="home-rail"><section className="next-card"><div className="view-heading"><div><p className="section-kicker">Coming up</p><h2>Next</h2></div><span className="arrow-mark">→</span></div><div className="next-list">{upcomingGroups.length ? upcomingGroups.map((group) => <div className="next-day-group" key={group.key}>{group.label && <p className="next-day-label">{group.label}<HolidayNote date={group.date} className="holiday-note-inline" /></p>}{group.events.map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>) : <p className="next-list-empty">Nothing else planned yet.</p>}</div></section>{calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} />}</aside></div></div>
+}
+
+// Merges the old separate "Next" and "Tomorrow" cards into one scan: they showed
+// overlapping future events under two headings competing for the same rail space.
+// A day-boundary label is inserted only where the date actually changes, so a run
+// of same-day events stays uninterrupted and space-efficient.
+const NEXT_CARD_EVENT_LIMIT = 6
+type UpcomingGroup = { key: string; date: Date; label: string | null; events: CalendarEvent[] }
+function groupUpcomingByDay(events: CalendarEvent[], now: Date, limit: number): UpcomingGroup[] {
+  const groups: UpcomingGroup[] = []
+  let count = 0
+  for (const event of events) {
+    if (count >= limit) break
+    if (isSpanningEvent(event)) continue
+    const day = new Date(event.starts_at)
+    const last = groups[groups.length - 1]
+    if (last && isSameDay(last.date, day)) {
+      last.events.push(event)
+    } else {
+      const label = isSameDay(day, now) ? null : isSameDay(day, addDays(now, 1)) ? 'Tomorrow' : formatWeekday(day)
+      groups.push({ key: event.id, date: day, label, events: [event] })
+    }
+    count++
+  }
+  return groups
 }
 
 // Tastefully laid-out review of the latest eufy camera clips, in the slot the
