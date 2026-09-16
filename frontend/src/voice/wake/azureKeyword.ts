@@ -21,6 +21,12 @@ import { downsampleTo16k, floatToPcm16Base64 } from './ringBuffer'
 
 /** How long to wait for the backend socket to open before giving up. */
 const CONNECT_TIMEOUT_MS = 5_000
+// This socket can sit suspended (no audio frames sent) for a whole voice
+// turn, so — like the app socket (`realtime/appSocket.ts`) — a silent
+// half-open drop needs its own keepalive rather than relying on traffic that
+// may not exist right now. See app/voice/wake_azure.py's ping handling.
+const PING_INTERVAL_MS = 15_000
+const STALE_TIMEOUT_MS = 40_000
 
 export class AzureKeywordDetector implements WakeDetector {
   running = false
@@ -33,6 +39,8 @@ export class AzureKeywordDetector implements WakeDetector {
   // `-Infinity` so the very first detection is never inside the cooldown window
   // (`performance.now()` can still be small right after the detector arms).
   private lastFireAt = -Infinity
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private lastMessageAt = 0
 
   private readonly url: string
   private readonly config: WakeDetectorConfig
@@ -64,6 +72,7 @@ export class AzureKeywordDetector implements WakeDetector {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        this.lastMessageAt = Date.now()
         resolve()
       }
       ws.onclose = (event) => {
@@ -102,6 +111,30 @@ export class AzureKeywordDetector implements WakeDetector {
     }
     this.running = true
     this.preroll.arm()
+    this.startHeartbeat()
+  }
+
+  /** Ping on an interval and surface an error if the socket's gone quiet for
+   * too long — while suspended, audio frames stop proving it's alive. */
+  private startHeartbeat(): void {
+    this.stopHeartbeat()
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.ws) return
+      if (Date.now() - this.lastMessageAt > STALE_TIMEOUT_MS) {
+        const handlers = this.handlers
+        this.dispose()
+        handlers?.onError?.(new Error('azure wake socket stale (no response)'))
+        return
+      }
+      this.send({ type: 'ping' })
+    }, PING_INTERVAL_MS)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
   }
 
   suspend(): void {
@@ -127,6 +160,7 @@ export class AzureKeywordDetector implements WakeDetector {
   dispose(): void {
     this.running = false
     this.suspended = false
+    this.stopHeartbeat()
     this.sub?.unsubscribe()
     this.sub = null
     this.handlers = null
@@ -153,6 +187,7 @@ export class AzureKeywordDetector implements WakeDetector {
   }
 
   private onServerMessage(event: MessageEvent): void {
+    this.lastMessageAt = Date.now()
     let message: { type?: string; score?: number }
     try {
       message = JSON.parse(String(event.data))

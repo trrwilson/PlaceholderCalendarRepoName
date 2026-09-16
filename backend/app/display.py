@@ -485,15 +485,26 @@ class DisplayStore:
     # -- helpers -----------------------------------------------------------------
 
     async def _apply(self, pct: int) -> None:
-        self._brightness = pct
         if not self._available:
+            # No real effector to consult — nothing can fail, so the requested
+            # level is the truth (dev/CI/non-colocated hosts).
+            self._brightness = pct
             return
         try:
             await asyncio.to_thread(self._controller.set_level, pct)
-            self._last_error = None
         except DisplayControlError as exc:
+            # Fail-safe: `_brightness` stays at its last known-good value
+            # rather than jumping to the target we merely *attempted* — the
+            # docstring's "reachable-at-its-last-known-level" only holds if a
+            # failed apply doesn't overwrite that level. This also keeps the
+            # next identical request from being skipped as a no-op change; a
+            # transient DDC/CI hiccup would otherwise silently stop retrying
+            # every time the dim/restore cycle asked for the same two levels.
             self._last_error = str(exc)
             logger.warning("display: set_level(%s) failed: %s", pct, exc)
+            return
+        self._brightness = pct
+        self._last_error = None
 
     async def _emit(self, message_type: str) -> None:
         await self._broadcast(

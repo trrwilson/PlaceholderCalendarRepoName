@@ -233,6 +233,26 @@ async def test_effector_error_is_surfaced_not_raised() -> None:
     assert store.state().night_mode is True  # intent still recorded
 
 
+async def test_effector_error_does_not_desync_brightness_from_reality() -> None:
+    """A failed `set_level` must not leave the store believing it reached the
+    target — that desync also silently defeats the *next* identical request
+    (`changed` would compare the new target against the already-corrupted
+    `_brightness` and see no difference), which is exactly how a single
+    transient DDC/CI hiccup turned into a permanently-stuck panel."""
+    store, controller, _ = make_store(
+        controller=FakeController(probe=ProbeResult(ok=True, level=100), fail=True)
+    )
+    await store.set_ambient_brightness(60)
+    assert store.state().brightness == 100
+    assert store.state().last_error == "boom"
+
+    controller._fail = False
+    await store.set_ambient_brightness(60)
+    assert store.state().brightness == 60
+    assert store.state().last_error is None
+    assert controller.levels == [60]
+
+
 async def test_restore_full_returns_to_reference() -> None:
     store, controller, _ = make_store(
         controller=FakeController(probe=ProbeResult(ok=True, level=90))
@@ -343,3 +363,13 @@ def test_put_display_broadcasts(client: TestClient) -> None:
         pushed = ws.receive_json()
         assert pushed["type"] == "display-night-mode"
         assert pushed["display"]["night_mode"] is True
+
+
+def test_ws_replies_to_a_keepalive_ping(client: TestClient) -> None:
+    """frontend/src/realtime/appSocket.ts pings periodically to tell a real
+    drop apart from a silently half-open connection; the server must answer."""
+    with client.websocket_connect("/api/ws") as ws:
+        for _ in range(5):  # connected, timers, lists, privacy, display
+            ws.receive_json()
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
