@@ -225,6 +225,59 @@ def test_static_scene_with_sensor_noise_does_not_trigger() -> None:
     assert not any(_passes_gate(r) for r in ratios[10:])
 
 
+# -- local-camera watchdog: stale/frozen capture detection (no camera) ------
+
+from app.presence.sources.local_camera import LocalCameraMotionSource, frame_changed  # noqa: E402
+
+
+def test_frame_changed_is_true_with_no_previous_frame() -> None:
+    frame = _base_frame(120, 0)
+    assert frame_changed(None, frame) is True
+
+
+def test_frame_changed_is_false_for_a_frozen_buffer() -> None:
+    """The watchdog's whole premise: a stuck DirectShow stream returns the
+    exact same buffer (or something indistinguishable from it) forever."""
+    frame = _base_frame(120, 0)
+    assert frame_changed(frame, frame.copy()) is False
+
+
+def test_frame_changed_is_true_across_two_live_noisy_frames() -> None:
+    """Real consecutive frames always differ by at least sensor noise."""
+    a = _base_frame(120, 1)
+    b = _base_frame(120, 2)
+    assert frame_changed(a, b) is True
+
+
+def _watchdog_source() -> LocalCameraMotionSource:
+    return LocalCameraMotionSource(
+        observe=lambda _signal: None,
+        device=None,
+        min_area_ratio=MIN_AREA_RATIO,
+        max_area_ratio=MAX_AREA_RATIO,
+        inference_interval_ms=150,
+    )
+
+
+def test_watchdog_does_not_reopen_a_healthy_camera() -> None:
+    source = _watchdog_source()
+    assert source._watchdog_should_reopen("ok", seconds_since_alive=1.0) is False
+
+
+def test_watchdog_reopens_a_stale_but_ok_camera() -> None:
+    source = _watchdog_source()
+    assert source._watchdog_should_reopen("ok", seconds_since_alive=15.0) is True
+
+
+def test_watchdog_leaves_an_already_known_bad_status_alone() -> None:
+    """A camera already reporting `disconnected`/`absent`/`error` is already
+    being handled by `_run`'s own backoff-and-reconnect loop -- the watchdog
+    only needs to act on the case that loop can't see for itself."""
+    source = _watchdog_source()
+    for status in ("disconnected", "absent", "error", "disabled"):
+        assert source._watchdog_should_reopen(status, seconds_since_alive=999.0) is False
+
+
 # -- note_activity() (the shared voice/touch/wake-word/timer entry point) ---
 
 

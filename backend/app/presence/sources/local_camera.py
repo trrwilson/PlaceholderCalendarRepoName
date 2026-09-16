@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
@@ -68,6 +69,32 @@ _CONFIDENCE_SATURATION_MULTIPLE = 4
 # repeated failures so an unplugged webcam does not spin a thread hot.
 _INITIAL_RETRY_SECONDS = 1.0
 _MAX_RETRY_SECONDS = 30.0
+# A known DirectShow/UVC failure mode: after a USB power-management hiccup or
+# reconnect, `capture.read()` can keep returning `True` forever with a stale
+# or frozen buffer (or simply block in native code) without ever reporting a
+# disconnect — invisible to the reconnect logic above, which only reacts to
+# `read()` explicitly failing. A watchdog thread force-reopens the capture if
+# no frame has changed in this long while `status` still claims "ok".
+_STALE_FRAME_TIMEOUT_SECONDS = 10.0
+_WATCHDOG_POLL_SECONDS = 2.0
+# A genuinely live capture never returns bit-identical consecutive frames —
+# sensor noise alone guarantees some difference. A near-zero mean diff
+# between frames is the frozen-stream tell.
+_STALE_FRAME_DIFF_EPSILON = 0.05
+
+
+def frame_changed(
+    prev: np.ndarray | None, frame: np.ndarray, epsilon: float = _STALE_FRAME_DIFF_EPSILON
+) -> bool:
+    """Whether `frame` differs meaningfully from `prev` — or there is no
+    `prev` yet. Pure and cheap (one `absdiff` + mean over a downscaled
+    frame), so the watchdog's staleness check is exercisable without a
+    camera."""
+    import cv2
+
+    if prev is None:
+        return True
+    return float(cv2.absdiff(frame, prev).mean()) > epsilon
 
 
 def _kernel() -> np.ndarray:
@@ -114,6 +141,10 @@ class LocalCameraMotionSource:
     raise) rather than crashing the thread — `status` surfaces the current
     camera state for `GET /api/presence` diagnostics and fails safe (a lost
     camera reports `"disconnected"`, never a false `"absent"`).
+
+    A second daemon thread (`_watchdog_run`) guards against the failure mode
+    that backoff-on-disconnect can't see: a capture that keeps reporting
+    `"ok"` while `read()` silently stalls or returns a frozen buffer forever.
     """
 
     def __init__(
@@ -136,6 +167,17 @@ class LocalCameraMotionSource:
         self._status_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._watchdog_thread: threading.Thread | None = None
+        # Liveness clock the watchdog reads from a different thread than the
+        # one that writes it — kept as its own small lock rather than reused
+        # off `_status_lock`, since the two are updated independently.
+        self._liveness_lock = threading.Lock()
+        self._last_live_frame_at = time.monotonic()
+        # The currently-open capture, mirrored here (only) so the watchdog
+        # can force it closed from outside `_run`'s thread — the standard
+        # way to unstick a thread blocked inside a native `read()` call.
+        self._capture_lock = threading.Lock()
+        self._capture = None
 
     @property
     def status(self) -> CameraStatus:
@@ -149,20 +191,60 @@ class LocalCameraMotionSource:
         if changed:
             logger.info("presence: local camera status -> %s", status)
 
+    def _touch_alive(self) -> None:
+        with self._liveness_lock:
+            self._last_live_frame_at = time.monotonic()
+
+    def _seconds_since_alive(self) -> float:
+        with self._liveness_lock:
+            return time.monotonic() - self._last_live_frame_at
+
+    def _watchdog_should_reopen(self, status: CameraStatus, seconds_since_alive: float) -> bool:
+        """Pure decision the watchdog thread acts on — split out so it's
+        testable without threads or a camera."""
+        return status == "ok" and seconds_since_alive >= _STALE_FRAME_TIMEOUT_SECONDS
+
     def start(self) -> None:
         if self._thread is not None:
             return
         self._stop.clear()
         self._set_status("absent")
+        self._touch_alive()
         self._thread = threading.Thread(target=self._run, name="presence-local-camera", daemon=True)
         self._thread.start()
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_run, name="presence-local-camera-watchdog", daemon=True
+        )
+        self._watchdog_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
+        if self._watchdog_thread is not None:
+            self._watchdog_thread.join(timeout=5)
         self._thread = None
+        self._watchdog_thread = None
+        with self._capture_lock:
+            self._capture = None
         self._set_status("disabled")
+
+    def _watchdog_run(self) -> None:
+        while not self._stop.wait(_WATCHDOG_POLL_SECONDS):
+            if not self._watchdog_should_reopen(self.status, self._seconds_since_alive()):
+                continue
+            with self._capture_lock:
+                capture, self._capture = self._capture, None
+            if capture is None:
+                continue
+            logger.warning(
+                "presence: local camera watchdog forcing reopen (no live frame for %.0fs)",
+                _STALE_FRAME_TIMEOUT_SECONDS,
+            )
+            capture.release()
+            # Avoid re-firing every poll interval while `_run` notices the
+            # forced release and works through its own reconnect backoff.
+            self._touch_alive()
 
     def _open_capture(self):
         import cv2
@@ -189,6 +271,7 @@ class LocalCameraMotionSource:
 
         capture = None
         subtractor = None
+        prev_frame = None
         backoff = _INITIAL_RETRY_SECONDS
         ever_opened = False
         try:
@@ -208,24 +291,35 @@ class LocalCameraMotionSource:
                     backoff = _INITIAL_RETRY_SECONDS
                     ever_opened = True
                     subtractor = new_subtractor()
+                    prev_frame = None
+                    self._touch_alive()
+                    with self._capture_lock:
+                        self._capture = capture
                     self._set_status("ok")
                     logger.info("presence: local camera opened (device=%s)", self._device or "auto")
 
                 ok, frame = capture.read()
                 if not ok or frame is None:
                     self._set_status("disconnected")
+                    with self._capture_lock:
+                        self._capture = None
                     capture.release()
                     capture = None
                     continue
 
                 if frame.shape[:2] != (_ANALYSIS_SIZE[1], _ANALYSIS_SIZE[0]):
                     frame = cv2.resize(frame, _ANALYSIS_SIZE)
+                if frame_changed(prev_frame, frame):
+                    self._touch_alive()
+                prev_frame = frame
                 self._evaluate(frame, subtractor)
                 self._stop.wait(self._interval_seconds)
         except Exception:  # noqa: BLE001 - a detector crash must not take display/backend down
             logger.exception("presence: local camera loop failed")
             self._set_status("error")
         finally:
+            with self._capture_lock:
+                self._capture = None
             if capture is not None:
                 capture.release()
 
