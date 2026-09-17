@@ -115,7 +115,10 @@ Start-Process -FilePath 'pwsh.exe' `
 Write-Step "Stopping frontend"
 # Scoped to this checkout's own frontend/node_modules — other worktrees run their
 # own Vite dev servers on other ports and must not be touched by this script.
-$frontendCmds = Stop-ThisRepoProcess -NameLike 'node.exe' -CmdLike "*vite*$frontend*" -What 'vite'
+# (The repo path itself is inside `.../frontend/node_modules/.bin/../vite/bin/vite.js`,
+# i.e. it comes *before* the "vite" substring in the command line, not after — a
+# `*vite*$frontend*` pattern silently matches nothing.)
+$frontendCmds = Stop-ThisRepoProcess -NameLike 'node.exe' -CmdLike "*$frontend*vite*" -What 'vite'
 foreach ($cmd in $frontendCmds) { $found = Get-CommandLinePort -CommandLine $cmd -Flag '--port'; if ($found) { $FrontendPort = $found } }
 # The npm wrapper's own script path is global (Program Files, not this repo), so it
 # can't be directory-scoped like Vite above — scope it by the port it was told to
