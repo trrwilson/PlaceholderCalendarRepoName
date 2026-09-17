@@ -178,7 +178,7 @@ def test_token_minted_with_locked_constraints(
     # audio (so a transcript exists before the turn ends) and endpoints eagerly;
     # the kiosk still finalises the turn itself with `audioStreamEnd`.
     assert activity_detection.disabled is False
-    assert activity_detection.silence_duration_ms == 250
+    assert activity_detection.silence_duration_ms == 180
     # Gemini 3.x expresses "do not reason between tool calls" as thinking_level.
     assert constraint.config.thinking_config.thinking_level == "MINIMAL"
 
