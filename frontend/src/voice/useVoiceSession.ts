@@ -205,6 +205,12 @@ interface Options {
   /** Privacy mode is on — the session stays up but every tool call except the
    *  unlock keypad is refused (docs/privacy-mode-plan.md, resolution 5). */
   privacyLocked?: boolean
+  /** A full-screen dialog (e.g. the notes PTT modal) owns speech input right
+   *  now: the wake-word detector is suspended exactly as it is mid-turn, the
+   *  Ask button / a wake detection cannot open a new turn, and any turn
+   *  already in flight when this flips true is torn down. Set by
+   *  `VoiceSuppressionProvider` — see `frontend/src/voice/suppression.ts`. */
+  suppressed?: boolean
 }
 
 /**
@@ -230,6 +236,7 @@ export function useVoiceSession({
   actions,
   surface = null,
   privacyLocked = false,
+  suppressed = false,
 }: Options) {
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [transcript, setTranscript] = useState<VoiceTranscript>({ user: '', assistant: '' })
@@ -278,6 +285,8 @@ export function useVoiceSession({
   actionsRef.current = actions
   const privacyLockedRef = useRef(privacyLocked)
   privacyLockedRef.current = privacyLocked
+  const suppressedRef = useRef(suppressed)
+  suppressedRef.current = suppressed
   const errorRef = useRef(error)
   errorRef.current = error
   const statusRef = useRef(status)
@@ -823,6 +832,7 @@ export function useVoiceSession({
 
   const startTurn = useCallback(async (opts?: { viaWake?: boolean }) => {
     const viaWake = opts?.viaWake === true
+    if (suppressedRef.current) return
     viaWakeRef.current = viaWake
     if (!viaWake && (status === 'listening' || status === 'connecting')) return
     if (status === 'unavailable' && errorRef.current?.kind === 'disabled') return
@@ -994,9 +1004,16 @@ export function useVoiceSession({
   }, [])
 
   const voiceBusy =
-    status !== 'idle' && status !== 'armed' && status !== 'unavailable'
+    suppressed || (status !== 'idle' && status !== 'armed' && status !== 'unavailable')
   const wake = useWakeWord({ apiBaseUrl, voiceBusy, onWake: handleWake })
   wakeApiRef.current = wake
+
+  // A dialog claimed speech input while a turn was already open (tap, then a
+  // notes dictation modal opened mid-turn) — end it rather than let it keep
+  // listening/speaking underneath the dialog.
+  useEffect(() => {
+    if (suppressed) stopTurn()
+  }, [suppressed, stopTurn])
 
   // Surface the armed state through `status` when nothing else is happening, so
   // the Ask button / overlay can show "listening for Mission Control". `armed`

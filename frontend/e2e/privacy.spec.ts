@@ -64,7 +64,7 @@ test('privacy mode redacts the specifics, keeps the shape, and unlocks with the 
 
   await page.setViewportSize({ width: 1920, height: 1080 })
   await page.goto('/')
-  await expect(page.getByText('Therapy appointment')).toBeVisible()
+  await expect(page.getByText('Therapy appointment').first()).toBeVisible()
 
   // Press and hold the logo to enter privacy mode.
   const brand = page.getByRole('button', { name: 'Go to Home' })
@@ -74,7 +74,7 @@ test('privacy mode redacts the specifics, keeps the shape, and unlocks with the 
 
   // The event is still on screen (when / whose), the title is not.
   await expect(page.locator('.kiosk-shell.is-private')).toBeVisible()
-  await expect(page.getByText('Therapy appointment')).toBeHidden()
+  await expect(page.getByText('Therapy appointment').first()).toBeHidden()
   await expect(page.getByText('Downtown clinic')).toBeHidden()
   await expect(page.locator('.large-event')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Add an event' })).toBeHidden()
@@ -97,5 +97,5 @@ test('privacy mode redacts the specifics, keeps the shape, and unlocks with the 
   for (const digit of '8426') await pad.getByRole('button', { name: digit }).click()
 
   await expect(page.locator('.kiosk-shell.is-private')).toBeHidden()
-  await expect(page.getByText('Therapy appointment')).toBeVisible()
+  await expect(page.getByText('Therapy appointment').first()).toBeVisible()
 })

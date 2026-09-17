@@ -37,8 +37,11 @@ test('Home is the ambient default and fits a 3840x2160 kiosk viewport', async ({
   await page.setViewportSize({ width: 3840, height: 2160 })
   await page.goto('/')
   await expect(page.getByText('Today')).toBeVisible()
-  await expect(page.getByText('Garage door open')).toBeVisible()
   await expect(page.getByRole('button', { name: /Swim practice/ }).first()).toBeVisible()
+  // The day strip below Today (previous/today/+2) and the notes pane's
+  // floating "+" replace the old vertical "Next" rail — see App.tsx HomeView.
+  await expect(page.locator('.day-strip .day-strip-today')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add a note' })).toBeVisible()
   await assertNoDocumentOverflow(page)
 })
 

@@ -6,6 +6,7 @@ import { holidayOn } from './holidays'
 import type { DashboardActions } from './voice/types'
 import type { WakeState } from './voice/wake/useWakeWord'
 import { useVoiceSession } from './voice/useVoiceSession'
+import { useVoiceSuppressed } from './voice/suppression'
 import { useVoiceConfig } from './voice/useVoiceConfig'
 import { useAudioInput } from './voice/useAudioInput'
 import { useAudioOutput } from './voice/useAudioOutput'
@@ -22,6 +23,7 @@ import { useDisplay } from './display/useDisplay'
 import { useActivityPing } from './presence/useActivityPing'
 import { useCameraActivity } from './camera/useCameraActivity'
 import type { StoredClip } from './camera/types'
+import { NotesPane } from './notes/NotesPane'
 
 type CalendarSource = 'mock' | 'outlook' | 'google'
 // `name` is the raw account handle; `display_name` is the natural personal name the
@@ -378,9 +380,6 @@ function App() {
   // than interleaved with the timed agenda — they read as background context for the day.
   const todaySpans = visibleEvents.filter((event) => isSpanningEvent(event) && coversDay(event, now)).sort(sortEvents)
   const todayEvents = visibleEvents.filter((event) => !isSpanningEvent(event) && isSameDay(new Date(event.starts_at), now)).sort(sortEvents)
-  const upcoming = visibleEvents.filter((event) => new Date(event.ends_at) >= now).sort(sortEvents)
-  const pinnedIds = new Set([...todayEvents, ...todaySpans].map((event) => event.id))
-  const nextEvents = upcoming.filter((event) => !pinnedIds.has(event.id))
 
   // Privacy mode redacts at the render boundary — the snapshot the backend sent
   // is untouched, the kiosk just chooses not to show the specifics, so unlock is
@@ -390,7 +389,6 @@ function App() {
   const selectEvent = redacting ? () => undefined : setSelectedEvent
   const shownTodayEvents = redacting ? todayEvents.map(redactEvent) : todayEvents
   const shownTodaySpans = redacting ? todaySpans.map(redactEvent) : todaySpans
-  const shownNextEvents = redacting ? nextEvents.map(redactEvent) : nextEvents
   const shownVisibleEvents = redacting ? visibleEvents.map(redactEvent) : visibleEvents
 
   // The viewed period now lives in the global header (Week/Month dropped their own heading
@@ -460,11 +458,13 @@ function App() {
     requestPrivacyUnlock: () => setPrivacyPadOpen(true),
   }), [snapshot])
 
+  const voiceSuppressed = useVoiceSuppressed()
   const voice = useVoiceSession({
     apiBaseUrl: API_URL,
     actions: voiceActions,
     surface: 'kiosk',
     privacyLocked: privacy.locked,
+    suppressed: voiceSuppressed,
   })
   const voiceConfig = useVoiceConfig(API_URL)
   const audioInput = useAudioInput()
@@ -549,7 +549,7 @@ function App() {
       </header>
 
       <section className="view-frame">
-        {mode === 'home' && <HomeView now={now} todayEvents={shownTodayEvents} todaySpans={shownTodaySpans} upcoming={shownNextEvents} calendarById={calendarById} onSelect={selectEvent} colorMode={displayColorMode} calendarAlert={authNeedsSetup && !redacting ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} camera={camera} redacting={redacting} onSelectClip={redacting ? () => undefined : setSelectedClip} apiBaseUrl={API_URL} />}
+        {mode === 'home' && <HomeView now={now} todayEvents={shownTodayEvents} todaySpans={shownTodaySpans} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} colorMode={displayColorMode} calendarAlert={authNeedsSetup && !redacting ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} camera={camera} redacting={redacting} onSelectClip={redacting ? () => undefined : setSelectedClip} apiBaseUrl={API_URL} />}
         {mode === 'week' && <WeekView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'timer' && <TimerView timer={timers.timer} remainingMs={timers.remainingMs} alarm={timers.alarm} onStart={startTimerFromTouch} onExtend={extendTimer} onPause={() => timerAction('pause')} onResume={() => timerAction('resume')} onRestart={() => timerAction('restart')} onCancel={() => { void timers.cancel() }} onDismiss={() => { void timers.dismiss() }} />}
@@ -810,37 +810,52 @@ function HolidayNote({ date, className }: { date: Date; className: string }) {
   )
 }
 
-function HomeView({ now, todayEvents, todaySpans, upcoming, calendarById, onSelect, colorMode, calendarAlert, camera, redacting, onSelectClip, apiBaseUrl }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; upcoming: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null; camera: ReturnType<typeof useCameraActivity>; redacting: boolean; onSelectClip: (clip: StoredClip) => void; apiBaseUrl: string }) {
-  const upcomingGroups = groupUpcomingByDay(upcoming, now, NEXT_CARD_EVENT_LIMIT)
-  return <div className="home-view"><div className="home-grid"><section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><HolidayNote date={now} className="holiday-note-home" /></div></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section><aside className="home-rail"><section className="next-card"><div className="view-heading"><h2>Next</h2><span className="arrow-mark">→</span></div><div className="next-list">{upcomingGroups.length ? upcomingGroups.map((group) => <div className="next-day-group" key={group.key}>{group.label && <p className="next-day-label">{group.label}<HolidayNote date={group.date} className="holiday-note-inline" /></p>}{group.events.map((event) => <CompactEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>) : <p className="next-list-empty">Nothing else planned yet.</p>}</div></section>{calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} />}</aside></div></div>
+function HomeView({ now, todayEvents, todaySpans, events, calendarById, onSelect, colorMode, calendarAlert, camera, redacting, onSelectClip, apiBaseUrl }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; events: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null; camera: ReturnType<typeof useCameraActivity>; redacting: boolean; onSelectClip: (clip: StoredClip) => void; apiBaseUrl: string }) {
+  const [openDay, setOpenDay] = useState<Date | null>(null)
+  return <div className="home-view"><div className="home-grid">
+    <section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><HolidayNote date={now} className="holiday-note-home" /></div></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section>
+    <NotesPane apiBaseUrl={apiBaseUrl} redacting={redacting} />
+    <DayStrip now={now} events={events} calendarById={calendarById} onSelect={onSelect} colorMode={colorMode} onOpenDay={setOpenDay} />
+    {calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} />}
+  </div>
+  {openDay && <DayEventsSheet day={openDay} events={events} calendarById={calendarById} colorMode={colorMode} onSelect={(event) => { setOpenDay(null); onSelect(event) }} onClose={() => setOpenDay(null)} />}
+  </div>
 }
 
-// Merges the old separate "Next" and "Tomorrow" cards into one scan: they showed
-// overlapping future events under two headings competing for the same rail space.
-// A day-boundary label is inserted only where the date actually changes, so a run
-// of same-day events stays uninterrupted and space-efficient. The card itself now
-// fills whatever vertical space it's given (see .next-card in App.css) and clips
-// via overflow, so this cap only bounds how much we render, not how much shows —
-// generous enough that CSS, not this number, is what decides the visible count.
-const NEXT_CARD_EVENT_LIMIT = 20
-type UpcomingGroup = { key: string; date: Date; label: string | null; events: CalendarEvent[] }
-function groupUpcomingByDay(events: CalendarEvent[], now: Date, limit: number): UpcomingGroup[] {
-  const groups: UpcomingGroup[] = []
-  let count = 0
-  for (const event of events) {
-    if (count >= limit) break
-    if (isSpanningEvent(event)) continue
-    const day = new Date(event.starts_at)
-    const last = groups[groups.length - 1]
-    if (last && isSameDay(last.date, day)) {
-      last.events.push(event)
-    } else {
-      const label = isSameDay(day, now) ? null : isSameDay(day, addDays(now, 1)) ? 'Tomorrow' : formatWeekday(day)
-      groups.push({ key: event.id, date: day, label, events: [event] })
-    }
-    count++
-  }
-  return groups
+// The previous day, today, and the next two days, at a glance — Month's day-cell
+// pattern (same "today" highlight, same event-chip list) shrunk to a 4-wide strip
+// rather than a full week. Today reads slightly larger than its neighbours (the
+// "pop" the design calls for) via `.day-strip-today` alone; the highlight itself
+// is the same `.day-cell.today` rule Month uses, so the two views never drift.
+const DAY_STRIP_ROW_CAP = 2
+function DayStrip({ now, events, calendarById, onSelect, colorMode, onOpenDay }: { now: Date; events: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; onOpenDay: (day: Date) => void }) {
+  const days = [-1, 0, 1, 2].map((offset) => addDays(startOfDay(now), offset))
+  return (
+    <div className="day-strip">
+      {days.map((day) => {
+        const dayEvents = events
+          .filter((event) => (isSpanningEvent(event) ? coversDay(event, day) : isSameDay(new Date(event.starts_at), day)))
+          .sort(sortEvents)
+        const today = isSameDay(day, now)
+        const shown = dayEvents.slice(0, DAY_STRIP_ROW_CAP)
+        const hidden = dayEvents.length - shown.length
+        return (
+          <div className={`day-cell day-strip-cell ${today ? 'today day-strip-today' : ''}`} key={toIsoDate(day)}>
+            <div className="day-heading">
+              <span className="weekday-tag">{WEEKDAYS[day.getDay()]}</span>
+              <span className="day-number">{day.getDate()}</span>
+              <HolidayNote date={day} className="holiday-note-month" />
+            </div>
+            <div className="day-events">
+              {shown.map((event) => <EventChip event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}
+              {hidden > 0 && <button className="day-more" onClick={() => onOpenDay(day)} aria-label={`Show ${hidden} more ${hidden === 1 ? 'event' : 'events'} on ${formatSpanDate(day)}`}>+{hidden} more</button>}
+              {dayEvents.length === 0 && <p className="day-strip-empty">Clear</p>}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 // Tastefully laid-out review of the latest eufy camera clips, in the slot the

@@ -281,6 +281,47 @@ class ListMutationResult(BaseModel):
     already_present: list[str] = Field(default_factory=list)
 
 
+NOTE_TEXT_MAX = 280
+
+
+class Note(BaseModel):
+    """One touch-created sticky note in the Home notes pane. ``x``/``y`` are the
+    note's centre as a 0-1 fraction of the notes pane viewport (not pixels), so
+    the layout survives a resize; the frontend clamps drags so some part of the
+    note always stays in-bounds. ``z`` is a monotonically increasing stacking
+    order — the most recently created/moved/edited note is always on top."""
+
+    id: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=NOTE_TEXT_MAX)
+    x: float = Field(ge=0.0, le=1.0, default=0.5)
+    y: float = Field(ge=0.0, le=1.0, default=0.5)
+    z: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class NoteCreateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=NOTE_TEXT_MAX)
+    x: float = Field(ge=0.0, le=1.0, default=0.5)
+    y: float = Field(ge=0.0, le=1.0, default=0.5)
+
+
+class NoteUpdateRequest(BaseModel):
+    """A touch drag sends only ``x``/``y``; the edit dialog sends only ``text``
+    (content replacement is additive — see ``app/notes.py``); either may be sent
+    together. All are optional so a single PATCH covers both interactions."""
+
+    text: str | None = Field(default=None, min_length=1, max_length=NOTE_TEXT_MAX)
+    x: float | None = Field(default=None, ge=0.0, le=1.0)
+    y: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class NoteTranscription(BaseModel):
+    """The result of one push-to-talk dictation for a note's text field."""
+
+    text: str
+
+
 # -- Privacy mode ----------------------------------------------------------
 # One household-global flag that does two things at once: it tells the kiosk to
 # redact schedule / list specifics for a houseguest, and it is a hard read-only
