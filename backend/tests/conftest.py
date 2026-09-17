@@ -5,6 +5,7 @@ from app.config import Settings, get_settings
 from app.display import reset_display_store
 from app.eufy import reset_eufy_service
 from app.lists import reset_list_store
+from app.notes import reset_note_store
 from app.presence import reset_presence
 from app.privacy import reset_privacy_store
 from app.timers import reset_timer_store
@@ -28,6 +29,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     # Lists and privacy state persist to JSON files by default; keep tests off
     # disk unless one explicitly builds a store with a path.
     monkeypatch.setenv("MISSION_CONTROL_LISTS_FILE", "")
+    monkeypatch.setenv("MISSION_CONTROL_NOTES_FILE", "")
     monkeypatch.setenv("MISSION_CONTROL_PRIVACY_STATE_FILE", "")
     # `host_local_camera` defaults on (app/config.py — an opt-out, not an
     # opt-in) so a plain dev/prod run just opens the webcam. Force it off here
@@ -39,6 +41,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     _build_provider.cache_clear()
     reset_timer_store()
     reset_list_store()
+    reset_note_store()
     reset_privacy_store()
     reset_display_store()
     reset_presence()
@@ -55,6 +58,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     _build_provider.cache_clear()
     reset_timer_store()
     reset_list_store()
+    reset_note_store()
     reset_privacy_store()
     reset_display_store()
     reset_presence()

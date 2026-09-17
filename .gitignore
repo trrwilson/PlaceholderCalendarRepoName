@@ -68,6 +68,11 @@ backend/lists.json
 lists.json
 *.lists.json
 
+# Home notes pane store (MISSION_CONTROL_NOTES_FILE) — durable app data, per install
+backend/notes.json
+notes.json
+*.notes.json
+
 # Privacy-mode state (MISSION_CONTROL_PRIVACY_STATE_FILE) — persisted so a
 # power-cycle does not clear the lock
 backend/privacy.json

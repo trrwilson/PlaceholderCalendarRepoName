@@ -629,6 +629,24 @@ class Settings(BaseSettings):
     # How many distinct past item names the touch quick-add grid remembers.
     lists_recent_items_max: int = 20
 
+    # -- Notes (Home pane sticky notes) --------------------------------------
+    # Durable like lists, for the same reason — a wall appliance that forgets a
+    # note on reboot is broken UX. Same "one file, no datastore" class. Blank
+    # disables persistence (in-memory only).
+    notes_file: str = "notes.json"
+    # Dictation for note text is intentionally its own switch, separate from
+    # `voice_provider` (the conversational assistant): note-taking is a short,
+    # one-shot "record -> transcribe -> fill a text field" interaction, not a
+    # conversation, and defaults to the on-device pipeline regardless of which
+    # cloud provider the assistant is bench-marking. "local" reuses the same
+    # `SpeechRecognizer` seam (`local_stt_engine` etc., above) as the local voice
+    # pipeline; "disabled" hides the mic affordance in the notes dialog (typing
+    # only).
+    notes_stt_provider: Literal["local", "disabled"] = "local"
+    # Hard ceiling on a notes dictation recording, matching the on-screen PTT
+    # affordance ("speak a short utterance, then automatic silence").
+    notes_stt_max_seconds: float = 5.0
+
     # -- Privacy mode ---------------------------------------------------------
     # A houseguest-facing "redact the specifics + read-only" state. Entered from
     # the kiosk (long-press the logo, Settings, or ask the assistant) with no

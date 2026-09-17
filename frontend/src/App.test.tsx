@@ -32,7 +32,11 @@ describe('Mission Control dashboard', () => {
 
   it('reveals event details when a household event is touched', async () => {
     render(<App />)
-    const event = await screen.findByRole('button', { name: /Swim practice/ })
+    // `.large-event` scopes to the Today panel — the day strip also shows a
+    // "Swim practice" chip for today (see DayStrip), so a role/name query
+    // alone would be ambiguous.
+    await waitFor(() => expect(document.querySelector('.large-event')).toBeInTheDocument())
+    const event = document.querySelector('.large-event') as HTMLElement
     fireEvent.click(event)
 
     expect(await screen.findByRole('dialog', { name: 'Event details' })).toBeInTheDocument()
@@ -212,8 +216,11 @@ describe('Mission Control dashboard', () => {
 
     render(<App />)
 
-    const banner = await screen.findByRole('button', { name: /School break/ })
-    expect(banner).toHaveClass('today-banner')
+    // `.today-banner` scopes to the Today panel — the day strip also shows a
+    // "School break" chip for today (see DayStrip), so a role/name query
+    // alone would be ambiguous.
+    await waitFor(() => expect(document.querySelector('.today-banner')).toBeInTheDocument())
+    const banner = document.querySelector('.today-banner') as HTMLElement
     expect(banner).toHaveTextContent('Day 2 of 3')
     expect(document.querySelector('.large-agenda')).not.toBeInTheDocument()
 
@@ -237,7 +244,9 @@ describe('Mission Control dashboard', () => {
     render(<App />)
 
     // Category-first (default): the Home banner and the Month/Week span bar carry the category colour.
-    const banner = await screen.findByRole('button', { name: /School break/ })
+    // `.today-banner` scopes to the Today panel — see the equivalent note above.
+    await waitFor(() => expect(document.querySelector('.today-banner')).toBeInTheDocument())
+    const banner = document.querySelector('.today-banner') as HTMLElement
     expect(banner).toHaveClass('category-dominant')
     expect(banner).toHaveStyle({ '--category-color': '#8e44ad' })
 
@@ -524,9 +533,12 @@ describe('Mission Control dashboard', () => {
     try {
       render(<App />)
       // Home surfaces today's holiday under the headline; it is a plain label, never a button.
-      const homeNote = await screen.findByText('Labor Day')
+      // Scoped to `.holiday-note-home` — the day strip also shows today's
+      // holiday in its own cell (`.holiday-note-month`), so a bare text query
+      // would be ambiguous.
+      await waitFor(() => expect(document.querySelector('.holiday-note-home .holiday-note-name')).toHaveTextContent('Labor Day'))
+      const homeNote = document.querySelector('.holiday-note-home .holiday-note-name') as HTMLElement
       expect(homeNote.closest('button')).toBeNull()
-      expect(homeNote).toHaveClass('holiday-note-name')
 
       fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
       await waitFor(() => expect(document.querySelector('.month-grid')).toBeInTheDocument())

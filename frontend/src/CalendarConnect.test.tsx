@@ -102,9 +102,11 @@ describe('calendar sign-in', () => {
     expect(await screen.findByText('ABCD-EFGH')).toBeInTheDocument()
 
     // Once linked, the sheet closes on its own and the new account's events render.
+    // `getAllByRole` — today's events now render twice (the Today panel and
+    // the day strip's today cell both show them; see DayStrip).
     await waitFor(() => expect(screen.queryByText('Scan to finish on your phone')).not.toBeInTheDocument(), { timeout: 5000 })
-    expect(await screen.findByRole('button', { name: /Sam soccer/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Mia dentist/ })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /Sam soccer/ }).length).toBeGreaterThan(0))
+    expect(screen.getAllByRole('button', { name: /Mia dentist/ }).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: /People/ })).toHaveTextContent('2/2')
   }, 10000)
 

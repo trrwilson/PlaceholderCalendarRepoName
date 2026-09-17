@@ -21,6 +21,12 @@ review process.
 | Provider badges (`ProviderBadge` in `frontend/src/App.tsx`) | Self-made, simplified inline SVG marks for Outlook (blue tile + "O") and Google (4-colour "G") | n/a (original simplified glyphs, no file) | Small identity cue next to a person's name; drawn inline so there is no asset and it scales with type. Swap for licensed brand assets if exact-mark fidelity is ever required. |
 | Holiday markers (`HolidayNote` / `holidayOn`, `frontend/src/holidays.ts`) | System emoji (Segoe UI Emoji on the kiosk), rendered inline as text | n/a (OS font glyphs, no file) | One small thematic emoji prefixes each US-holiday label in the calendar views. No asset is committed; regional-indicator flag emoji are deliberately avoided (Windows renders them as letters). |
 
+## Fonts
+
+| Asset | Source | Licence | Notes |
+| --- | --- | --- | --- |
+| Patrick Hand (sticky notes, `frontend/index.html`, `.sticky-note` in `App.css`) | Google Fonts (`fonts.googleapis.com`/`fonts.gstatic.com`), not self-hosted | SIL Open Font License 1.1 | Upright casual-print handwriting for the Home notes pane only — crisp and legible at small sizes, deliberately not a cursive/novelty face. Loaded over the network with `display: swap`; App.css's `font-family` stack falls back to `cursive`, then sans-serif, so a blocked/offline network degrades gracefully rather than breaking layout. |
+
 ## ML models
 
 Model artifacts get licence **and** provenance reviewed independently of the

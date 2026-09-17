@@ -40,6 +40,10 @@ from app.models import (
     ListMutationResult,
     ListReorderRequest,
     ListRestoreRequest,
+    Note,
+    NoteCreateRequest,
+    NoteTranscription,
+    NoteUpdateRequest,
     PresenceActivityRequest,
     PresenceDiagnostics,
     PresenceSettings,
@@ -61,6 +65,7 @@ from app.models import (
     WakeProviderInfo,
     WakeWordConfig,
 )
+from app.notes import NoteError, get_note_store
 from app.presence import (
     KIOSK_SCOPE,
     camera_status,
@@ -800,6 +805,83 @@ async def reorder_list(
         return await get_list_store().reorder(list_id, body.item_ids)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="no such list") from exc
+
+
+# -- notes (Home pane sticky notes) ------------------------------------------
+# Backend-owned, persisted to one JSON file, same durability class as lists.
+# Single-kiosk, single-viewer surface — no /api/ws broadcast; the frontend
+# fetches once and holds its own state. Gated to loopback / LAN.
+
+
+@router.get("/notes", response_model=list[Note])
+async def list_notes(request: Request) -> list[Note]:
+    _require_local(request)
+    return get_note_store().list_all()
+
+
+@router.post("/notes", response_model=Note)
+async def create_note(request: Request, body: NoteCreateRequest) -> Note:
+    _require_local(request)
+    _require_unlocked()
+    try:
+        return get_note_store().create(body)
+    except NoteError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.patch("/notes/{note_id}", response_model=Note)
+async def update_note(request: Request, note_id: str, body: NoteUpdateRequest) -> Note:
+    _require_local(request)
+    _require_unlocked()
+    try:
+        return get_note_store().update(note_id, body)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such note") from exc
+
+
+@router.delete("/notes/{note_id}", response_model=Note)
+async def delete_note(request: Request, note_id: str) -> Note:
+    _require_local(request)
+    _require_unlocked()
+    try:
+        return get_note_store().delete(note_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such note") from exc
+
+
+@router.post("/notes/transcribe", response_model=NoteTranscription)
+async def transcribe_note(request: Request) -> NoteTranscription:
+    """One-shot push-to-talk dictation for a note's text field.
+
+    Takes the whole utterance as little-endian mono PCM16 @ 16 kHz (the body,
+    ``application/octet-stream`` — no streaming, no turn/session machinery,
+    unlike the conversational voice pipeline). Reuses the same
+    ``SpeechRecognizer`` seam and process-wide singleton as
+    ``WS /api/voice/local`` — see app/voice/local/. Text only; never touches
+    the calendar or any tool, so it is available even while privacy-locked
+    (matches ``_require_unlocked`` not being called for the voice session
+    itself), but is refused when notes dictation is switched off.
+    """
+    from app.voice.local.engines import create_recognizer
+    from app.voice.local.session import get_recognizer
+
+    _require_local(request)
+    settings = get_settings()
+    if settings.notes_stt_provider != "local":
+        raise HTTPException(status_code=409, detail="notes dictation is disabled")
+    pcm16 = await request.body()
+    if not pcm16:
+        raise HTTPException(status_code=422, detail="no audio received")
+    try:
+        recognizer = await get_recognizer(lambda: create_recognizer(settings))
+    except Exception as exc:  # noqa: BLE001 - report, do not crash the dialog
+        raise HTTPException(
+            status_code=503, detail=f"local speech engine unavailable: {exc}"
+        ) from exc
+    recognizer.reset()
+    events = recognizer.accept_audio(pcm16) + recognizer.finalize()
+    text = next((event.text for event in reversed(events) if event.type == "final"), "")
+    return NoteTranscription(text=text.strip())
 
 
 # -- privacy mode ----------------------------------------------------------
