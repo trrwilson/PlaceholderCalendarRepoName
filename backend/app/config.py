@@ -360,7 +360,11 @@ class Settings(BaseSettings):
     # looser so a mid-sentence breath does not cut someone off, and the kiosk's
     # own detector is normally what ends the turn anyway.
     voice_prefix_padding_ms: int = 100
-    voice_silence_duration_ms: int = 250
+    # Lowered from 250 (2026-09): endpointing reported as "very slow" overall —
+    # tightened alongside the kiosk-side backstop (`SERVER_VAD_BACKSTOP_MS` in
+    # useVoiceSession.ts) since either can end up dictating the tail latency of
+    # a turn. Still above Google's 100 ms example value.
+    voice_silence_duration_ms: int = 180
 
     # -- Voice assistant: Azure contestants (bake-off) -----------------------
     # Neither Azure provider connects browser-direct (the browser WebSocket API

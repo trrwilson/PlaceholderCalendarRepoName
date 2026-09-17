@@ -374,13 +374,14 @@ describe('useVoiceSession', () => {
         await result.current.startTurn()
       })
       // Speech, then a pause well past SILENCE_HOLD_MS (700) — but no
-      // `speech-stopped`, and in hybrid mode the mic check waits the 2.5 s
-      // backstop, so the turn stays open for the provider VAD.
+      // `speech-stopped`, and in hybrid mode the mic check waits the
+      // (shorter, but still longer than SILENCE_HOLD_MS) backstop, so the
+      // turn stays open for the provider VAD.
       for (let i = 0; i < 8; i += 1) {
         act(() => h.state.level(0.06))
         vi.advanceTimersByTime(100)
       }
-      for (let i = 0; i < 12; i += 1) {
+      for (let i = 0; i < 8; i += 1) {
         act(() => h.state.level(0.001))
         vi.advanceTimersByTime(100)
       }

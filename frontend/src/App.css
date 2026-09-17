@@ -27,14 +27,17 @@
 .notes-board { position: relative; isolation: isolate; min-height: 0; overflow: hidden; }
 .notes-fab { position: absolute; top: clamp(14px, 1.1vw, 34px); right: clamp(14px, 1.1vw, 34px); z-index: 50; display: grid; place-items: center; width: clamp(46px, 3.4vw, 84px); height: clamp(46px, 3.4vw, 84px); border: 0; border-radius: 50%; background: color-mix(in srgb, var(--ink) 78%, transparent); color: #fff; font-size: clamp(22px, 1.6vw, 40px); font-weight: 300; box-shadow: 0 8px 22px #26383322; }
 .notes-fab:hover, .notes-fab:active { background: color-mix(in srgb, var(--ink) 92%, transparent); }
-.sticky-note { --note-bg: var(--gold); position: absolute; width: 37%; aspect-ratio: .92; transform: translate(-50%, -50%) rotate(-1.5deg); display: grid; place-items: center; padding: 6%; border-radius: 4px 4px 0 4px; background: var(--note-bg); box-shadow: 0 10px 22px #26383333, 0 2px 0 #00000014; color: #4a3c14; font-family: 'Patrick Hand', cursive, sans-serif; text-align: center; cursor: grab; touch-action: none; transition: box-shadow .15s ease; }
+.sticky-note { --note-bg: var(--gold); position: absolute; width: 37%; aspect-ratio: .92; transform: translate(-50%, -50%) rotate(-1.5deg); display: grid; place-items: center; padding: 6%; border-radius: 4px 4px 0 4px; background: var(--note-bg); box-shadow: 0 10px 22px #26383333, 0 2px 0 #00000014; color: #4a3c14; font-family: 'Patrick Hand', cursive, sans-serif; text-align: center; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: box-shadow .15s ease; }
 .sticky-note:active { cursor: grabbing; }
 .sticky-note p { margin: 0; overflow: hidden; line-height: 1.25; word-break: break-word; }
 .sticky-note-private { --note-bg: #cfd3ca; color: #6a7169; }
-/* A folded/curled lower-right corner — the underside of the paper (a shade
-   darker than the note itself) peeking out from beneath a matching diagonal
-   cut, with a small shadow to sell the lift. */
-.sticky-note::after { content: ''; position: absolute; right: 0; bottom: 0; width: 26%; height: 26%; background: color-mix(in srgb, var(--note-bg) 78%, #000 20%); clip-path: polygon(100% 0, 100% 100%, 0 100%); box-shadow: -3px -3px 6px #00000022; pointer-events: none; }
+/* A folded/curled lower-right corner. `::before` is a soft blurred shadow the
+   lifted paper casts back onto the note; `::after` is the fold itself, a
+   diagonal cut with a light-catching highlight near the crease fading to a
+   darker "underside of the paper" shade toward the tip — a gradient reads as
+   a curl far better than a single flat tone. */
+.sticky-note::before { content: ''; position: absolute; right: 0; bottom: 0; width: 27%; height: 27%; background: radial-gradient(circle at 72% 72%, #00000055, transparent 65%); filter: blur(3px); pointer-events: none; }
+.sticky-note::after { content: ''; position: absolute; right: 0; bottom: 0; width: 24%; height: 24%; background: linear-gradient(115deg, color-mix(in srgb, var(--note-bg) 88%, #fff 12%) 0%, color-mix(in srgb, var(--note-bg) 88%, #fff 12%) 40%, color-mix(in srgb, var(--note-bg) 55%, #000 28%) 45%, color-mix(in srgb, var(--note-bg) 68%, #000 16%) 100%); clip-path: polygon(100% 0, 100% 100%, 0 100%); pointer-events: none; }
 /* A subtle halo while a note is actively being dragged — never present on a
    long-press (edit) hold, only once real movement starts (see NotesPane.tsx). */
 .sticky-note-dragging { box-shadow: 0 0 0 5px color-mix(in srgb, var(--ocean) 55%, transparent), 0 14px 28px #26383340; }
