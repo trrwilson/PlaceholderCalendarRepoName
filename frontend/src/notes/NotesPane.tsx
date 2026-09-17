@@ -33,13 +33,26 @@ interface StickyNoteProps {
   note: Note
   redacting: boolean
   boardRef: RefObject<HTMLDivElement | null>
+  trashRef: RefObject<HTMLDivElement | null>
   onMove: (id: string, x: number, y: number) => void
   onLongPress: (note: Note) => void
+  onDeleteViaDrag: (id: string) => void
+  onDragChange: (dragging: boolean, overTrash: boolean) => void
 }
 
-function StickyNote({ note, redacting, boardRef, onMove, onLongPress }: StickyNoteProps) {
+function StickyNote({
+  note,
+  redacting,
+  boardRef,
+  trashRef,
+  onMove,
+  onLongPress,
+  onDeleteViaDrag,
+  onDragChange,
+}: StickyNoteProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [live, setLive] = useState<{ x: number; y: number } | null>(null)
+  const [dragging, setDragging] = useState(false)
   const dragRef = useRef<{
     pointerId: number
     startClientX: number
@@ -47,6 +60,7 @@ function StickyNote({ note, redacting, boardRef, onMove, onLongPress }: StickyNo
     startX: number
     startY: number
     moved: boolean
+    overTrash: boolean
     timer: number | null
   } | null>(null)
 
@@ -68,6 +82,7 @@ function StickyNote({ note, redacting, boardRef, onMove, onLongPress }: StickyNo
         startX: note.x,
         startY: note.y,
         moved: false,
+        overTrash: false,
         timer,
       }
     },
@@ -85,6 +100,8 @@ function StickyNote({ note, redacting, boardRef, onMove, onLongPress }: StickyNo
       if (!state.moved && Math.hypot(dxPx, dyPx) > LONG_PRESS_MOVE_TOLERANCE_PX) {
         state.moved = true
         if (state.timer) window.clearTimeout(state.timer)
+        setDragging(true)
+        onDragChange(true, false)
       }
       if (!state.moved) return
       const boardRect = board.getBoundingClientRect()
@@ -98,8 +115,17 @@ function StickyNote({ note, redacting, boardRef, onMove, onLongPress }: StickyNo
       const left = clamp(cx - nw / 2, MIN_VISIBLE_PX - nw, cw - MIN_VISIBLE_PX)
       const top = clamp(cy - nh / 2, MIN_VISIBLE_PX - nh, ch - MIN_VISIBLE_PX)
       setLive({ x: (left + nw / 2) / cw, y: (top + nh / 2) / ch })
+
+      // "Overlap" is the touch/pointer position itself landing inside the
+      // trash icon's bounds, not merely the note's edge grazing it.
+      const trashEl = trashRef.current
+      const overTrash = trashEl != null && isInsideRect(event.clientX, event.clientY, trashEl.getBoundingClientRect())
+      if (overTrash !== state.overTrash) {
+        state.overTrash = overTrash
+        onDragChange(true, overTrash)
+      }
     },
-    [boardRef],
+    [boardRef, onDragChange, trashRef],
   )
 
   const endDrag = useCallback(
@@ -113,30 +139,41 @@ function StickyNote({ note, redacting, boardRef, onMove, onLongPress }: StickyNo
         // already released
       }
       dragRef.current = null
-      if (state.moved && live) onMove(note.id, live.x, live.y)
+      if (state.moved) {
+        if (state.overTrash) onDeleteViaDrag(note.id)
+        else if (live) onMove(note.id, live.x, live.y)
+        setDragging(false)
+        onDragChange(false, false)
+      }
       setLive(null)
     },
-    [live, note.id, onMove],
+    [live, note.id, onDeleteViaDrag, onDragChange, onMove],
   )
 
   const pos = live ?? { x: note.x, y: note.y }
   return (
     <div
       ref={ref}
-      className={`sticky-note${redacting ? ' sticky-note-private' : ''}`}
+      className={`sticky-note${redacting ? ' sticky-note-private' : ''}${dragging ? ' sticky-note-dragging' : ''}`}
       style={{ left: `${pos.x * 100}%`, top: `${pos.y * 100}%`, zIndex: note.z }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       role={redacting ? undefined : 'button'}
-      aria-label={redacting ? 'Note (hidden — privacy mode is on)' : `Note: ${note.text}. Hold to edit, drag to move.`}
+      aria-label={
+        redacting ? 'Note (hidden — privacy mode is on)' : `Note: ${note.text}. Hold to edit, drag to move or onto the trash icon to delete.`
+      }
     >
       <p style={{ fontSize: redacting ? undefined : fitFontSize(note.text) }}>
         {redacting ? REDACTED_TEXT : note.text}
       </p>
     </div>
   )
+}
+
+function isInsideRect(x: number, y: number, rect: DOMRect): boolean {
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
 }
 
 interface NoteModalProps {
@@ -218,10 +255,20 @@ function NoteModal({ apiBaseUrl, title, initialText = '', onCancel, onSave, onDe
 export function NotesPane({ apiBaseUrl, redacting }: { apiBaseUrl: string; redacting: boolean }) {
   const notes = useNotes(apiBaseUrl)
   const boardRef = useRef<HTMLDivElement>(null)
+  const trashRef = useRef<HTMLDivElement>(null)
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<Note | null>(null)
+  // Only meaningful while a drag is in flight — `active` shows the trash icon
+  // at all, `armed` (a subset) is the touch position actually overlapping it.
+  const [dragUi, setDragUi] = useState<{ active: boolean; armed: boolean }>({ active: false, armed: false })
 
   const ordered = [...notes.notes].sort((a, b) => a.z - b.z)
+
+  const handleDragChange = useCallback((dragging: boolean, overTrash: boolean) => {
+    setDragUi({ active: dragging, armed: dragging && overTrash })
+  }, [])
+
+  const handleDeleteViaDrag = useCallback((id: string) => void notes.remove(id), [notes])
 
   return (
     <section className="notes-pane">
@@ -235,10 +282,20 @@ export function NotesPane({ apiBaseUrl, redacting }: { apiBaseUrl: string; redac
             note={note}
             redacting={redacting}
             boardRef={boardRef}
+            trashRef={trashRef}
             onMove={(id, x, y) => void notes.update(id, { x, y })}
             onLongPress={setEditing}
+            onDeleteViaDrag={handleDeleteViaDrag}
+            onDragChange={handleDragChange}
           />
         ))}
+        <div
+          ref={trashRef}
+          className={`notes-trash${dragUi.active ? ' notes-trash-visible' : ''}${dragUi.armed ? ' notes-trash-armed' : ''}`}
+          aria-hidden="true"
+        >
+          <span aria-hidden>🗑</span>
+        </div>
       </div>
       {!redacting && (
         <button className="notes-fab" onClick={() => setCreating(true)} aria-label="Add a note">

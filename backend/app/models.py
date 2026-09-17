@@ -322,6 +322,40 @@ class NoteTranscription(BaseModel):
     text: str
 
 
+# Own switch from ``VoiceProviderId`` — see ``app/config.py``'s
+# ``notes_stt_provider`` comment: a one-shot "record -> transcribe -> fill a
+# text field" interaction never opens a Live/realtime session. "gemini" is a
+# plain one-shot ``google.genai`` ``generate_content`` transcription call (text
+# out, no session); "local" is the on-device ``SpeechRecognizer`` shared with
+# the local voice pipeline; "disabled" hides the mic affordance entirely.
+NotesSttProviderId = Literal["gemini", "local", "disabled"]
+
+
+class NotesSttProviderInfo(BaseModel):
+    """One notes-dictation provider, for the Settings picker."""
+
+    id: NotesSttProviderId
+    label: str
+    configured: bool
+
+
+class NotesSttConfig(BaseModel):
+    """Which notes-dictation provider is active, and which others it could
+    switch to. Served by ``GET /api/notes/stt-config``; ``PUT`` swaps the
+    effective provider (process-memory, reverts on restart) — the same
+    bake-off shape as ``VoiceConfig``, but for the notes mic only.
+    """
+
+    provider: NotesSttProviderId
+    providers: list[NotesSttProviderInfo]
+
+
+class NotesSttConfigUpdate(BaseModel):
+    """``PUT /api/notes/stt-config`` body."""
+
+    provider: NotesSttProviderId
+
+
 # -- Privacy mode ----------------------------------------------------------
 # One household-global flag that does two things at once: it tells the kiosk to
 # redact schedule / list specifics for a houseguest, and it is a hard read-only

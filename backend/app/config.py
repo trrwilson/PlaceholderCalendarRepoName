@@ -637,12 +637,17 @@ class Settings(BaseSettings):
     # Dictation for note text is intentionally its own switch, separate from
     # `voice_provider` (the conversational assistant): note-taking is a short,
     # one-shot "record -> transcribe -> fill a text field" interaction, not a
-    # conversation, and defaults to the on-device pipeline regardless of which
-    # cloud provider the assistant is bench-marking. "local" reuses the same
-    # `SpeechRecognizer` seam (`local_stt_engine` etc., above) as the local voice
-    # pipeline; "disabled" hides the mic affordance in the notes dialog (typing
-    # only).
-    notes_stt_provider: Literal["local", "disabled"] = "local"
+    # conversation, so it never opens a Live/realtime session regardless of
+    # which cloud provider the assistant is bench-marking. "gemini" is a plain
+    # one-shot transcription call (`google.genai` `generate_content`, text out,
+    # no session) and is the default since Gemini credentials are already
+    # provisioned for the assistant; "local" reuses the same `SpeechRecognizer`
+    # seam (`local_stt_engine` etc., above) as the local voice pipeline;
+    # "disabled" hides the mic affordance in the notes dialog (typing only).
+    notes_stt_provider: Literal["local", "gemini", "disabled"] = "gemini"
+    # Model for the one-shot Gemini transcription call above — a fast text-out
+    # model, not a Live/native-audio one (those mint sessions, not single calls).
+    notes_stt_gemini_model: str = "gemini-flash-latest"
     # Hard ceiling on a notes dictation recording, matching the on-screen PTT
     # affordance ("speak a short utterance, then automatic silence").
     notes_stt_max_seconds: float = 5.0
