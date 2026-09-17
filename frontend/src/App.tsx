@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import './App.css'
 import { addDays, DAY_MS, isSameDay, resolveMonthView, sameMonth, startOfDay, startOfWeek, toIsoDate, type WeekStart } from './dates'
 import { holidayOn } from './holidays'
@@ -139,6 +139,11 @@ function App() {
   const [mode, setMode] = useState<ViewMode>('home')
   const [viewDate, setViewDate] = useState(() => new Date())
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+  // How far the Home day-strip's fetch window reaches before/after today. Starts
+  // generous enough to cover normal chevron/drag paging; grows on demand (never
+  // shrinks) when the strip is dragged or paged further than what's loaded — see
+  // `handleExpandStripRange` and `DayStrip`'s loading affordance.
+  const [stripPad, setStripPad] = useState({ before: 7, after: 14 })
   const [enabledCalendars, setEnabledCalendars] = useState<string[]>([])
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   const [now, setNow] = useState(new Date())
@@ -252,7 +257,7 @@ function App() {
 
   useEffect(() => {
     if (mode === 'timer') return
-    const range = rangeForView(mode, viewDate, now, weekStart)
+    const range = rangeForView(mode, viewDate, now, weekStart, stripPad)
     const params = new URLSearchParams({ starts_on: toIsoDate(range.start), ends_on: toIsoDate(range.end) })
     fetch(`${API_URL}/api/calendar?${params}`)
       .then((response) => response.json() as Promise<Snapshot>)
@@ -272,7 +277,21 @@ function App() {
         })
       })
       .catch(() => setConnection('offline'))
-  }, [mode, viewDate, now, weekStart, reloadKey])
+  }, [mode, viewDate, now, weekStart, reloadKey, stripPad])
+
+  // The Home day-strip renders whatever offset a chevron page or drag lands on
+  // immediately, showing a loading affordance for any day outside the window
+  // already fetched; this widens that window (monotonically — never shrinks it
+  // back down) so the next fetch effect run picks the day up for real.
+  const handleExpandStripRange = useCallback((day: Date) => {
+    const diffDays = Math.round((startOfDay(day).getTime() - startOfDay(now).getTime()) / DAY_MS)
+    setStripPad((pad) => {
+      const before = diffDays < 0 ? Math.max(pad.before, -diffDays + 3) : pad.before
+      const after = diffDays > 0 ? Math.max(pad.after, diffDays + 3) : pad.after
+      return before === pad.before && after === pad.after ? pad : { before, after }
+    })
+  }, [now])
+  const stripRange = useMemo(() => rangeForView('home', viewDate, now, weekStart, stripPad), [viewDate, now, weekStart, stripPad])
 
   const timers = useTimers({
     apiBaseUrl: API_URL,
@@ -551,7 +570,7 @@ function App() {
       </header>
 
       <section className="view-frame">
-        {mode === 'home' && <HomeView now={now} todayEvents={shownTodayEvents} todaySpans={shownTodaySpans} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} colorMode={displayColorMode} calendarAlert={authNeedsSetup && !redacting ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} camera={camera} redacting={redacting} onSelectClip={redacting ? () => undefined : setSelectedClip} apiBaseUrl={API_URL} />}
+        {mode === 'home' && <HomeView now={now} todayEvents={shownTodayEvents} todaySpans={shownTodaySpans} events={shownVisibleEvents} stripLoadedRange={stripRange} onExpandStripRange={handleExpandStripRange} calendarById={calendarById} onSelect={selectEvent} colorMode={displayColorMode} calendarAlert={authNeedsSetup && !redacting ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} camera={camera} redacting={redacting} onSelectClip={redacting ? () => undefined : setSelectedClip} apiBaseUrl={API_URL} />}
         {mode === 'week' && <WeekView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'timer' && <TimerView timer={timers.timer} remainingMs={timers.remainingMs} alarm={timers.alarm} onStart={startTimerFromTouch} onExtend={extendTimer} onPause={() => timerAction('pause')} onResume={() => timerAction('resume')} onRestart={() => timerAction('restart')} onCancel={() => { void timers.cancel() }} onDismiss={() => { void timers.dismiss() }} />}
@@ -823,50 +842,132 @@ function HolidayNote({ date, className }: { date: Date; className: string }) {
   )
 }
 
-function HomeView({ now, todayEvents, todaySpans, events, calendarById, onSelect, colorMode, calendarAlert, camera, redacting, onSelectClip, apiBaseUrl }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; events: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null; camera: ReturnType<typeof useCameraActivity>; redacting: boolean; onSelectClip: (clip: StoredClip) => void; apiBaseUrl: string }) {
+function HomeView({ now, todayEvents, todaySpans, events, stripLoadedRange, onExpandStripRange, calendarById, onSelect, colorMode, calendarAlert, camera, redacting, onSelectClip, apiBaseUrl }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; events: CalendarEvent[]; stripLoadedRange: { start: Date; end: Date }; onExpandStripRange: (day: Date) => void; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null; camera: ReturnType<typeof useCameraActivity>; redacting: boolean; onSelectClip: (clip: StoredClip) => void; apiBaseUrl: string }) {
   const [openDay, setOpenDay] = useState<Date | null>(null)
   return <div className="home-view"><div className="home-grid">
     <section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><HolidayNote date={now} className="holiday-note-home" /></div></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section>
     <NotesPane apiBaseUrl={apiBaseUrl} redacting={redacting} />
-    <DayStrip now={now} events={events} calendarById={calendarById} onSelect={onSelect} colorMode={colorMode} onOpenDay={setOpenDay} />
+    <DayStrip now={now} events={events} loadedRange={stripLoadedRange} onExpandRange={onExpandStripRange} calendarById={calendarById} onSelect={onSelect} colorMode={colorMode} onOpenDay={setOpenDay} />
     {calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} />}
   </div>
   {openDay && <DayEventsSheet day={openDay} events={events} calendarById={calendarById} colorMode={colorMode} onSelect={(event) => { setOpenDay(null); onSelect(event) }} onClose={() => setOpenDay(null)} />}
   </div>
 }
 
-// The previous day, today, and the next two days, at a glance — Month's day-cell
-// pattern (same "today" highlight, same event-chip list) shrunk to a 4-wide strip
-// rather than a full week. Today reads slightly larger than its neighbours (the
-// "pop" the design calls for) via `.day-strip-today` alone; the highlight itself
-// is the same `.day-cell.today` rule Month uses, so the two views never drift.
+// The previous day, today, and the next two days as a horizontally-draggable wheel —
+// Month's day-cell pattern (same "today" highlight, same event-chip list) reused at
+// 4-wide instead of 7, laid out as one continuous track rather than four boxes so the
+// day-to-day separation stays semantic (spacing, size, z-index), never a hard border.
+// Today sits in the second of four slots, enlarged and drawn in front of its neighbours;
+// `.day-strip-today` supplies the "pop", the highlight colour itself is the same
+// `.day-cell.today` rule Month uses so the two views never drift. A short horizontal
+// drag re-centers the wheel by one day (chevrons page by four); either can walk past
+// what's already been fetched, so every rendered day resolves against `loadedRange`
+// and shows a small loading affordance instead of "Clear" until the wider fetch lands
+// (see `handleExpandStripRange` in `App`).
 const DAY_STRIP_ROW_CAP = 2
-function DayStrip({ now, events, calendarById, onSelect, colorMode, onOpenDay }: { now: Date; events: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; onOpenDay: (day: Date) => void }) {
-  const days = [-1, 0, 1, 2].map((offset) => addDays(startOfDay(now), offset))
+const DAY_STRIP_FOCUS_ROW_CAP = 3
+const DAY_STRIP_CHEVRON_PAGE = 4
+const DAY_STRIP_RENDER_OFFSETS = [-2, -1, 0, 1, 2, 3]
+const DAY_STRIP_DRAG_COMMIT_FRACTION = 0.12
+const DAY_STRIP_DRAG_COMMIT_MIN_PX = 28
+function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSelect, colorMode, onOpenDay }: { now: Date; events: CalendarEvent[]; loadedRange: { start: Date; end: Date }; onExpandRange: (day: Date) => void; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; onOpenDay: (day: Date) => void }) {
+  const [focusOffset, setFocusOffset] = useState(0)
+  const [containerWidth, setContainerWidth] = useState(0)
+  const [dragPx, setDragPx] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const dragStartX = useRef(0)
+  const todayKey = toIsoDate(startOfDay(now))
+
+  // A day rolling over snaps the wheel back to "today in front" rather than preserving
+  // wherever a household member last dragged it to.
+  useEffect(() => { setFocusOffset(0) }, [todayKey])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver((entries) => setContainerWidth(entries[0].contentRect.width))
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
+  const days = DAY_STRIP_RENDER_OFFSETS.map((offset) => addDays(startOfDay(now), offset + focusOffset))
+
+  useEffect(() => {
+    for (const day of days) {
+      if (day < loadedRange.start || day > loadedRange.end) onExpandRange(day)
+    }
+    // Re-run whenever the rendered window or the loaded window moves; `days` is
+    // recomputed every render, so its own identity isn't a useful dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusOffset, todayKey, loadedRange.start.getTime(), loadedRange.end.getTime(), onExpandRange])
+
+  const slotWidth = containerWidth / 4
+  const commitThreshold = Math.max(DAY_STRIP_DRAG_COMMIT_MIN_PX, containerWidth * DAY_STRIP_DRAG_COMMIT_FRACTION)
+
+  function commitDrag(finalDragPx: number) {
+    setDragging(false)
+    setDragPx(0)
+    if (finalDragPx <= -commitThreshold) setFocusOffset((offset) => offset + 1)
+    else if (finalDragPx >= commitThreshold) setFocusOffset((offset) => offset - 1)
+  }
+  function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!event.isPrimary || !slotWidth) return
+    dragStartX.current = event.clientX
+    setDragging(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!dragging) return
+    setDragPx(event.clientX - dragStartX.current)
+  }
+  function onPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!dragging) return
+    event.currentTarget.releasePointerCapture(event.pointerId)
+    commitDrag(dragPx)
+  }
+
   return (
     <div className="day-strip">
-      {days.map((day) => {
-        const dayEvents = events
-          .filter((event) => (isSpanningEvent(event) ? coversDay(event, day) : isSameDay(new Date(event.starts_at), day)))
-          .sort(sortEvents)
-        const today = isSameDay(day, now)
-        const shown = dayEvents.slice(0, DAY_STRIP_ROW_CAP)
-        const hidden = dayEvents.length - shown.length
-        return (
-          <div className={`day-cell day-strip-cell ${today ? 'today day-strip-today' : ''}`} key={toIsoDate(day)}>
-            <div className="day-heading">
-              <span className="weekday-tag">{WEEKDAYS[day.getDay()]}</span>
-              <span className="day-number">{day.getDate()}</span>
-              <HolidayNote date={day} className="holiday-note-month" />
-            </div>
-            <div className="day-events">
-              {shown.map((event) => <EventChip event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}
-              {hidden > 0 && <button className="day-more" onClick={() => onOpenDay(day)} aria-label={`Show ${hidden} more ${hidden === 1 ? 'event' : 'events'} on ${formatSpanDate(day)}`}>+{hidden} more</button>}
-              {dayEvents.length === 0 && <p className="day-strip-empty">Clear</p>}
-            </div>
-          </div>
-        )
-      })}
+      <button className="day-strip-chevron day-strip-chevron-prev" aria-label="Show earlier days" onClick={() => setFocusOffset((offset) => offset - DAY_STRIP_CHEVRON_PAGE)}><span>‹</span></button>
+      <div className="day-strip-viewport" ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => commitDrag(0)}>
+        <div className="day-strip-track" style={{ transform: `translateX(${-slotWidth + dragPx}px)`, transition: dragging ? 'none' : 'transform 240ms cubic-bezier(.22,.8,.24,1)' }}>
+          {DAY_STRIP_RENDER_OFFSETS.map((offset, index) => {
+            const day = days[index]
+            const focused = offset === 0
+            const loaded = day >= loadedRange.start && day <= loadedRange.end
+            const dayEvents = loaded ? events
+              .filter((event) => (isSpanningEvent(event) ? coversDay(event, day) : isSameDay(new Date(event.starts_at), day)))
+              .sort(sortEvents) : []
+            const cap = focused ? DAY_STRIP_FOCUS_ROW_CAP : DAY_STRIP_ROW_CAP
+            const shown = dayEvents.slice(0, cap)
+            const hidden = dayEvents.length - shown.length
+            const today = isSameDay(day, now)
+            return (
+              <div className="day-strip-slot" style={{ width: slotWidth || undefined, flexBasis: slotWidth || `${100 / DAY_STRIP_RENDER_OFFSETS.length}%`, zIndex: 10 - Math.abs(offset) }} key={toIsoDate(day)}>
+                <div className={`day-cell day-strip-card ${today ? 'today day-strip-today' : ''}`}>
+                  <div className="day-heading">
+                    <span className="weekday-tag">{WEEKDAYS[day.getDay()]}</span>
+                    <span className="day-number">{day.getDate()}</span>
+                    <HolidayNote date={day} className="holiday-note-month" />
+                  </div>
+                  {loaded ? (
+                    <div className="day-events">
+                      {shown.map((event) => <EventChip event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}
+                      {hidden > 0 && <button className="day-more" onClick={() => onOpenDay(day)} aria-label={`Show ${hidden} more ${hidden === 1 ? 'event' : 'events'} on ${formatSpanDate(day)}`}>+{hidden} more</button>}
+                      {dayEvents.length === 0 && <p className="day-strip-empty">Clear</p>}
+                    </div>
+                  ) : (
+                    <div className="day-strip-loading" role="status" aria-label={`Loading ${formatSpanDate(day)}`}><span /><span /><span /></div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      <button className="day-strip-chevron day-strip-chevron-next" aria-label="Show later days" onClick={() => setFocusOffset((offset) => offset + DAY_STRIP_CHEVRON_PAGE)}><span>›</span></button>
     </div>
   )
 }
@@ -1104,7 +1205,7 @@ function CalendarConnect({ auth, addingCalendar, onStart, onCancel, onClose }: {
 }
 
 type EventProps = { event: CalendarEvent; calendar?: Calendar; onSelect: (event: CalendarEvent) => void }
-function rangeForView(mode: ViewMode, date: Date, now: Date, weekStart: WeekStart) { if (mode === 'home') return { start: startOfDay(now), end: addDays(now, 14) }; if (mode === 'week') { const start = startOfWeek(date, weekStart); return { start, end: addDays(start, 6) } } const days = resolveMonthView(date, now, weekStart).days; return { start: days[0], end: days[days.length - 1] } }
+function rangeForView(mode: ViewMode, date: Date, now: Date, weekStart: WeekStart, stripPad: { before: number; after: number }) { if (mode === 'home') return { start: addDays(startOfDay(now), -stripPad.before), end: addDays(startOfDay(now), stripPad.after) }; if (mode === 'week') { const start = startOfWeek(date, weekStart); return { start, end: addDays(start, 6) } } const days = resolveMonthView(date, now, weekStart).days; return { start: days[0], end: days[days.length - 1] } }
 function sortEvents(left: CalendarEvent, right: CalendarEvent) { return new Date(left.starts_at).getTime() - new Date(right.starts_at).getTime() }
 function groupEvents(events: CalendarEvent[]) { const grouped = new Map<string, CalendarEvent[]>(); events.forEach((event) => grouped.set(toIsoDate(new Date(event.starts_at)), [...(grouped.get(toIsoDate(new Date(event.starts_at))) ?? []), event].sort(sortEvents))); return grouped }
 
