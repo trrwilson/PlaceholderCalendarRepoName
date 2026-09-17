@@ -90,6 +90,18 @@ socket import), `_require_local`-gated, and `_require_unlocked`-gated on every m
   - Redaction is a render choice on the frontend, not a data change — unlock is
     instant. A blank `MISSION_CONTROL_PRIVACY_MODE_PIN` disables the whole feature.
 
+## Restarting during development
+
+After a backend change, use `scripts/restart-dev.ps1` (repo root) rather than
+bouncing `dev.ps1`/`npm run dev` by hand — it stops-then-starts both processes
+scoped to whichever checkout it's run from (safe alongside other worktrees' dev
+servers) and, by default, cycles `invokectl mic off` / `mic on` around the backend
+restart. Do this even for changes that look frontend-only if a backend restart is
+also happening in the same pass: the Invoke's mic feeder has repeatedly kept
+talking to a now-dead backend process after a restart, silently killing mic input
+until someone notices and cycles it by hand — the script makes that the default
+instead of a thing to remember.
+
 ## The contract
 
 `app/models.py` is authoritative. `frontend/src/App.tsx` re-declares the matching
