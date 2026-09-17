@@ -71,27 +71,24 @@
    separation is semantic only (spacing/overlap/stacking), never a physical divider —
    the cards live in a single `.day-strip-track` that a drag translates directly, with
    the focused slot's enlargement (`.day-strip-today`) following the live drag preview,
-   not just snapping in after release. The strip gets a fixed, deliberately modest
-   height (smaller than the row it sits in would otherwise stretch to) so there's a
-   little negative space above/below it rather than the wheel filling its cell edge to
-   edge. Each slot is a fixed-width flex track cell holding an absolutely-positioned
-   card sized *larger* than the slot (negative `inset`) so neighbours overlap; z-index
-   falls off with distance from the focused slot so it's drawn in front on both sides. */
-.day-strip { position: relative; display: flex; align-items: stretch; gap: clamp(2px, .3vw, 8px); height: clamp(118px, 12.5vh, 190px); }
-.day-strip-viewport { position: relative; flex: 1 1 auto; min-width: 0; height: 100%; overflow: hidden; touch-action: pan-y; }
+   not just snapping in after release. The strip itself fills whatever height its
+   `.home-grid` row resolves to (driven by its row-mate, the camera/exception card) —
+   it deliberately does *not* pin its own height — and each card sits inset from its
+   slot's full height (90% for the focused card, less for its neighbours) so there's a
+   little negative space above/below within the wheel and the focused card reads as
+   vertically centered, not edge-to-edge. Each slot is a fixed-width flex track cell
+   holding an absolutely-positioned card sized *larger* than the slot (negative
+   `inset`) so neighbours overlap; z-index falls off with distance from the focused
+   slot so it's drawn in front on both sides. */
+.day-strip { position: relative; display: flex; align-items: center; gap: clamp(2px, .3vw, 8px); min-height: 0; }
+.day-strip-viewport { position: relative; flex: 1 1 auto; align-self: stretch; min-width: 0; height: 100%; overflow: hidden; touch-action: pan-y; }
 .day-strip-track { display: flex; height: 100%; will-change: transform; }
 .day-strip-slot { position: relative; flex: 0 0 auto; height: 100%; }
-/* Normal cards sit inset from their slot's full height (a little negative space
-   above/below within the wheel, not just around it) so the focused card can grow
-   into that same margin without ever exceeding the clipped viewport's own bounds —
-   safer than a card bleeding past its scroll-clipped ancestor. */
-.day-strip-card { position: absolute; inset: 9% -6%; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; padding: clamp(4px, .4vw, 12px) clamp(6px, .6vw, 14px); overflow: hidden; border: 2px solid var(--line); border-radius: 12px; background: var(--surface); transition: inset .19s cubic-bezier(.22,.85,.28,1), box-shadow .19s ease; cursor: pointer; }
-.day-strip-today.day-strip-card { inset: 0 -10%; border-width: 3px; box-shadow: 0 12px 30px #26383333; cursor: default; }
+.day-strip-card { position: absolute; inset: 13% -8%; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; padding: clamp(4px, .4vw, 12px) clamp(6px, .6vw, 14px); overflow: hidden; border: 2px solid var(--line); border-radius: 12px; background: var(--surface); transition: inset .19s cubic-bezier(.22,.85,.28,1), box-shadow .19s ease; cursor: pointer; }
+.day-strip-today.day-strip-card { inset: 5% -13%; border-width: 3px; box-shadow: 0 12px 30px #26383333; cursor: default; }
 .day-strip-card .day-heading { min-height: 0; gap: 4px; }
-.day-strip-card .weekday-tag { font-size: clamp(8px, .48vw, 13px); }
-.day-strip-card .day-number { font-size: clamp(13px, .85vw, 24px); }
-.day-strip-today.day-strip-card .weekday-tag { font-size: clamp(9px, .55vw, 15px); }
-.day-strip-today.day-strip-card .day-number { font-size: clamp(16px, 1.05vw, 30px); }
+.day-strip-today.day-strip-card .weekday-tag { font-size: clamp(10px, .68vw, 19px); }
+.day-strip-today.day-strip-card .day-number { font-size: clamp(19px, 1.35vw, 42px); }
 /* A small dot marks the literal calendar date "today" when some other day has been
    scrolled into the focused/enlarged slot instead — a quiet "you've wandered" cue. */
 .day-strip-today-dot { display: inline-block; width: .3em; height: .3em; margin-left: .3em; border-radius: 50%; background: var(--coral); vertical-align: middle; }
@@ -104,9 +101,12 @@
 .day-strip-loading span:nth-child(2) { animation-delay: .15s; }
 .day-strip-loading span:nth-child(3) { animation-delay: .3s; }
 @keyframes day-strip-loading-pulse { 0%, 80%, 100% { opacity: .3; transform: scale(.75); } 40% { opacity: 1; transform: scale(1); } }
-/* Chevrons: a filled, bordered circle (rather than Week/Month's bare quiet glyph) so
-   the invitation to scroll reads clearly at a glance, not just on hover/press. */
-.day-strip-chevron { flex: 0 0 auto; display: grid; place-items: center; width: clamp(30px, 2.4vw, 52px); height: clamp(30px, 2.4vw, 52px); padding: 0; border: 2px solid var(--line-dark); border-radius: 50%; background: var(--surface); color: var(--ink-soft); font-size: clamp(16px, 1.3vw, 28px); line-height: 1; box-shadow: 0 3px 10px #26383322; transition: background .15s ease, transform .15s ease; -webkit-tap-highlight-color: transparent; }
+/* Chevrons: a large, filled, bordered circle (rather than Week/Month's bare quiet
+   glyph) so the invitation to scroll reads clearly at a glance, not just on
+   hover/press — vertically centered on the wheel via `.day-strip`'s own
+   `align-items: center` (the viewport is the only sibling that opts back out, via
+   `align-self: stretch`, since it needs the full height to clip the track). */
+.day-strip-chevron { flex: 0 0 auto; display: grid; place-items: center; width: clamp(64px, 5.6vw, 128px); height: clamp(64px, 5.6vw, 128px); padding: 0; border: 3px solid var(--line-dark); border-radius: 50%; background: var(--surface); color: var(--ink-soft); font-size: clamp(30px, 2.8vw, 62px); line-height: 1; box-shadow: 0 4px 14px #26383322; transition: background .15s ease, transform .15s ease; -webkit-tap-highlight-color: transparent; }
 .day-strip-chevron span { transform: translateY(-.04em); }
 .day-strip-chevron:hover, .day-strip-chevron:focus-visible { background: var(--warm); }
 .day-strip-chevron:active { transform: scale(.92); background: var(--warm); }
@@ -151,7 +151,7 @@
 .day-sheet-list { display: grid; gap: clamp(8px, .7vw, 18px); margin-top: clamp(12px, 1vw, 26px); max-height: 60vh; overflow-y: auto; }
 .day-sheet .section-kicker { margin-bottom: 4px; }
 @media (max-width: 1100px) { .home-grid { grid-template-columns: minmax(0, 1.4fr) minmax(280px, .8fr); }.large-event { grid-template-columns: 75px minmax(0, 1fr) 25px; }.event-owner { display: none; } }
-@media (max-width: 760px) { html, body, #root { overflow: auto; }.kiosk-shell { height: auto; min-height: 100dvh; overflow: visible; }.global-header { grid-template-columns: 1fr auto; }.header-center { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; padding: 10px 0; }.view-frame { min-height: 720px; }.home-grid { grid-template-columns: 1fr; grid-template-rows: none; height: auto; }.home-grid > .today-schedule, .home-grid > .day-strip, .home-grid > .notes-pane, .home-grid > .camera-review, .home-grid > .exception-card { grid-column: 1; grid-row: auto; }.today-schedule { min-height: 520px; }.notes-pane { min-height: 420px; }.week-view, .month-view { min-height: 680px; }.view-pager { grid-template-columns: minmax(0, 1fr); touch-action: auto; }.page-edge { display: none; }.bottom-dock { flex-wrap: wrap; gap: 8px; }.dock-primary { order: 3; width: 100%; flex-wrap: wrap; }.bottom-dock nav { flex: 1; }.bottom-dock nav button { flex: 1; }.mode-nav { flex-wrap: wrap; gap: 8px; }.dock-cluster { flex: 1; }.dock-appliances::before { display: none; }.week-grid { grid-template-columns: 42px repeat(7, minmax(100px, 1fr)); overflow-x: auto; }.week-column, .week-day-head { min-width: 100px; } }
+@media (max-width: 760px) { html, body, #root { overflow: auto; }.kiosk-shell { height: auto; min-height: 100dvh; overflow: visible; }.global-header { grid-template-columns: 1fr auto; }.header-center { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; padding: 10px 0; }.view-frame { min-height: 720px; }.home-grid { grid-template-columns: 1fr; grid-template-rows: none; height: auto; }.home-grid > .today-schedule, .home-grid > .day-strip, .home-grid > .notes-pane, .home-grid > .camera-review, .home-grid > .exception-card { grid-column: 1; grid-row: auto; }.today-schedule { min-height: 520px; }.day-strip { height: 220px; }.notes-pane { min-height: 420px; }.week-view, .month-view { min-height: 680px; }.view-pager { grid-template-columns: minmax(0, 1fr); touch-action: auto; }.page-edge { display: none; }.bottom-dock { flex-wrap: wrap; gap: 8px; }.dock-primary { order: 3; width: 100%; flex-wrap: wrap; }.bottom-dock nav { flex: 1; }.bottom-dock nav button { flex: 1; }.mode-nav { flex-wrap: wrap; gap: 8px; }.dock-cluster { flex: 1; }.dock-appliances::before { display: none; }.week-grid { grid-template-columns: 42px repeat(7, minmax(100px, 1fr)); overflow-x: auto; }.week-column, .week-day-head { min-width: 100px; } }
 
 /* --- Home composition: bottom-dock popovers, semantic markers --- */
 .dock-actions .filter-popover { top: auto; right: 0; bottom: calc(100% + 8px); }

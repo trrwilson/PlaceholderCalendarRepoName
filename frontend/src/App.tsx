@@ -867,7 +867,19 @@ const DAY_STRIP_FOCUS_ROW_CAP = 2
 const DAY_STRIP_CHEVRON_PAGE = DAY_STRIP_VISIBLE
 const DAY_STRIP_RENDER_OFFSETS = [-2, -1, 0, 1, 2, 3, 4]
 const DAY_STRIP_TAP_MOVE_PX = 6
+const DAY_STRIP_DRAG_DEADZONE_PX = 10
 const DAY_STRIP_SETTLE_TRANSITION = 'transform 190ms cubic-bezier(.22,.85,.28,1)'
+// Past a small deadzone (ignores jitter on an otherwise-stationary press), any further
+// drag rounds AWAY from zero — "snap ahead" to the next day in the direction of travel —
+// rather than to the nearest slot. That's deliberate: a drag that's clearly underway
+// should never settle back onto the day it started from, it should always advance at
+// least one day, live, in whichever direction the finger is moving.
+function dayStripPreviewOffset(dragPx: number, slotWidth: number): number {
+  if (!slotWidth) return 0
+  const magnitude = Math.abs(dragPx) - DAY_STRIP_DRAG_DEADZONE_PX
+  if (magnitude <= 0) return 0
+  return Math.sign(dragPx) * -Math.ceil(magnitude / slotWidth)
+}
 function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSelect, colorMode, onOpenDay }: { now: Date; events: CalendarEvent[]; loadedRange: { start: Date; end: Date }; onExpandRange: (day: Date) => void; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; onOpenDay: (day: Date) => void }) {
   const [focusOffset, setFocusOffset] = useState(0)
   const [containerWidth, setContainerWidth] = useState(0)
@@ -902,10 +914,10 @@ function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSel
   }, [focusOffset, todayKey, loadedRange.start.getTime(), loadedRange.end.getTime(), onExpandRange])
 
   const slotWidth = containerWidth / DAY_STRIP_VISIBLE
-  // While dragging, the slot nearest the focus position updates live as the finger moves —
-  // this is what makes the enlarged/front card visibly track the gesture mid-scroll instead
-  // of only snapping into place after release.
-  const previewOffset = dragging && slotWidth ? Math.round(-dragPx / slotWidth) : 0
+  // The focused slot updates live as the finger moves (see `dayStripPreviewOffset`) —
+  // the enlarged/front card visibly tracks the gesture mid-scroll, and releasing commits
+  // wherever that preview landed rather than snapping back to where the drag started.
+  const previewOffset = dragging ? dayStripPreviewOffset(dragPx, slotWidth) : 0
 
   function commitDrag() {
     const shift = previewOffset
