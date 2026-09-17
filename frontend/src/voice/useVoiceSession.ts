@@ -110,12 +110,27 @@ const NOISE_FLOOR_CEILING = 0.03
  * push the endpoint gate up into the command itself. Set between a far-field
  * feed's resting floor (~0.01–0.02, see `WAKE_CONTENT_RMS`) and a speaking
  * level, so the continuous VB-CABLE floor is captured but an eager talker's
- * first word is not. */
-const NOISE_FLOOR_SAMPLE_CEILING = 0.02
+ * first word is not.
+ *
+ * Raised from 0.02 (2026-09): mild-but-real background noise (a fan, distant
+ * TV) routinely sits right around the old ceiling, so it was never sampled —
+ * `noiseFloorRef` stayed unset, `endpointFloor` fell back to the much lower
+ * `SPEECH_RMS_FLOOR`, and that noise then permanently read as "still
+ * talking", stalling the turn out to the backstop or `MAX_LISTEN_MS`. This
+ * still sits well under a speaking level. */
+const NOISE_FLOOR_SAMPLE_CEILING = 0.028
 /** Silence hold when the provider VAD owns the endpoint (`endpointing: hybrid`,
  * or after a `speech-started` on any provider): trust it to send `speech-stopped`
- * and only step in as a backstop if it doesn't. */
-const SERVER_VAD_BACKSTOP_MS = 2_500
+ * and only step in as a backstop if it doesn't.
+ *
+ * Lowered from 2_500 (2026-09): reported endpointing as "very slow" traced to
+ * this backstop routinely being the thing that actually ends the turn (the
+ * provider's own `speech-stopped` not firing promptly, especially with mild
+ * background noise) — so its value was already dictating perceived latency on
+ * a lot of turns, not just a rare fallback. Still well above `SILENCE_HOLD_MS`
+ * (700) so a genuine provider-VAD miss doesn't collide with a normal
+ * mid-sentence pause. */
+const SERVER_VAD_BACKSTOP_MS = 1_200
 /** Never auto-end before this, so a slow start isn't cut off. */
 const MIN_LISTEN_MS = 600
 /** Hard cap on a single listening turn. */
