@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import './App.css'
 import { addDays, DAY_MS, isSameDay, resolveMonthView, sameMonth, startOfDay, startOfWeek, toIsoDate, type WeekStart } from './dates'
 import { holidayOn } from './holidays'
@@ -854,23 +854,33 @@ function HomeView({ now, todayEvents, todaySpans, events, stripLoadedRange, onEx
   </div>
 }
 
-// The previous day, today, and the next two days as a horizontally-draggable wheel —
-// Month's day-cell pattern (same "today" highlight, same event-chip list) reused at
-// 4-wide instead of 7, laid out as one continuous track rather than four boxes so the
-// day-to-day separation stays semantic (spacing, size, z-index), never a hard border.
-// Today sits in the second of four slots, enlarged and drawn in front of its neighbours;
-// `.day-strip-today` supplies the "pop", the highlight colour itself is the same
-// `.day-cell.today` rule Month uses so the two views never drift. A short horizontal
-// drag re-centers the wheel by one day (chevrons page by four); either can walk past
-// what's already been fetched, so every rendered day resolves against `loadedRange`
-// and shows a small loading affordance instead of "Clear" until the wider fetch lands
-// (see `handleExpandStripRange` in `App`).
-const DAY_STRIP_ROW_CAP = 2
-const DAY_STRIP_FOCUS_ROW_CAP = 3
-const DAY_STRIP_CHEVRON_PAGE = 4
-const DAY_STRIP_RENDER_OFFSETS = [-2, -1, 0, 1, 2, 3]
-const DAY_STRIP_DRAG_COMMIT_FRACTION = 0.12
-const DAY_STRIP_DRAG_COMMIT_MIN_PX = 28
+// Yesterday, today, and the next three days as a horizontally-draggable wheel — Month's
+// day-cell pattern (same event-chip list) reused at 5-wide instead of 7, laid out as one
+// continuous track rather than five boxes so the day-to-day separation stays semantic
+// (spacing, overlap, z-index), never a hard border. The focused slot (second position)
+// sits enlarged and drawn in front of its neighbours via `.day-strip-today`; the
+// highlight colour itself is the same `.day-cell.today` rule Month uses so the two views
+// never drift, but which slot is "focused" is about wheel position, not the calendar
+// date — it starts on the real today and moves with the drag/chevrons.
+//
+// A drag updates the live preview continuously (`previewOffset`, rounded to the nearest
+// slot crossed) so the enlarged/front slot visibly follows the finger mid-gesture, not
+// just after release; releasing commits whatever the preview lands on. A tap that isn't
+// a drag either opens the focused day's event (unchanged tap-to-open behaviour) or, on
+// any other visible day, immediately re-centers the wheel there — even if the tap landed
+// on an event chip, which `onCardClickCapture` intercepts ahead of the chip's own handler.
+// Chevrons page by a full screen's worth of days (`DAY_STRIP_VISIBLE`) with the same fast
+// settle transition as a drag release. Paging/dragging can walk past what's already been
+// fetched, so every rendered day resolves against `loadedRange` and shows a small loading
+// affordance instead of "Clear" until the wider fetch lands (see `handleExpandStripRange`
+// in `App`).
+const DAY_STRIP_VISIBLE = 5
+const DAY_STRIP_ROW_CAP = 1
+const DAY_STRIP_FOCUS_ROW_CAP = 2
+const DAY_STRIP_CHEVRON_PAGE = DAY_STRIP_VISIBLE
+const DAY_STRIP_RENDER_OFFSETS = [-2, -1, 0, 1, 2, 3, 4]
+const DAY_STRIP_TAP_MOVE_PX = 6
+const DAY_STRIP_SETTLE_TRANSITION = 'transform 190ms cubic-bezier(.22,.85,.28,1)'
 function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSelect, colorMode, onOpenDay }: { now: Date; events: CalendarEvent[]; loadedRange: { start: Date; end: Date }; onExpandRange: (day: Date) => void; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; onOpenDay: (day: Date) => void }) {
   const [focusOffset, setFocusOffset] = useState(0)
   const [containerWidth, setContainerWidth] = useState(0)
@@ -878,6 +888,7 @@ function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSel
   const [dragging, setDragging] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const dragStartX = useRef(0)
+  const dragMoved = useRef(false)
   const todayKey = toIsoDate(startOfDay(now))
 
   // A day rolling over snaps the wheel back to "today in front" rather than preserving
@@ -903,39 +914,67 @@ function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSel
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusOffset, todayKey, loadedRange.start.getTime(), loadedRange.end.getTime(), onExpandRange])
 
-  const slotWidth = containerWidth / 4
-  const commitThreshold = Math.max(DAY_STRIP_DRAG_COMMIT_MIN_PX, containerWidth * DAY_STRIP_DRAG_COMMIT_FRACTION)
+  const slotWidth = containerWidth / DAY_STRIP_VISIBLE
+  // While dragging, the slot nearest the focus position updates live as the finger moves —
+  // this is what makes the enlarged/front card visibly track the gesture mid-scroll instead
+  // of only snapping into place after release.
+  const previewOffset = dragging && slotWidth ? Math.round(-dragPx / slotWidth) : 0
 
-  function commitDrag(finalDragPx: number) {
+  function commitDrag() {
+    const shift = previewOffset
     setDragging(false)
     setDragPx(0)
-    if (finalDragPx <= -commitThreshold) setFocusOffset((offset) => offset + 1)
-    else if (finalDragPx >= commitThreshold) setFocusOffset((offset) => offset - 1)
+    if (shift !== 0) setFocusOffset((offset) => offset + shift)
+  }
+  function jumpTo(offset: number) {
+    setFocusOffset((current) => current + offset)
   }
   function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (!event.isPrimary || !slotWidth) return
     dragStartX.current = event.clientX
+    dragMoved.current = false
     setDragging(true)
     event.currentTarget.setPointerCapture(event.pointerId)
   }
   function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     if (!dragging) return
-    setDragPx(event.clientX - dragStartX.current)
+    const dx = event.clientX - dragStartX.current
+    if (Math.abs(dx) > DAY_STRIP_TAP_MOVE_PX) dragMoved.current = true
+    setDragPx(dx)
   }
   function onPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
     if (!dragging) return
     event.currentTarget.releasePointerCapture(event.pointerId)
-    commitDrag(dragPx)
+    commitDrag()
+  }
+  // A real drag must not also register as a tap on whatever card/chip is under the
+  // finger at release — swallow that trailing click entirely (capture phase runs before
+  // any card's own click handling below).
+  function onViewportClickCapture(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!dragMoved.current) return
+    event.preventDefault()
+    event.stopPropagation()
+    dragMoved.current = false
+  }
+  // A genuine tap on a non-focused day jumps the wheel there immediately, taking
+  // priority over whatever it landed on (an event chip, "+more") — the focused day
+  // alone keeps its normal tap-to-open behaviour.
+  function onCardClickCapture(event: ReactMouseEvent<HTMLDivElement>, offset: number, focused: boolean) {
+    if (focused) return
+    event.preventDefault()
+    event.stopPropagation()
+    jumpTo(offset)
   }
 
   return (
     <div className="day-strip">
-      <button className="day-strip-chevron day-strip-chevron-prev" aria-label="Show earlier days" onClick={() => setFocusOffset((offset) => offset - DAY_STRIP_CHEVRON_PAGE)}><span>‹</span></button>
-      <div className="day-strip-viewport" ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => commitDrag(0)}>
-        <div className="day-strip-track" style={{ transform: `translateX(${-slotWidth + dragPx}px)`, transition: dragging ? 'none' : 'transform 240ms cubic-bezier(.22,.8,.24,1)' }}>
+      <button className="day-strip-chevron day-strip-chevron-prev" aria-label="Show earlier days" onClick={() => jumpTo(-DAY_STRIP_CHEVRON_PAGE)}><span>‹</span></button>
+      <div className="day-strip-viewport" ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={commitDrag} onClickCapture={onViewportClickCapture}>
+        <div className="day-strip-track" style={{ transform: `translateX(${-slotWidth + dragPx}px)`, transition: dragging ? 'none' : DAY_STRIP_SETTLE_TRANSITION }}>
           {DAY_STRIP_RENDER_OFFSETS.map((offset, index) => {
             const day = days[index]
-            const focused = offset === 0
+            const distance = Math.abs(offset - previewOffset)
+            const focused = distance === 0
             const loaded = day >= loadedRange.start && day <= loadedRange.end
             const dayEvents = loaded ? events
               .filter((event) => (isSpanningEvent(event) ? coversDay(event, day) : isSameDay(new Date(event.starts_at), day)))
@@ -945,11 +984,11 @@ function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSel
             const hidden = dayEvents.length - shown.length
             const today = isSameDay(day, now)
             return (
-              <div className="day-strip-slot" style={{ width: slotWidth || undefined, flexBasis: slotWidth || `${100 / DAY_STRIP_RENDER_OFFSETS.length}%`, zIndex: 10 - Math.abs(offset) }} key={toIsoDate(day)}>
-                <div className={`day-cell day-strip-card ${today ? 'today day-strip-today' : ''}`}>
+              <div className="day-strip-slot" style={{ width: slotWidth || undefined, flexBasis: slotWidth || `${100 / DAY_STRIP_RENDER_OFFSETS.length}%`, zIndex: 10 - distance }} key={toIsoDate(day)}>
+                <div className={`day-cell day-strip-card ${focused ? 'today day-strip-today' : ''}`} onClickCapture={(event) => onCardClickCapture(event, offset, focused)}>
                   <div className="day-heading">
                     <span className="weekday-tag">{WEEKDAYS[day.getDay()]}</span>
-                    <span className="day-number">{day.getDate()}</span>
+                    <span className="day-number">{day.getDate()}{today && !focused && <span className="day-strip-today-dot" aria-hidden />}</span>
                     <HolidayNote date={day} className="holiday-note-month" />
                   </div>
                   {loaded ? (
@@ -967,7 +1006,7 @@ function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSel
           })}
         </div>
       </div>
-      <button className="day-strip-chevron day-strip-chevron-next" aria-label="Show later days" onClick={() => setFocusOffset((offset) => offset + DAY_STRIP_CHEVRON_PAGE)}><span>›</span></button>
+      <button className="day-strip-chevron day-strip-chevron-next" aria-label="Show later days" onClick={() => jumpTo(DAY_STRIP_CHEVRON_PAGE)}><span>›</span></button>
     </div>
   )
 }
