@@ -132,7 +132,10 @@ Start-Process -FilePath 'cmd.exe' `
 
 if (-not $SkipMic) {
     Write-Step "Waiting for the backend before re-enabling the mic"
-    if (Wait-ForHttp -Url "http://localhost:$BackendPort/api/calendar" -TimeoutSec 30) {
+    # /api/privacy (not /api/calendar): a plain in-memory read with no upstream
+    # provider round-trip, so it can't read as "still down" just because Graph is
+    # slow to answer the calendar snapshot.
+    if (Wait-ForHttp -Url "http://localhost:$BackendPort/api/privacy" -TimeoutSec 30) {
         Write-Step "invokectl mic on"
         try { & $invokectl mic on } catch { Write-Warning "invokectl mic on failed: $_" }
     } else {
