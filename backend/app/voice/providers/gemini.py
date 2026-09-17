@@ -169,3 +169,57 @@ class GeminiAdapter:
             endpointing=_endpointing(settings),
             surface=surface,
         )
+
+
+def _wav_bytes(pcm16: bytes, sample_rate: int) -> bytes:
+    """Wrap raw little-endian mono PCM16 in a minimal WAV header — the
+    ``generate_content`` audio input needs a recognised container, unlike the
+    Live API's raw-frame streaming."""
+    import struct
+
+    channels = 1
+    bits_per_sample = 16
+    byte_rate = sample_rate * channels * bits_per_sample // 8
+    block_align = channels * bits_per_sample // 8
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + len(pcm16),
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b"data",
+        len(pcm16),
+    )
+    return header + pcm16
+
+
+async def transcribe_pcm16(settings: Settings, pcm16: bytes, sample_rate: int = 16_000) -> str:
+    """One-shot dictation transcription for the Home notes pane's push-to-talk
+    text field (see ``app/notes_stt.py``). Deliberately not the Live API: a
+    single ``generate_content`` call with text output and no session/token —
+    the assistant-oriented realtime path stays out of this interaction.
+    """
+    if not settings.gemini_api_key:
+        raise VoiceUnavailable("GEMINI_API_KEY_MISSION_CONTROL is not configured")
+
+    from google.genai import types
+
+    client = _build_client(settings.gemini_api_key, settings.gemini_live_api_version)
+    wav = _wav_bytes(pcm16, sample_rate)
+    response = await client.aio.models.generate_content(
+        model=settings.notes_stt_gemini_model,
+        contents=[
+            types.Part.from_bytes(data=wav, mime_type="audio/wav"),
+            "Transcribe the speech in this audio exactly as spoken. Reply with "
+            "only the transcript text — no quotes, labels, or commentary. If "
+            "there is no discernible speech, reply with an empty string.",
+        ],
+    )
+    return (response.text or "").strip()

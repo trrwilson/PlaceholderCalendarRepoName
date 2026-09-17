@@ -21,13 +21,29 @@
    `.notes-board` is `position: relative`, the drag/positioning coordinate
    space every `.sticky-note` is placed in as a 0-1 fraction (its centre). */
 .notes-pane { position: relative; display: grid; grid-template-rows: max-content minmax(0, 1fr); padding: clamp(16px, 1.2vw, 40px); min-height: 0; overflow: hidden; }
-.notes-board { position: relative; min-height: 0; overflow: hidden; }
+/* `isolation: isolate` gives the board its own stacking context so a note's
+   z-index (unbounded — it only ever climbs with use) can never leak above a
+   fixed-position overlay like the Settings sheet and swallow its clicks. */
+.notes-board { position: relative; isolation: isolate; min-height: 0; overflow: hidden; }
 .notes-fab { position: absolute; top: clamp(14px, 1.1vw, 34px); right: clamp(14px, 1.1vw, 34px); z-index: 50; display: grid; place-items: center; width: clamp(46px, 3.4vw, 84px); height: clamp(46px, 3.4vw, 84px); border: 0; border-radius: 50%; background: color-mix(in srgb, var(--ink) 78%, transparent); color: #fff; font-size: clamp(22px, 1.6vw, 40px); font-weight: 300; box-shadow: 0 8px 22px #26383322; }
 .notes-fab:hover, .notes-fab:active { background: color-mix(in srgb, var(--ink) 92%, transparent); }
-.sticky-note { position: absolute; width: 46%; aspect-ratio: .92; transform: translate(-50%, -50%) rotate(-1.5deg); display: grid; place-items: center; padding: 10%; border-radius: 4px; background: var(--gold); box-shadow: 0 10px 22px #26383333, 0 2px 0 #00000014; color: #4a3c14; font-family: 'Patrick Hand', cursive, sans-serif; text-align: center; cursor: grab; touch-action: none; }
+.sticky-note { --note-bg: var(--gold); position: absolute; width: 37%; aspect-ratio: .92; transform: translate(-50%, -50%) rotate(-1.5deg); display: grid; place-items: center; padding: 6%; border-radius: 4px 4px 0 4px; background: var(--note-bg); box-shadow: 0 10px 22px #26383333, 0 2px 0 #00000014; color: #4a3c14; font-family: 'Patrick Hand', cursive, sans-serif; text-align: center; cursor: grab; touch-action: none; transition: box-shadow .15s ease; }
 .sticky-note:active { cursor: grabbing; }
 .sticky-note p { margin: 0; overflow: hidden; line-height: 1.25; word-break: break-word; }
-.sticky-note-private { background: #cfd3ca; color: #6a7169; }
+.sticky-note-private { --note-bg: #cfd3ca; color: #6a7169; }
+/* A folded/curled lower-right corner — the underside of the paper (a shade
+   darker than the note itself) peeking out from beneath a matching diagonal
+   cut, with a small shadow to sell the lift. */
+.sticky-note::after { content: ''; position: absolute; right: 0; bottom: 0; width: 26%; height: 26%; background: color-mix(in srgb, var(--note-bg) 78%, #000 20%); clip-path: polygon(100% 0, 100% 100%, 0 100%); box-shadow: -3px -3px 6px #00000022; pointer-events: none; }
+/* A subtle halo while a note is actively being dragged — never present on a
+   long-press (edit) hold, only once real movement starts (see NotesPane.tsx). */
+.sticky-note-dragging { box-shadow: 0 0 0 5px color-mix(in srgb, var(--ocean) 55%, transparent), 0 14px 28px #26383340; }
+/* Lower-right drop target for drag-to-delete — mounted at all times so its
+   position is measurable during a drag, but only visible while one is
+   in-flight (NotesPane.tsx toggles the modifier classes on pointer move). */
+.notes-trash { position: absolute; right: clamp(14px, 1.1vw, 34px); bottom: clamp(14px, 1.1vw, 34px); z-index: 999; display: grid; place-items: center; width: clamp(42px, 3.1vw, 76px); height: clamp(42px, 3.1vw, 76px); border-radius: 50%; background: var(--coral); color: #fff; font-size: clamp(18px, 1.3vw, 32px); box-shadow: 0 8px 20px #26383333; opacity: 0; transform: scale(.75); pointer-events: none; transition: opacity .15s ease, transform .15s ease, background-color .15s ease, box-shadow .15s ease; }
+.notes-trash-visible { opacity: 1; transform: scale(1); }
+.notes-trash-armed { background: color-mix(in srgb, var(--coral) 70%, #000 20%); transform: scale(1.15); box-shadow: 0 0 0 7px color-mix(in srgb, var(--coral) 35%, transparent), 0 10px 24px #26383344; }
 .compact-event { display: flex; align-items: center; gap: 12px; width: 100%; min-height: clamp(50px, 5.4vh, 100px); padding: clamp(8px, .6vw, 20px) clamp(10px, .8vw, 26px); border: 2px solid transparent; border-left: clamp(6px, .45vw, 15px) solid currentColor; border-radius: 9px; color: #704537; background: var(--coral-pale); text-align: left; }.compact-event:hover, .compact-event:active { border-color: currentColor; }.compact-event.calendar-ocean { color: #276875; background: #c7e5e7; }.compact-event.calendar-gold { color: #80661f; background: #f4e6b6; }.compact-event.calendar-fern { color: #397145; background: #cbe2c8; }.compact-event.calendar-violet { color: #735080; background: #e0d2e8; }.compact-event > span:last-child { display: grid; gap: 3px; min-width: 0; }.compact-event strong { overflow: hidden; font-size: clamp(15px, .9vw, 31px); text-overflow: ellipsis; white-space: nowrap; }.compact-event small { color: inherit; font-size: clamp(12px, .7vw, 24px); font-weight: 600; }.exception-card { display: flex; align-items: center; gap: 12px; padding: clamp(14px, 1vw, 32px); color: #6d3e32; background: #f9e2d3; border-color: #e5b6a4; }.exception-mark { display: grid; place-items: center; flex: 0 0 auto; width: 35px; height: 35px; border-radius: 50%; color: #fff; background: var(--coral); font-weight: 800; }.exception-card strong, .exception-card span { display: block; }.exception-card strong { font-size: clamp(14px, .85vw, 29px); }.exception-card span { font-size: clamp(12px, .68vw, 23px); }.exception-card button { margin-left: auto; padding: 9px 12px; border: 2px solid #cf947e; border-radius: 8px; color: #6d3e32; background: transparent; font-size: clamp(11px, .65vw, 22px); font-weight: 700; white-space: nowrap; }
 .week-view, .month-view { display: grid; grid-template-rows: minmax(0, 1fr); min-height: 0; padding-top: clamp(2px, .25vw, 9px); }
 /* Heading row is gone (the viewed period moved into the global header); ‹ › live as quiet

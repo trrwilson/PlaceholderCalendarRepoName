@@ -24,6 +24,7 @@ import { useActivityPing } from './presence/useActivityPing'
 import { useCameraActivity } from './camera/useCameraActivity'
 import type { StoredClip } from './camera/types'
 import { NotesPane } from './notes/NotesPane'
+import { useNotesSttConfig } from './notes/useNotesSttConfig'
 
 type CalendarSource = 'mock' | 'outlook' | 'google'
 // `name` is the raw account handle; `display_name` is the natural personal name the
@@ -467,6 +468,7 @@ function App() {
     suppressed: voiceSuppressed,
   })
   const voiceConfig = useVoiceConfig(API_URL)
+  const notesSttConfig = useNotesSttConfig(API_URL)
   const audioInput = useAudioInput()
   const audioOutput = useAudioOutput({
     apiBaseUrl: API_URL,
@@ -556,7 +558,7 @@ function App() {
         {mode === 'lists' && <ListsView list={lists.list} recentItems={lists.recentItems} redacted={redacting} onAdd={(name) => { if (!redacting) void lists.add(name) }} onToggle={(id, checked) => { if (!redacting) void lists.toggle(id, checked) }} onRemove={(id) => { if (!redacting) void lists.remove(id) }} onClear={(scope) => { if (!redacting) void lists.clear(scope) }} onReorder={(ids) => { if (!redacting) void lists.reorder(ids) }} />}
       </section>
 
-      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{visibleCalendarCount}/{filterableCalendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.filter((calendar) => calendar.is_primary !== false).map((calendar) => <div key={calendar.id}><button className="filter-row" onClick={() => toggleCalendar(calendar.id)}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>{calendars.filter((extra) => extra.account_id === calendar.id).map((extra) => <button key={extra.id} className="filter-subrow" aria-pressed={extra.enabled} onClick={() => setCalendarEnabled(extra.id, !extra.enabled)}><span className={`calendar-swatch ${colorClass(extra.color)}`} /><span className="filter-name">{personName(extra)}</span><strong>{extra.enabled ? '✓' : ''}</strong></button>)}</div>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={filterableCalendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} audioOutput={audioOutput} voiceConfig={voiceConfig} display={display} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onSetWakeGateEnabled={voice.setWakeGateEnabled} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
+      <footer className="bottom-dock"><div className="dock-primary"><nav className="mode-nav"><div className="dock-cluster dock-views"><button onClick={goHome} className={mode === 'home' ? 'active' : ''}>Home</button><button onClick={() => { setMode('week'); setViewDate(new Date()); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'week' ? 'active' : ''}>Week</button><button onClick={() => { setMode('month'); setViewDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); setFilterOpen(false); setSettingsOpen(false) }} className={mode === 'month' ? 'active' : ''}>Month</button></div><div className="dock-cluster dock-appliances"><button onClick={() => { setMode('timer'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-timer ${mode === 'timer' ? 'active' : ''} ${timers.hasActiveTimer ? 'running' : ''} ${timers.timer?.state === 'paused' ? 'paused' : ''} ${timers.alarm ? 'firing' : ''}`}><span>Timer</span>{timers.hasActiveTimer && mode !== 'timer' && <span className="dock-timer-remaining dock-badge">{timers.alarm ? 'Done' : timers.timer?.state === 'paused' ? 'Paused' : formatDockRemaining(timers.remainingMs)}</span>}</button><button onClick={() => { setMode('lists'); setFilterOpen(false); setSettingsOpen(false) }} className={`dock-lists ${mode === 'lists' ? 'active' : ''} ${lists.uncheckedCount > 0 ? 'has-items' : ''}`}><span>Lists</span>{lists.uncheckedCount > 0 && mode !== 'lists' && <span className="dock-lists-count dock-badge">{lists.uncheckedCount}</span>}</button></div></nav>{!viewingToday && <button className="dock-today" onClick={() => navigate(0)} aria-label="Jump to today">Today</button>}</div>{!redacting && <div className="dock-adjust"><div className="dock-actions" ref={filterRef}><button className="filter-toggle" onClick={() => { setFilterOpen((open) => !open); setSettingsOpen(false) }} aria-expanded={filterOpen}>People <span className="filter-count">{visibleCalendarCount}/{filterableCalendars.length || 4}</span></button>{filterOpen && <div className="filter-popover">{calendars.filter((calendar) => calendar.is_primary !== false).map((calendar) => <div key={calendar.id}><button className="filter-row" onClick={() => toggleCalendar(calendar.id)}><span className={`calendar-swatch ${colorClass(calendar.color)}`} /><span className="filter-name">{personName(calendar)}<ProviderBadge source={calendar.source} /></span><strong>{enabledCalendars.includes(calendar.id) ? '✓' : ''}</strong></button>{calendars.filter((extra) => extra.account_id === calendar.id).map((extra) => <button key={extra.id} className="filter-subrow" aria-pressed={extra.enabled} onClick={() => setCalendarEnabled(extra.id, !extra.enabled)}><span className={`calendar-swatch ${colorClass(extra.color)}`} /><span className="filter-name">{personName(extra)}</span><strong>{extra.enabled ? '✓' : ''}</strong></button>)}</div>)}</div>}</div><div className="dock-actions" ref={settingsRef}><button className="settings-toggle" onClick={() => { setSettingsOpen((open) => !open); setFilterOpen(false) }} aria-expanded={settingsOpen} aria-label="Open settings"><span className="settings-gear" aria-hidden>⚙</span><span>Settings</span></button>{settingsOpen && <SettingsSheet auth={auth} onAddCalendar={addCalendar} colorMode={colorMode} onColorMode={setColorMode} weekStart={weekStart} onWeekStart={setWeekStart} calendars={filterableCalendars} onCalendarColor={chooseCalendarColor} audioInput={audioInput} audioOutput={audioOutput} voiceConfig={voiceConfig} notesSttConfig={notesSttConfig} display={display} wake={voice.wake} onSetWakeEnabled={voice.setWakeEnabled} onSetWakeProvider={voice.setWakeProvider} onSetWakeGateEnabled={voice.setWakeGateEnabled} onClose={() => setSettingsOpen(false)} />}</div></div>}</footer>
       {selectedEvent && !redacting && <EventDetail event={selectedEvent} calendar={calendarById.get(selectedEvent.calendar_id)} onClose={() => setSelectedEvent(null)} />}
       {selectedClip && !redacting && <CameraClipModal clip={selectedClip} apiBaseUrl={API_URL} onClose={() => setSelectedClip(null)} />}
       {connectOpen && auth && !redacting && <CalendarConnect auth={auth} addingCalendar={addingCalendar} onStart={beginConnect} onCancel={cancelConnect} onClose={() => { setConnectOpen(false); setAddingCalendar(false) }} />}
@@ -578,7 +580,7 @@ function App() {
 type SettingsCategory = 'display' | 'calendars' | 'voice'
 function SettingsSheet({
   auth, onAddCalendar, colorMode, onColorMode, weekStart, onWeekStart, calendars, onCalendarColor,
-  audioInput, audioOutput, voiceConfig, display, wake, onSetWakeEnabled, onSetWakeProvider, onSetWakeGateEnabled, onClose,
+  audioInput, audioOutput, voiceConfig, notesSttConfig, display, wake, onSetWakeEnabled, onSetWakeProvider, onSetWakeGateEnabled, onClose,
 }: {
   auth: CalendarAuth | null
   onAddCalendar: () => void
@@ -591,6 +593,7 @@ function SettingsSheet({
   audioInput: ReturnType<typeof useAudioInput>
   audioOutput: ReturnType<typeof useAudioOutput>
   voiceConfig: ReturnType<typeof useVoiceConfig>
+  notesSttConfig: ReturnType<typeof useNotesSttConfig>
   display: ReturnType<typeof useDisplay>
   wake: ReturnType<typeof useVoiceSession>['wake']
   onSetWakeEnabled: ReturnType<typeof useVoiceSession>['setWakeEnabled']
@@ -603,11 +606,12 @@ function SettingsSheet({
   const linkedAccounts = auth?.accounts ?? (auth?.account ? [auth.account] : [])
   const hasCalendars = auth?.provider === 'outlook_personal' && auth.state === 'connected'
   const hasProviders = voiceConfig.config.enabled && voiceConfig.config.providers.length > 0
+  const hasNotesSttProviders = notesSttConfig.config.providers.length > 0
   const hasMic = diagnostics.available && (voiceConfig.config.enabled || wake.available)
   const hasSpeaker =
     (outputDiagnostics.available || outputDiagnostics.invokeAvailable) &&
     (voiceConfig.config.enabled || wake.available)
-  const hasAdvanced = hasProviders || wake.providers.length > 1 || hasMic || hasSpeaker
+  const hasAdvanced = hasProviders || hasNotesSttProviders || wake.providers.length > 1 || hasMic || hasSpeaker
   const hasVoice = wake.available || hasAdvanced
   const categories: { id: SettingsCategory; label: string }[] = [
     { id: 'display', label: 'Display' },
@@ -698,6 +702,15 @@ function SettingsSheet({
                       ))}
                     </div>
                     <p className="settings-note">Bake-off switch — applies to the next turn.</p>
+                  </div>}
+                  {hasNotesSttProviders && <div className="settings-group">
+                    <h3>Notes dictation provider</h3>
+                    <div className="settings-provider-list">
+                      {notesSttConfig.config.providers.map((provider) => (
+                        <button key={provider.id} className={notesSttConfig.config.provider === provider.id ? 'selected' : ''} aria-pressed={notesSttConfig.config.provider === provider.id} disabled={notesSttConfig.busy || (!provider.configured && notesSttConfig.config.provider !== provider.id)} onClick={() => { void notesSttConfig.setProvider(provider.id) }}>{provider.label}{!provider.configured ? ' — needs config' : ''}</button>
+                      ))}
+                    </div>
+                    <p className="settings-note">One-shot transcription for the Notes mic — separate from the assistant provider above.</p>
                   </div>}
                   {wake.providers.length > 1 && <div className="settings-group">
                     <h3>Keyword provider</h3>

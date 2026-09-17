@@ -63,6 +63,11 @@ export function useNotes(apiBaseUrl: string): NotesApi {
 
   const update = useCallback(
     async (id: string, patch: { text?: string; x?: number; y?: number }): Promise<Note | null> => {
+      // Applied synchronously, before the request even goes out, so a drag
+      // release never has a re-render where `live` has cleared but the note's
+      // canonical position hasn't caught up yet — that gap is what produced the
+      // visible "bounce back, then jump to target" (see NotesPane.tsx).
+      setNotes((current) => current.map((existing) => (existing.id === id ? { ...existing, ...patch } : existing)))
       try {
         const response = await fetch(`${apiBaseUrl}/api/notes/${id}`, {
           method: 'PATCH',

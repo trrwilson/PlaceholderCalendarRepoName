@@ -42,6 +42,9 @@ from app.models import (
     ListRestoreRequest,
     Note,
     NoteCreateRequest,
+    NotesSttConfig,
+    NotesSttConfigUpdate,
+    NotesSttProviderInfo,
     NoteTranscription,
     NoteUpdateRequest,
     PresenceActivityRequest,
@@ -66,6 +69,13 @@ from app.models import (
     WakeWordConfig,
 )
 from app.notes import NoteError, get_note_store
+from app.notes_stt import (
+    NOTES_STT_PROVIDER_LABELS,
+    effective_notes_stt_provider,
+    notes_stt_provider_configured,
+    set_notes_stt_provider_override,
+)
+from app.notes_stt import transcribe as transcribe_notes_audio
 from app.presence import (
     KIOSK_SCOPE,
     camera_status,
@@ -855,33 +865,65 @@ async def transcribe_note(request: Request) -> NoteTranscription:
 
     Takes the whole utterance as little-endian mono PCM16 @ 16 kHz (the body,
     ``application/octet-stream`` — no streaming, no turn/session machinery,
-    unlike the conversational voice pipeline). Reuses the same
-    ``SpeechRecognizer`` seam and process-wide singleton as
-    ``WS /api/voice/local`` — see app/voice/local/. Text only; never touches
-    the calendar or any tool, so it is available even while privacy-locked
-    (matches ``_require_unlocked`` not being called for the voice session
-    itself), but is refused when notes dictation is switched off.
+    unlike the conversational voice pipeline). Dispatched by
+    ``app.notes_stt.transcribe`` to the effective ``notes_stt_provider`` (its
+    own switch, separate from the assistant's ``voice_provider`` bake-off —
+    never the Live/realtime path). Text only; never touches the calendar or
+    any tool, so it is available even while privacy-locked (matches
+    ``_require_unlocked`` not being called for the voice session itself), but
+    is refused when notes dictation is switched off or unconfigured.
     """
-    from app.voice.local.engines import create_recognizer
-    from app.voice.local.session import get_recognizer
-
     _require_local(request)
     settings = get_settings()
-    if settings.notes_stt_provider != "local":
-        raise HTTPException(status_code=409, detail="notes dictation is disabled")
     pcm16 = await request.body()
     if not pcm16:
         raise HTTPException(status_code=422, detail="no audio received")
     try:
-        recognizer = await get_recognizer(lambda: create_recognizer(settings))
+        text = await transcribe_notes_audio(settings, pcm16)
+    except VoiceUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - report, do not crash the dialog
-        raise HTTPException(
-            status_code=503, detail=f"local speech engine unavailable: {exc}"
-        ) from exc
-    recognizer.reset()
-    events = recognizer.accept_audio(pcm16) + recognizer.finalize()
-    text = next((event.text for event in reversed(events) if event.type == "final"), "")
+        raise HTTPException(status_code=503, detail=f"speech engine unavailable: {exc}") from exc
     return NoteTranscription(text=text.strip())
+
+
+def _notes_stt_config() -> NotesSttConfig:
+    settings = get_settings()
+    return NotesSttConfig(
+        provider=effective_notes_stt_provider(settings),
+        providers=[
+            NotesSttProviderInfo(
+                id=pid,
+                label=label,
+                configured=notes_stt_provider_configured(settings, pid),
+            )
+            for pid, label in NOTES_STT_PROVIDER_LABELS.items()
+        ],
+    )
+
+
+@router.get("/notes/stt-config", response_model=NotesSttConfig)
+def notes_stt_config(request: Request) -> NotesSttConfig:
+    """Which notes-dictation provider is active, and which others it could
+    switch to. Peer of ``GET /api/voice/config`` for the same Settings picker,
+    but for the notes mic (its own switch — see ``app/notes_stt.py``)."""
+    _require_local(request)
+    return _notes_stt_config()
+
+
+@router.put("/notes/stt-config", response_model=NotesSttConfig)
+def set_notes_stt_config(request: Request, body: NotesSttConfigUpdate) -> NotesSttConfig:
+    """Point every subsequent notes-dictation call at ``body.provider``.
+
+    Process-memory only — a restart reverts to ``MISSION_CONTROL_NOTES_STT_PROVIDER``.
+    """
+    _require_local(request)
+    _require_unlocked()
+    try:
+        set_notes_stt_provider_override(body.provider)
+    except VoiceUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _notes_stt_config()
 
 
 # -- privacy mode ----------------------------------------------------------
