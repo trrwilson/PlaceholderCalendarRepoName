@@ -875,13 +875,32 @@ function HomeView({ now, todayEvents, todaySpans, events, stripLoadedRange, onEx
 // affordance instead of "Clear" until the wider fetch lands (see `handleExpandStripRange`
 // in `App`).
 const DAY_STRIP_VISIBLE = 5
-const DAY_STRIP_ROW_CAP = 1
-const DAY_STRIP_FOCUS_ROW_CAP = 2
+// Fallback row caps for the instant before the strip's own height has been measured
+// (see `dayStripRowCaps` below) — deliberately conservative, matching Month's smallest cap.
+const DAY_STRIP_ROW_CAP_FALLBACK = 1
+const DAY_STRIP_FOCUS_ROW_CAP_FALLBACK = 2
 const DAY_STRIP_CHEVRON_PAGE = DAY_STRIP_VISIBLE
 const DAY_STRIP_RENDER_OFFSETS = [-2, -1, 0, 1, 2, 3, 4]
 const DAY_STRIP_TAP_MOVE_PX = 6
 const DAY_STRIP_DRAG_DEADZONE_PX = 10
 const DAY_STRIP_SETTLE_TRANSITION = 'transform 190ms cubic-bezier(.22,.85,.28,1)'
+// Unlike Month, the strip's own row height isn't fixed — it's driven by its home-grid
+// row-mate (a tall 2x2 camera gallery most of the time, but a single compact banner when
+// the "needs attention" exception card takes that slot instead, see `.home-grid` in
+// App.css). A hardcoded row cap would either waste most of a tall card or clip a short
+// one, so the cap is derived from the focused card's actually-measured `.day-events`
+// height instead. The non-focused cap is estimated from that same measurement scaled by
+// the two cards' relative CSS inset (13%/-8% regular vs 5%/-13% focused in App.css) rather
+// than measured directly, since both track the same underlying row height.
+const DAY_STRIP_REGULAR_TO_FOCUS_HEIGHT_RATIO = (1 - 2 * 0.13) / (1 - 2 * 0.05)
+function dayStripRowCaps(focusedEventsHeight: number): { regular: number; focus: number } {
+  if (!focusedEventsHeight || typeof window === 'undefined') return { regular: DAY_STRIP_ROW_CAP_FALLBACK, focus: DAY_STRIP_FOCUS_ROW_CAP_FALLBACK }
+  // Mirrors `.event-chip`'s min-height and `.day-events`' gap in App.css.
+  const chipHeight = Math.min(Math.max(window.innerHeight * 0.0375, 40), 78)
+  const gap = Math.min(Math.max(window.innerWidth * 0.0024, 2), 6)
+  const capFor = (height: number) => Math.max(1, Math.floor((height + gap) / (chipHeight + gap)))
+  return { regular: capFor(focusedEventsHeight * DAY_STRIP_REGULAR_TO_FOCUS_HEIGHT_RATIO), focus: capFor(focusedEventsHeight) }
+}
 // Past a small deadzone (ignores jitter on an otherwise-stationary press), any further
 // drag rounds AWAY from zero — "snap ahead" to the next day in the direction of travel —
 // rather than to the nearest slot. That's deliberate: a drag that's clearly underway
@@ -914,6 +933,20 @@ function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSel
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
+
+  // Tracks the currently-focused card's `.day-events` height so `dayStripRowCaps` can size
+  // both caps off real, live layout instead of a guess — see the constant's comment above.
+  const [focusedEventsHeight, setFocusedEventsHeight] = useState(0)
+  const focusedEventsObserver = useRef<ResizeObserver | null>(null)
+  const setFocusedEventsRef = useCallback((node: HTMLDivElement | null) => {
+    focusedEventsObserver.current?.disconnect()
+    focusedEventsObserver.current = null
+    if (!node || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver((entries) => setFocusedEventsHeight(entries[0].contentRect.height))
+    observer.observe(node)
+    focusedEventsObserver.current = observer
+  }, [])
+  const rowCaps = useMemo(() => dayStripRowCaps(focusedEventsHeight), [focusedEventsHeight])
 
   const days = DAY_STRIP_RENDER_OFFSETS.map((offset) => addDays(startOfDay(now), offset + focusOffset))
 
@@ -991,8 +1024,11 @@ function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSel
             const dayEvents = loaded ? events
               .filter((event) => (isSpanningEvent(event) ? coversDay(event, day) : isSameDay(new Date(event.starts_at), day)))
               .sort(sortEvents) : []
-            const cap = focused ? DAY_STRIP_FOCUS_ROW_CAP : DAY_STRIP_ROW_CAP
-            const shown = dayEvents.slice(0, cap)
+            const cap = focused ? rowCaps.focus : rowCaps.regular
+            // Reserve one chip's worth of room for the "+N more" row itself once it's needed —
+            // same budget math as Month (see `chipBudget` there).
+            const chipBudget = dayEvents.length > cap ? cap - 1 : cap
+            const shown = dayEvents.slice(0, chipBudget)
             const hidden = dayEvents.length - shown.length
             const today = isSameDay(day, now)
             return (
@@ -1004,7 +1040,7 @@ function DayStrip({ now, events, loadedRange, onExpandRange, calendarById, onSel
                     <HolidayNote date={day} className="holiday-note-month" />
                   </div>
                   {loaded ? (
-                    <div className="day-events">
+                    <div className="day-events" ref={focused ? setFocusedEventsRef : undefined}>
                       {shown.map((event) => <EventChip event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}
                       {hidden > 0 && <button className="day-more" onClick={() => onOpenDay(day)} aria-label={`Show ${hidden} more ${hidden === 1 ? 'event' : 'events'} on ${formatSpanDate(day)}`}>+{hidden} more</button>}
                       {dayEvents.length === 0 && <p className="day-strip-empty">Clear</p>}
