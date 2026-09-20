@@ -206,6 +206,47 @@ describe('Mission Control dashboard', () => {
     expect(document.querySelector('.filter-row')).not.toBeInTheDocument()
   })
 
+  it('opens a month/year picker from the Month header and jumps to the chosen month', async () => {
+    render(<App />)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
+    const now = new Date()
+    const currentMonth = now.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+    const headerButton = await screen.findByRole('button', { name: new RegExp(currentMonth) })
+    expect(document.querySelector('.month-picker-popover')).not.toBeInTheDocument()
+
+    fireEvent.click(headerButton)
+    expect(document.querySelector('.month-picker-popover')).toBeInTheDocument()
+    expect(screen.getByText(String(now.getFullYear()))).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous year' }))
+    expect(screen.getByText(String(now.getFullYear() - 1))).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Jan' }))
+    const targetMonth = new Date(now.getFullYear() - 1, 0, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+    expect(await screen.findByText(targetMonth)).toBeInTheDocument()
+    expect(document.querySelector('.month-picker-popover')).not.toBeInTheDocument()
+  })
+
+  it('dismisses the month picker outside, with Escape, and on mode navigation', async () => {
+    render(<App />)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
+    const currentMonth = new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+    const headerButton = await screen.findByRole('button', { name: new RegExp(currentMonth) })
+
+    fireEvent.click(headerButton)
+    expect(document.querySelector('.month-picker-popover')).toBeInTheDocument()
+    fireEvent.pointerDown(document.body)
+    expect(document.querySelector('.month-picker-popover')).not.toBeInTheDocument()
+
+    fireEvent.click(headerButton)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.querySelector('.month-picker-popover')).not.toBeInTheDocument()
+
+    fireEvent.click(headerButton)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Week' })[0])
+    expect(document.querySelector('.month-picker-popover')).not.toBeInTheDocument()
+  })
+
   it('pins a multi-day event as a Home banner and spans it across Week and Month', async () => {
     const today = new Date()
     const midnight = (offset: number) => new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset).toISOString()
@@ -408,6 +449,18 @@ describe('Mission Control dashboard', () => {
     expect(document.querySelector('.sync-status-detail')).toHaveTextContent(/Offline/)
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(document.querySelector('.sync-status-detail')).not.toBeInTheDocument())
+  })
+
+  it('repaints instantly from a cached snapshot for a range while a fresh fetch is still in flight', async () => {
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.large-event')).toHaveTextContent('Swim practice'))
+    cleanup()
+
+    // Simulate the next mount's fetch never resolving (yet) — a cache hit for the
+    // exact same range should still paint the previously-seen event immediately.
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.large-event')).toHaveTextContent('Swim practice'))
   })
 
   it('collapses extra Month events into a tappable "+N more" that opens a day sheet', async () => {

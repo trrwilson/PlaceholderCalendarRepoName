@@ -135,6 +135,41 @@ const readCalendarColors = (): Record<string, string> => {
   }
 }
 
+// A same-origin browser cache for `/api/calendar` responses, keyed by the exact
+// `starts_on`/`ends_on` range fetched. It lives in localStorage — device-local and
+// never checked in, the same class of storage as the MSAL token cache — so paging
+// back to a range viewed moments ago repaints instantly from the last-known snapshot
+// while a fresh fetch quietly confirms/updates it underneath (never instead of it).
+const CALENDAR_CACHE_PREFIX = 'mission-control.calendar-cache.'
+const CALENDAR_CACHE_MAX_ENTRIES = 24
+type CachedSnapshot = { snapshot: Snapshot; cachedAt: number }
+const calendarCacheKey = (startsOn: string, endsOn: string) => `${CALENDAR_CACHE_PREFIX}${startsOn}_${endsOn}`
+const readCalendarCache = (startsOn: string, endsOn: string): Snapshot | null => {
+  try {
+    const raw = window.localStorage.getItem(calendarCacheKey(startsOn, endsOn))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as CachedSnapshot
+    return parsed.snapshot ?? null
+  } catch {
+    return null
+  }
+}
+const writeCalendarCache = (startsOn: string, endsOn: string, snapshot: Snapshot) => {
+  try {
+    window.localStorage.setItem(calendarCacheKey(startsOn, endsOn), JSON.stringify({ snapshot, cachedAt: Date.now() } satisfies CachedSnapshot))
+    const keys = Object.keys(window.localStorage).filter((key) => key.startsWith(CALENDAR_CACHE_PREFIX))
+    if (keys.length <= CALENDAR_CACHE_MAX_ENTRIES) return
+    const byAge = keys
+      .map((key) => {
+        try { return { key, cachedAt: (JSON.parse(window.localStorage.getItem(key) ?? '{}') as CachedSnapshot).cachedAt ?? 0 } } catch { return { key, cachedAt: 0 } }
+      })
+      .sort((a, b) => a.cachedAt - b.cachedAt)
+    byAge.slice(0, byAge.length - CALENDAR_CACHE_MAX_ENTRIES).forEach(({ key }) => window.localStorage.removeItem(key))
+  } catch {
+    // storage unavailable or full — caching is a perf nicety, never a hard dependency
+  }
+}
+
 function App() {
   const [mode, setMode] = useState<ViewMode>('home')
   const [viewDate, setViewDate] = useState(() => new Date())
@@ -149,6 +184,7 @@ function App() {
   const [now, setNow] = useState(new Date())
   const [filterOpen, setFilterOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false)
   const [colorMode, setColorMode] = useState<SemanticColorMode>(readColorMode)
   const [weekStart, setWeekStart] = useState<WeekStart>(readWeekStart)
   const [calendarColors, setCalendarColors] = useState<Record<string, string>>(readCalendarColors)
@@ -163,6 +199,7 @@ function App() {
   const [privacyNotice, setPrivacyNotice] = useState(false)
   const filterRef = useRef<HTMLDivElement>(null)
   const settingsRef = useRef<HTMLDivElement>(null)
+  const monthPickerRef = useRef<HTMLDivElement>(null)
   const linkedAccountsRef = useRef(0)
   const hadActiveTimerRef = useRef(false)
 
@@ -224,14 +261,15 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!filterOpen && !settingsOpen) return
+    if (!filterOpen && !settingsOpen && !monthPickerOpen) return
     const dismissOutside = (event: PointerEvent) => {
       const target = event.target as Node
       if (!filterRef.current?.contains(target)) setFilterOpen(false)
       if (!settingsRef.current?.contains(target)) setSettingsOpen(false)
+      if (!monthPickerRef.current?.contains(target)) setMonthPickerOpen(false)
     }
     const dismissEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setFilterOpen(false)
+      if (event.key === 'Escape') { setFilterOpen(false); setMonthPickerOpen(false) }
     }
     document.addEventListener('pointerdown', dismissOutside)
     document.addEventListener('keydown', dismissEscape)
@@ -241,7 +279,13 @@ function App() {
       document.removeEventListener('keydown', dismissEscape)
       window.removeEventListener('keydown', dismissEscape)
     }
-  }, [filterOpen, settingsOpen])
+  }, [filterOpen, settingsOpen, monthPickerOpen])
+
+  // Leaving Month (dock nav, voice, Home/brand tap, …) always closes the picker rather
+  // than leaving it armed to reopen stale under a different view.
+  useEffect(() => {
+    if (mode !== 'month') setMonthPickerOpen(false)
+  }, [mode])
 
   useEffect(() => {
     window.localStorage.setItem(COLOR_MODE_KEY, colorMode)
@@ -255,29 +299,41 @@ function App() {
     window.localStorage.setItem(CALENDAR_COLORS_KEY, JSON.stringify(calendarColors))
   }, [calendarColors])
 
+  const applySnapshot = useCallback((nextSnapshot: Snapshot) => {
+    setSnapshot(nextSnapshot)
+    // Show every calendar the moment it appears — the first one on load, and
+    // any later additions — while leaving existing on/off choices alone. A
+    // non-primary calendar the household hasn't opted into yet (`enabled:
+    // false`, see the people flyout) is left out here too, so it stays out of
+    // the agenda until someone turns it on.
+    setEnabledCalendars((current) => {
+      const seen = new Set(current)
+      const added = nextSnapshot.calendars
+        .filter((calendar) => calendar.enabled !== false && !seen.has(calendar.id))
+        .map((calendar) => calendar.id)
+      return added.length ? [...current, ...added] : current
+    })
+  }, [])
+
   useEffect(() => {
     if (mode === 'timer') return
     const range = rangeForView(mode, viewDate, now, weekStart, stripPad)
-    const params = new URLSearchParams({ starts_on: toIsoDate(range.start), ends_on: toIsoDate(range.end) })
+    const startsOn = toIsoDate(range.start)
+    const endsOn = toIsoDate(range.end)
+    // Repaint from the last-known snapshot for this exact range immediately, if we
+    // have one, so paging back to a recently-viewed month/week never sits on a
+    // blank/loading state — the fetch below still runs and reconciles on top of it.
+    const cached = readCalendarCache(startsOn, endsOn)
+    if (cached) applySnapshot(cached)
+    const params = new URLSearchParams({ starts_on: startsOn, ends_on: endsOn })
     fetch(`${API_URL}/api/calendar?${params}`)
       .then((response) => response.json() as Promise<Snapshot>)
       .then((nextSnapshot) => {
-        setSnapshot(nextSnapshot)
-        // Show every calendar the moment it appears — the first one on load, and
-        // any later additions — while leaving existing on/off choices alone. A
-        // non-primary calendar the household hasn't opted into yet (`enabled:
-        // false`, see the people flyout) is left out here too, so it stays out of
-        // the agenda until someone turns it on.
-        setEnabledCalendars((current) => {
-          const seen = new Set(current)
-          const added = nextSnapshot.calendars
-            .filter((calendar) => calendar.enabled !== false && !seen.has(calendar.id))
-            .map((calendar) => calendar.id)
-          return added.length ? [...current, ...added] : current
-        })
+        writeCalendarCache(startsOn, endsOn, nextSnapshot)
+        applySnapshot(nextSnapshot)
       })
       .catch(() => setConnection('offline'))
-  }, [mode, viewDate, now, weekStart, reloadKey, stripPad])
+  }, [mode, viewDate, now, weekStart, reloadKey, stripPad, applySnapshot])
 
   // The Home day-strip renders whatever offset a chevron page or drag lands on
   // immediately, showing a loading affordance for any day outside the window
@@ -499,6 +555,7 @@ function App() {
     setSelectedEvent(null)
     setFilterOpen(false)
     setSettingsOpen(false)
+    setMonthPickerOpen(false)
   }
 
   function goHome() {
@@ -565,7 +622,13 @@ function App() {
       {redacting && <span className="privacy-watermark" aria-hidden>Privacy mode</span>}
       <header className="global-header">
         <BrandLockup onHome={goHome} onLongPress={privacy.available && !redacting ? enterPrivacyMode : undefined} />
-        <div className="header-center"><span className="header-period">{viewedPeriod ?? formatDate(now)}</span><span className="header-now">{viewedPeriod && <small>{formatShortDate(now)}</small>}<strong>{formatTime(now)}</strong></span></div>
+        <div className="header-center" ref={monthPickerRef}>{mode === 'month' ? (
+          <button className="header-period header-period-picker" aria-haspopup="dialog" aria-expanded={monthPickerOpen} onClick={() => setMonthPickerOpen((open) => !open)}>{viewedPeriod}<span className="header-period-caret" aria-hidden>▾</span></button>
+        ) : (
+          <span className="header-period">{viewedPeriod ?? formatDate(now)}</span>
+        )}<span className="header-now">{viewedPeriod && <small>{formatShortDate(now)}</small>}<strong>{formatTime(now)}</strong></span>{mode === 'month' && monthPickerOpen && (
+          <MonthYearPicker viewDate={viewDate} now={now} onSelect={(date) => { setViewDate(date); setMonthPickerOpen(false) }} />
+        )}</div>
         <div className="header-actions">{redacting && <button className="privacy-lock" aria-label="Turn off privacy mode" onClick={() => setPrivacyPadOpen(true)}><span aria-hidden>🔒</span></button>}{!redacting && (authNeedsSetup ? <button className="calendar-alert" onClick={() => { goHome(); setAddingCalendar(false); setConnectOpen(true) }}><i />Calendar sign-in</button> : <SyncStatus connection={connection} />)}<button className={`ask-button voice-${voice.status}`} aria-label={voice.status === 'listening' ? 'Stop voice input' : 'Ask Mission Control'} aria-pressed={voice.status === 'listening'} disabled={voice.status === 'unavailable' && voice.error?.kind === 'disabled'} onClick={() => (voice.status === 'listening' ? voice.stopTurn() : voice.startTurn())}><span className="mic-symbol">◉</span><b>{voice.status === 'unavailable' ? 'Voice off' : voice.status === 'listening' ? 'Listening' : 'Ask'}</b></button>{voice.micActive && <span className="mic-live" role="status" aria-label="Microphone is on"><i />Mic on</span>}{voice.status === 'armed' && !voice.micActive && <span className="wake-armed" role="status" aria-label={`Listening for ${voice.wake.phrase}`}><i />“{voice.wake.phrase}”</span>}{!redacting && <button className="add-button" aria-label="Add an event"><span>+</span><b>Add</b></button>}</div>
       </header>
 
@@ -1191,6 +1254,43 @@ function WeekView({ viewDate, now, events, calendarById, onSelect, onNavigate, c
   const { bars, overflow } = layoutSpans(events, weekDays, SPAN_MAX_LANES, holidayCols)
   const laneCount = bars.reduce((max, bar) => Math.max(max, bar.lane + 1), 0)
   return <div className="week-view"><ViewPager unit="week" onNavigate={onNavigate}><div className="week-grid"><div className="time-gutter week-corner" />{weekDays.map((day) => <div className={`week-day-head ${isSameDay(day, now) ? 'today' : ''}`} key={toIsoDate(day)}><span>{WEEKDAYS[day.getDay()]}</span><strong>{day.getDate()}</strong></div>)}<div className="time-gutter allday-label"><span>{laneCount ? 'all-day' : ''}</span></div><div className="allday-lane">{weekHolidays.map((holiday, index) => holiday ? <span className="allday-holiday" style={{ gridColumn: index + 1, gridRow: 1 }} key={`holiday-${toIsoDate(weekDays[index])}`}><i aria-hidden>{holiday.icon}</i><span>{holiday.name}</span></span> : null)}{bars.map((bar) => <SpanBar bar={bar} calendar={calendarById.get(bar.event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={bar.event.id} />)}{weekDays.map((day, index) => { const extra = overflow.get(toIsoDate(day)) ?? 0; return extra ? <span className="span-overflow" style={{ gridColumn: index + 1, gridRow: SPAN_MAX_LANES + 1 }} key={toIsoDate(day)}>+{extra}</span> : null })}</div><div className="time-gutter hours">{WAKE_HOURS.map((hour) => <span key={hour}>{formatHour(hour)}</span>)}</div>{weekDays.map((day) => { const dayEvents = events.filter((event) => !isSpanningEvent(event) && isSameDay(new Date(event.starts_at), day)); return <div className={`week-column ${isSameDay(day, now) ? 'today-column' : ''}`} key={toIsoDate(day)}>{WAKE_HOURS.map((hour) => <div className="hour-line" key={hour} />)}{dayEvents.map((event) => <WeekEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div> })}</div></ViewPager></div>
+}
+
+const MONTH_ABBR = Array.from({ length: 12 }, (_, month) => new Date(2000, month, 1).toLocaleDateString(undefined, { month: 'short' }))
+
+// A crisp month/year jump menu — the drop-down invoked by tapping the Month header,
+// modelled on the year-strip-plus-month-grid pattern common to Google/Outlook/Apple
+// calendar pickers. It only changes what's *viewed*; it carries no data of its own.
+function MonthYearPicker({ viewDate, now, onSelect }: { viewDate: Date; now: Date; onSelect: (date: Date) => void }) {
+  const [pickerYear, setPickerYear] = useState(viewDate.getFullYear())
+  return (
+    <div className="month-picker-popover" role="dialog" aria-label="Choose month and year" onClick={(event) => event.stopPropagation()}>
+      <div className="month-picker-year-row">
+        <button className="month-picker-year-step" aria-label="Previous year" onClick={() => setPickerYear((year) => year - 1)}>‹</button>
+        <strong>{pickerYear}</strong>
+        <button className="month-picker-year-step" aria-label="Next year" onClick={() => setPickerYear((year) => year + 1)}>›</button>
+      </div>
+      <div className="month-picker-grid">
+        {MONTH_ABBR.map((label, month) => {
+          const isSelected = pickerYear === viewDate.getFullYear() && month === viewDate.getMonth()
+          const isCurrent = pickerYear === now.getFullYear() && month === now.getMonth()
+          return (
+            <button
+              key={label}
+              className={`month-picker-cell${isSelected ? ' selected' : ''}${isCurrent ? ' is-today' : ''}`}
+              aria-current={isSelected ? 'date' : undefined}
+              onClick={() => onSelect(new Date(pickerYear, month, 1))}
+            >
+              {label}
+            </button>
+          )
+        })}
+      </div>
+      {!(pickerYear === now.getFullYear() && now.getMonth() === viewDate.getMonth()) && (
+        <button className="month-picker-today" onClick={() => onSelect(new Date(now.getFullYear(), now.getMonth(), 1))}>Today</button>
+      )}
+    </div>
+  )
 }
 
 function MonthView({ viewDate, now, events, calendarById, onSelect, onNavigate, colorMode, weekStart }: { viewDate: Date; now: Date; events: CalendarEvent[]; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; onNavigate: (amount: number) => void; colorMode: SemanticColorMode; weekStart: WeekStart }) {

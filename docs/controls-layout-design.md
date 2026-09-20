@@ -259,6 +259,31 @@ Fixes:
   (`localStorage['mission-control.settings-advanced-open']`) — a tinkerer switching
   providers repeatedly gets there in one tap, not three.
 
+---
+
+## 4. Month/year picker (2026-09-19)
+
+`.header-period` in Month view is now a tappable control (`.header-period-picker`)
+that opens `.month-picker-popover`, a centred drop-down anchored under the header:
+a year row (‹ 2026 › with a `⌄` caret on the trigger) above a 3×4 grid of month
+abbreviations, plus a "Today" row when the picker isn't already parked on the
+current month. It exists purely to expedite jumping across months/years that
+aren't reachable in one or two prev/next taps or a swipe — it carries no new data
+and doesn't change what Month view *shows*, only how fast you can get there.
+
+- **Reuses the popover grammar**, not the centred-sheet one: `.filter-popover` (People)
+  is the nearest precedent — a corner-anchored `.detail-scrim`-free panel dismissed by
+  outside pointerdown, Escape, or navigating away — because this is a lightweight,
+  single-purpose picker, not the dense multi-section surface Settings is.
+- **Selected/today get the same treatment as everywhere else selection state is
+  drawn** (`Month` view's own day cells, Settings' `.seg` controls): solid ink fill
+  for the selected month, an outline-only affordance for "this is currently today"
+  when it isn't also selected. No new colour vocabulary.
+- Only wired for Month — Week and Home keep the plain, non-interactive
+  `.header-period` label, since "which month" isn't the question those views answer.
+
+---
+
 ## Test / behaviour deltas
 
 - `.mode-nav` still contains exactly `Home, Week, Month, Timer, Lists` in order — the
