@@ -930,6 +930,34 @@ def set_notes_stt_config(request: Request, body: NotesSttConfigUpdate) -> NotesS
     return _notes_stt_config()
 
 
+@router.websocket("/notes/dictate/azure")
+async def notes_dictate_azure(websocket: WebSocket) -> None:
+    """Real-time streaming counterpart to ``POST /api/notes/transcribe`` for
+    the ``azure`` notes-dictation provider only — the kiosk streams mic PCM16
+    here and gets interim/final recognition events back
+    (``app/notes_stt_azure.py``) instead of waiting for one result at the end.
+    Loopback / LAN only, like every other voice/notes route.
+    """
+    host = websocket.client.host if websocket.client else ""
+    if not _is_local_client(host):
+        await websocket.close(code=4403)
+        return
+    settings = get_settings()
+    if effective_notes_stt_provider(settings) != "azure":
+        await websocket.close(code=4404)
+        return
+    if not notes_stt_provider_configured(settings, "azure"):
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    from app.notes_stt_azure import run_notes_dictation_relay
+
+    try:
+        await run_notes_dictation_relay(websocket, settings)
+    except WebSocketDisconnect:
+        return
+
+
 # -- privacy mode ----------------------------------------------------------
 # A household-global "redact the specifics + read-only" state for a houseguest.
 # Entered with no secret (the safe direction); left only by the configured PIN on

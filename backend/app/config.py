@@ -640,21 +640,41 @@ class Settings(BaseSettings):
     notes_file: str = "notes.json"
     # Dictation for note text is intentionally its own switch, separate from
     # `voice_provider` (the conversational assistant): note-taking is a short,
-    # one-shot "record -> transcribe -> fill a text field" interaction, not a
-    # conversation, so it never opens a Live/realtime session regardless of
-    # which cloud provider the assistant is bench-marking. "gemini" is a plain
-    # one-shot transcription call (`google.genai` `generate_content`, text out,
-    # no session) and is the default since Gemini credentials are already
-    # provisioned for the assistant; "local" reuses the same `SpeechRecognizer`
-    # seam (`local_stt_engine` etc., above) as the local voice pipeline;
-    # "disabled" hides the mic affordance in the notes dialog (typing only).
-    notes_stt_provider: Literal["local", "gemini", "disabled"] = "gemini"
+    # "record -> transcribe -> fill a text field" interaction, not a
+    # conversation, so it never opens a Live/realtime *conversational* session
+    # regardless of which cloud provider the assistant is bench-marking.
+    # "gemini" is a plain one-shot transcription call (`google.genai`
+    # `generate_content`, text out, no session) and is the default since
+    # Gemini credentials are already provisioned for the assistant; "local"
+    # reuses the same `SpeechRecognizer` seam (`local_stt_engine` etc., above)
+    # as the local voice pipeline; "azure" streams audio to a real-time Azure
+    # Speech continuous-recognition session over `WS /api/notes/dictate/azure`
+    # (`app/notes_stt_azure.py`) — the only one of the three that reports
+    # interim ("hypothesis") text while the person is still speaking, not just
+    # a result at the end; "disabled" hides the mic affordance in the notes
+    # dialog (typing only).
+    notes_stt_provider: Literal["local", "gemini", "azure", "disabled"] = "gemini"
     # Model for the one-shot Gemini transcription call above — a fast text-out
     # model, not a Live/native-audio one (those mint sessions, not single calls).
     notes_stt_gemini_model: str = "gemini-flash-latest"
     # Hard ceiling on a notes dictation recording, matching the on-screen PTT
     # affordance ("speak a short utterance, then automatic silence").
     notes_stt_max_seconds: float = 5.0
+    # Azure Speech resource backing the "azure" notes dictation provider — a
+    # separate resource/key from Voice Live / Azure OpenAI Realtime (those are
+    # Foundry resources) and from the wake-word `.table` spotter (on-device,
+    # no key at all). Shares the same native SDK dependency
+    # (`azure-cognitiveservices-speech`, the `azure-wake` optional extra) as
+    # the wake-word spotter, but uses `SpeechRecognizer` against Microsoft's
+    # cloud rather than an offline `KeywordRecognizer`.
+    azure_speech_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "MISSION_CONTROL_AZURE_SPEECH_API_KEY",
+            "azure_speech_api_key",
+        ),
+    )
+    azure_speech_region: str = "westus2"
 
     # -- Privacy mode ---------------------------------------------------------
     # A houseguest-facing "redact the specifics + read-only" state. Entered from

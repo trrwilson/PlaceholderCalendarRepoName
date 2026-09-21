@@ -25,10 +25,11 @@ __all__ = [
 NOTES_STT_PROVIDER_LABELS: dict[NotesSttProviderId, str] = {
     "gemini": "Gemini (transcription)",
     "local": "Local / on-device",
+    "azure": "Azure Speech (real-time)",
     "disabled": "Off (typing only)",
 }
 
-_IMPLEMENTED: tuple[NotesSttProviderId, ...] = ("gemini", "local", "disabled")
+_IMPLEMENTED: tuple[NotesSttProviderId, ...] = ("gemini", "local", "azure", "disabled")
 
 _override: NotesSttProviderId | None = None
 
@@ -62,15 +63,19 @@ def notes_stt_provider_configured(settings: Settings, provider: NotesSttProvider
     if provider == "local":
         # On-device engine; a missing model fails at first use, same as the voice local path.
         return True
+    if provider == "azure":
+        return bool(settings.azure_speech_api_key)
     return False
 
 
 async def transcribe(settings: Settings, pcm16: bytes) -> str:
-    """Dispatch one-shot dictation audio to the effective provider.
+    """Dispatch one-shot dictation audio (``POST /api/notes/transcribe``) to
+    the effective provider.
 
-    Raises :class:`VoiceUnavailable` when dictation is off or the effective
-    provider is not configured — surfaced by the caller as a 409, never a
-    silent fall-back to another provider.
+    Raises :class:`VoiceUnavailable` when dictation is off, the effective
+    provider is not configured, or (``azure``) the provider only supports the
+    streaming path — surfaced by the caller as a 409, never a silent
+    fall-back to another provider.
     """
     provider = effective_notes_stt_provider(settings)
     if provider == "disabled":
@@ -88,4 +93,8 @@ async def transcribe(settings: Settings, pcm16: bytes) -> str:
         events = recognizer.accept_audio(pcm16) + recognizer.finalize()
         text = next((event.text for event in reversed(events) if event.type == "final"), "")
         return text.strip()
+    if provider == "azure":
+        raise VoiceUnavailable(
+            "azure notes dictation is streaming-only — use WS /api/notes/dictate/azure"
+        )
     raise VoiceUnavailable(f"notes dictation provider {provider!r} is not implemented")

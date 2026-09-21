@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from starlette.websockets import WebSocketDisconnect
 
 from app.main import app
 from app.models import Note, NoteCreateRequest, NoteUpdateRequest
@@ -180,3 +181,55 @@ def test_api_transcribe_refused_when_disabled(
 def test_api_transcribe_rejects_empty_body(client: TestClient) -> None:
     response = client.post("/api/notes/transcribe", content=b"")
     assert response.status_code == 422
+
+
+def test_api_transcribe_refused_for_azure_provider(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "azure" is streaming-only (WS /api/notes/dictate/azure) — the one-shot
+    # POST path must refuse it rather than silently falling back.
+    monkeypatch.setenv("MISSION_CONTROL_NOTES_STT_PROVIDER", "azure")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    response = client.post("/api/notes/transcribe", content=b"\x00\x00" * 100)
+    assert response.status_code == 409
+
+
+def test_notes_stt_config_reports_azure_configured_state(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    unconfigured = client.get("/api/notes/stt-config").json()
+    azure = next(p for p in unconfigured["providers"] if p["id"] == "azure")
+    assert azure["configured"] is False
+
+    monkeypatch.setenv("MISSION_CONTROL_AZURE_SPEECH_API_KEY", "test-key")
+    get_settings.cache_clear()
+    configured = client.get("/api/notes/stt-config").json()
+    azure = next(p for p in configured["providers"] if p["id"] == "azure")
+    assert azure["configured"] is True
+
+
+def test_notes_dictate_azure_ws_refused_when_not_the_selected_provider(
+    client: TestClient,
+) -> None:
+    # Default notes_stt_provider is "gemini" — the azure streaming socket
+    # must not be handed out for a different active provider.
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/notes/dictate/azure"):
+            pass
+
+
+def test_notes_dictate_azure_ws_refused_when_not_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_NOTES_STT_PROVIDER", "azure")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/notes/dictate/azure"):
+            pass

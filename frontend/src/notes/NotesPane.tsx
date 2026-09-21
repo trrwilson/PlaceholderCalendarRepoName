@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
 
 import { useSuppressVoice } from '../voice/suppression'
@@ -197,6 +197,13 @@ function NoteModal({ apiBaseUrl, title, initialText = '', onCancel, onSave, onDe
     const transcript = await dictation.record()
     if (transcript) setText(transcript)
   }, [dictation])
+
+  // A responsive live transcript for providers that report interim results
+  // (azure) — replaced by the authoritative final text once `record()`
+  // resolves above. A no-op for gemini/local, which never set `partialText`.
+  useEffect(() => {
+    if (dictation.partialText) setText(dictation.partialText)
+  }, [dictation.partialText])
 
   return (
     <div className="detail-scrim" role="presentation" onClick={onCancel}>

@@ -323,12 +323,16 @@ class NoteTranscription(BaseModel):
 
 
 # Own switch from ``VoiceProviderId`` — see ``app/config.py``'s
-# ``notes_stt_provider`` comment: a one-shot "record -> transcribe -> fill a
-# text field" interaction never opens a Live/realtime session. "gemini" is a
-# plain one-shot ``google.genai`` ``generate_content`` transcription call (text
-# out, no session); "local" is the on-device ``SpeechRecognizer`` shared with
-# the local voice pipeline; "disabled" hides the mic affordance entirely.
-NotesSttProviderId = Literal["gemini", "local", "disabled"]
+# ``notes_stt_provider`` comment: a "record -> transcribe -> fill a text
+# field" interaction never opens a conversational Live/realtime session.
+# "gemini" is a plain one-shot ``google.genai`` ``generate_content``
+# transcription call (text out, no session); "local" is the on-device
+# ``SpeechRecognizer`` shared with the local voice pipeline; "azure" streams
+# to a real-time Azure Speech continuous-recognition session
+# (``WS /api/notes/dictate/azure``) and is the only one that reports interim
+# text while the person is still speaking; "disabled" hides the mic
+# affordance entirely.
+NotesSttProviderId = Literal["gemini", "local", "azure", "disabled"]
 
 
 class NotesSttProviderInfo(BaseModel):
