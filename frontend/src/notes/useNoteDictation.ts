@@ -63,6 +63,10 @@ function concat(chunks: Int16Array[]): Int16Array {
 
 export interface NoteDictationApi {
   status: DictationStatus
+  /** Set alongside `status === 'error'` — a short, kiosk-presentable reason.
+   * `null` once status leaves 'error' or on the generic "didn't catch that"
+   * case (no server round-trip to explain). */
+  error: string | null
   /** Play the earcon, then record until ~900ms of silence or 5s, whichever
    * first — returns the transcript (empty string on failure or no speech). */
   record: () => Promise<string>
@@ -70,8 +74,22 @@ export interface NoteDictationApi {
   cancel: () => void
 }
 
+/** The backend already curates a clean, kiosk-safe message for the failures
+ * it can explain (see `app.voice.providers.gemini` retry/error handling and
+ * `notes_stt.transcribe`'s `VoiceUnavailable` reasons) — surface it as-is
+ * rather than re-deriving something from the HTTP status. */
+async function detailFromResponse(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as { detail?: unknown }
+    return typeof body.detail === 'string' && body.detail ? body.detail : null
+  } catch {
+    return null
+  }
+}
+
 export function useNoteDictation(apiBaseUrl: string): NoteDictationApi {
   const [status, setStatus] = useState<DictationStatus>('idle')
+  const [error, setError] = useState<string | null>(null)
   const statusRef = useRef<DictationStatus>('idle')
   const setBoth = (next: DictationStatus) => {
     statusRef.current = next
@@ -85,6 +103,7 @@ export function useNoteDictation(apiBaseUrl: string): NoteDictationApi {
 
   const record = useCallback(async (): Promise<string> => {
     if (statusRef.current !== 'idle' && statusRef.current !== 'error') return ''
+    setError(null)
     await playBloop()
     setBoth('recording')
     const chunks: Int16Array[] = []
@@ -118,6 +137,7 @@ export function useNoteDictation(apiBaseUrl: string): NoteDictationApi {
             body: pcm16.buffer as ArrayBuffer,
           })
           if (!response.ok) {
+            setError((await detailFromResponse(response)) ?? 'Speech service had a problem — try again.')
             setBoth('error')
             resolve('')
             return
@@ -126,6 +146,7 @@ export function useNoteDictation(apiBaseUrl: string): NoteDictationApi {
           setBoth('idle')
           resolve(text)
         } catch {
+          setError("Couldn't reach the server — check the connection.")
           setBoth('error')
           resolve('')
         }
@@ -152,6 +173,7 @@ export function useNoteDictation(apiBaseUrl: string): NoteDictationApi {
           if (statusRef.current !== 'recording') void finish(true) // cancelled before the mic came up
         })
         .catch(() => {
+          setError("Couldn't access the microphone.")
           setBoth('error')
           resolve('')
         })
@@ -166,5 +188,5 @@ export function useNoteDictation(apiBaseUrl: string): NoteDictationApi {
     })
   }, [apiBaseUrl])
 
-  return { status, record, cancel }
+  return { status, error, record, cancel }
 }

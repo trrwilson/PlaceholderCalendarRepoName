@@ -200,6 +200,13 @@ def _wav_bytes(pcm16: bytes, sample_rate: int) -> bytes:
     return header + pcm16
 
 
+#: Gemini's ``generateContent`` returns a 503 ("model is overloaded") often
+#: enough in practice that a note-taker shouldn't see it on the first hit —
+#: these self-clear within a few seconds most of the time. Not used for the
+#: Live API (that path has its own reconnect story).
+_TRANSIENT_RETRY_DELAYS_S: tuple[float, ...] = (0.75, 1.5)
+
+
 async def transcribe_pcm16(settings: Settings, pcm16: bytes, sample_rate: int = 16_000) -> str:
     """One-shot dictation transcription for the Home notes pane's push-to-talk
     text field (see ``app/notes_stt.py``). Deliberately not the Live API: a
@@ -209,17 +216,35 @@ async def transcribe_pcm16(settings: Settings, pcm16: bytes, sample_rate: int = 
     if not settings.gemini_api_key:
         raise VoiceUnavailable("GEMINI_API_KEY_MISSION_CONTROL is not configured")
 
-    from google.genai import types
+    import asyncio
+
+    from google.genai import errors, types
 
     client = _build_client(settings.gemini_api_key, settings.gemini_live_api_version)
     wav = _wav_bytes(pcm16, sample_rate)
-    response = await client.aio.models.generate_content(
-        model=settings.notes_stt_gemini_model,
-        contents=[
-            types.Part.from_bytes(data=wav, mime_type="audio/wav"),
-            "Transcribe the speech in this audio exactly as spoken. Reply with "
-            "only the transcript text — no quotes, labels, or commentary. If "
-            "there is no discernible speech, reply with an empty string.",
-        ],
-    )
-    return (response.text or "").strip()
+    contents = [
+        types.Part.from_bytes(data=wav, mime_type="audio/wav"),
+        "Transcribe the speech in this audio exactly as spoken. Reply with "
+        "only the transcript text — no quotes, labels, or commentary. If "
+        "there is no discernible speech, reply with an empty string.",
+    ]
+
+    attempts = len(_TRANSIENT_RETRY_DELAYS_S) + 1
+    for attempt in range(attempts):
+        try:
+            response = await client.aio.models.generate_content(
+                model=settings.notes_stt_gemini_model, contents=contents
+            )
+            return (response.text or "").strip()
+        except errors.ServerError as exc:
+            if attempt + 1 >= attempts:
+                raise RuntimeError(
+                    "Gemini's transcription service is temporarily overloaded — try again "
+                    "in a moment."
+                ) from exc
+            await asyncio.sleep(_TRANSIENT_RETRY_DELAYS_S[attempt])
+        except errors.ClientError as exc:
+            raise RuntimeError(
+                f"Gemini rejected the transcription request ({exc.message})."
+            ) from exc
+    raise AssertionError("unreachable")  # loop always returns or raises

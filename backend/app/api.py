@@ -883,7 +883,11 @@ async def transcribe_note(request: Request) -> NoteTranscription:
     except VoiceUnavailable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - report, do not crash the dialog
-        raise HTTPException(status_code=503, detail=f"speech engine unavailable: {exc}") from exc
+        # Known transient/rejection cases (see app.voice.providers.gemini) already
+        # carry a clean, user-presentable message; anything else falls back to a
+        # generic wrapper rather than leaking a raw engine string to the kiosk.
+        detail = str(exc) if isinstance(exc, RuntimeError) else "speech engine unavailable"
+        raise HTTPException(status_code=503, detail=detail) from exc
     return NoteTranscription(text=text.strip())
 
 

@@ -230,7 +230,7 @@ function NoteModal({ apiBaseUrl, title, initialText = '', onCancel, onSave, onDe
               : dictation.status === 'transcribing'
                 ? 'Transcribing…'
                 : dictation.status === 'error'
-                  ? "Couldn't hear that — try again"
+                  ? (dictation.error ?? "Couldn't hear that — try again")
                   : 'Tap to speak'}
           </b>
         </button>
