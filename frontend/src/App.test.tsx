@@ -429,7 +429,7 @@ describe('Mission Control dashboard', () => {
     expect(modeLabels()).toEqual(baseline)
   })
 
-  it('keeps sync status invisible while healthy and reveals offline detail on demand', async () => {
+  it('keeps sync status invisible while healthy and reveals calendar-failure detail on demand', async () => {
     render(<App />)
     await waitFor(() => expect(document.querySelector('.large-event')).toBeInTheDocument())
     expect(document.querySelector('.sync-status')).not.toBeInTheDocument()
@@ -446,9 +446,29 @@ describe('Mission Control dashboard', () => {
     const flag = await screen.findByRole('button', { name: 'Sync status' })
     expect(document.querySelector('.sync-status-detail')).not.toBeInTheDocument()
     fireEvent.click(flag)
-    expect(document.querySelector('.sync-status-detail')).toHaveTextContent(/Offline/)
+    expect(document.querySelector('.sync-status-detail')).toHaveTextContent(/Calendar/)
+    expect(screen.getByRole('button', { name: 'Debug Restart' })).toBeInTheDocument()
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(document.querySelector('.sync-status-detail')).not.toBeInTheDocument())
+  })
+
+  it('clears a calendar-fetch failure flag the moment a later fetch succeeds, instead of sticking offline forever', async () => {
+    let failCalendar = true
+    vi.stubGlobal('fetch', vi.fn((url: string | URL) => {
+      const target = String(url)
+      if (target.includes('/api/timers')) return Promise.resolve({ ok: true, json: async () => [] })
+      if (target.includes('/api/calendar')) {
+        if (failCalendar) return Promise.reject(new Error('offline'))
+        return Promise.resolve({ ok: true, json: async () => ({ calendars: [], events: [] }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    }))
+    render(<App />)
+    await screen.findByRole('button', { name: 'Sync status' })
+
+    failCalendar = false
+    fireEvent.click(screen.getByRole('button', { name: 'Week' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Sync status' })).not.toBeInTheDocument())
   })
 
   it('repaints instantly from a cached snapshot for a range while a fresh fetch is still in flight', async () => {

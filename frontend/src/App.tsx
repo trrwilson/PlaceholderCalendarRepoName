@@ -181,6 +181,12 @@ function App() {
   const [stripPad, setStripPad] = useState({ before: 7, after: 14 })
   const [enabledCalendars, setEnabledCalendars] = useState<string[]>([])
   const [connection, setConnection] = useState<ConnectionState>('connecting')
+  // Independent of the shared `/api/ws` socket above: a calendar fetch is a plain
+  // HTTP request that can fail (or recover) on its own, so it gets its own flag
+  // rather than being folded into `connection` — folding it in there had no path
+  // back to healthy once a single transient fetch failed, leaving the "!" flag
+  // stuck forever even after the very next fetch succeeded.
+  const [calendarHealthy, setCalendarHealthy] = useState(true)
   const [now, setNow] = useState(new Date())
   const [filterOpen, setFilterOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -331,8 +337,9 @@ function App() {
       .then((nextSnapshot) => {
         writeCalendarCache(startsOn, endsOn, nextSnapshot)
         applySnapshot(nextSnapshot)
+        setCalendarHealthy(true)
       })
-      .catch(() => setConnection('offline'))
+      .catch(() => setCalendarHealthy(false))
   }, [mode, viewDate, now, weekStart, reloadKey, stripPad, applySnapshot])
 
   // The Home day-strip renders whatever offset a chevron page or drag lands on
@@ -550,6 +557,32 @@ function App() {
     invokeAvailable: voiceConfig.config.invoke_speaker_configured,
   })
 
+  // The header's "!" flag and its flyout: the major categories of trouble a
+  // household member would actually want to know about, each independent so one
+  // recovering doesn't wait on another. `disabled` voice isn't a problem — it's
+  // the feature intentionally off (already called out by the "Voice off" label).
+  const syncIssues = useMemo(() => {
+    const issues: { key: string; label: string; detail: string }[] = []
+    if (connection === 'offline') {
+      issues.push({
+        key: 'sync',
+        label: 'Live sync',
+        detail: 'Lost the live connection to the backend — timers and lists may lag. Reconnecting on its own.',
+      })
+    }
+    if (!calendarHealthy) {
+      issues.push({
+        key: 'calendar',
+        label: 'Calendar',
+        detail: 'The last calendar update failed — showing the last schedule that loaded.',
+      })
+    }
+    if (voice.status === 'unavailable' && voice.error && voice.error.kind !== 'disabled') {
+      issues.push({ key: 'voice', label: 'Voice', detail: voice.error.message })
+    }
+    return issues
+  }, [connection, calendarHealthy, voice.status, voice.error])
+
   function navigate(amount: number) {
     setViewDate((current) => amount === 0 ? (mode === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1) : new Date(now)) : mode === 'month' ? new Date(current.getFullYear(), current.getMonth() + amount, 1) : addDays(current, amount * (mode === 'week' ? 7 : 1)))
     setSelectedEvent(null)
@@ -629,7 +662,7 @@ function App() {
         )}<span className="header-now">{viewedPeriod && <small>{formatShortDate(now)}</small>}<strong>{formatTime(now)}</strong></span>{mode === 'month' && monthPickerOpen && (
           <MonthYearPicker viewDate={viewDate} now={now} onSelect={(date) => { setViewDate(date); setMonthPickerOpen(false) }} />
         )}</div>
-        <div className="header-actions">{redacting && <button className="privacy-lock" aria-label="Turn off privacy mode" onClick={() => setPrivacyPadOpen(true)}><span aria-hidden>🔒</span></button>}{!redacting && (authNeedsSetup ? <button className="calendar-alert" onClick={() => { goHome(); setAddingCalendar(false); setConnectOpen(true) }}><i />Calendar sign-in</button> : <SyncStatus connection={connection} />)}<button className={`ask-button voice-${voice.status}`} aria-label={voice.status === 'listening' ? 'Stop voice input' : 'Ask Mission Control'} aria-pressed={voice.status === 'listening'} disabled={voice.status === 'unavailable' && voice.error?.kind === 'disabled'} onClick={() => (voice.status === 'listening' ? voice.stopTurn() : voice.startTurn())}><span className="mic-symbol">◉</span><b>{voice.status === 'unavailable' ? 'Voice off' : voice.status === 'listening' ? 'Listening' : 'Ask'}</b></button>{voice.micActive && <span className="mic-live" role="status" aria-label="Microphone is on"><i />Mic on</span>}{voice.status === 'armed' && !voice.micActive && <span className="wake-armed" role="status" aria-label={`Listening for ${voice.wake.phrase}`}><i />“{voice.wake.phrase}”</span>}{!redacting && <button className="add-button" aria-label="Add an event"><span>+</span><b>Add</b></button>}</div>
+        <div className="header-actions">{redacting && <button className="privacy-lock" aria-label="Turn off privacy mode" onClick={() => setPrivacyPadOpen(true)}><span aria-hidden>🔒</span></button>}{!redacting && (authNeedsSetup ? <button className="calendar-alert" onClick={() => { goHome(); setAddingCalendar(false); setConnectOpen(true) }}><i />Calendar sign-in</button> : <SyncStatus apiBaseUrl={API_URL} issues={syncIssues} />)}<button className={`ask-button voice-${voice.status}`} aria-label={voice.status === 'listening' ? 'Stop voice input' : 'Ask Mission Control'} aria-pressed={voice.status === 'listening'} disabled={voice.status === 'unavailable' && voice.error?.kind === 'disabled'} onClick={() => (voice.status === 'listening' ? voice.stopTurn() : voice.startTurn())}><span className="mic-symbol">◉</span><b>{voice.status === 'unavailable' ? 'Voice off' : voice.status === 'listening' ? 'Listening' : 'Ask'}</b></button>{voice.micActive && <span className="mic-live" role="status" aria-label="Microphone is on"><i />Mic on</span>}{voice.status === 'armed' && !voice.micActive && <span className="wake-armed" role="status" aria-label={`Listening for ${voice.wake.phrase}`}><i />“{voice.wake.phrase}”</span>}{!redacting && <button className="add-button" aria-label="Add an event"><span>+</span><b>Add</b></button>}</div>
       </header>
 
       <section className="view-frame">
@@ -1357,10 +1390,10 @@ function WeekEvent({ event, calendar, onSelect, colorMode }: EventProps & { colo
 function EventChip({ event, calendar, onSelect, colorMode }: EventProps & { colorMode: SemanticColorMode }) { return <button className={`event-chip ${semanticEventClass(event, calendar, colorMode)} ${event.all_day ? 'all-day' : ''}`} style={semanticEventStyle(event, calendar, colorMode)} onClick={() => onSelect(event)}><SecondaryTriangle accent={eventAccent(event, calendar, colorMode)} /><span className="event-time">{event.all_day ? 'ALL DAY' : formatEventTime(event.starts_at)}</span><strong>{event.title}</strong></button> }
 function EventDetail({ event, calendar, onClose }: { event: CalendarEvent; calendar?: Calendar; onClose: () => void }) { const categories = event.categories ?? []; return <div className="detail-scrim" role="presentation" onClick={onClose}><section className="detail-sheet" role="dialog" aria-label="Event details" onClick={(eventClick) => eventClick.stopPropagation()}><button className="close-detail" onClick={onClose} aria-label="Close event details">×</button><span className={`detail-bar ${colorClass(calendar?.color ?? 'coral')}`} /><p className="section-kicker"><span className={`identity-dot ${colorClass(calendar?.color ?? 'coral')}`} />{personName(calendar) || 'Household event'}<ProviderBadge source={calendar?.source} /></p><h2>{event.title}</h2><p className="detail-time">{formatEventWhen(event)}</p>{event.location && <p className="detail-location">{event.location}</p>}{categories.length > 0 && <div className="detail-categories"><span>Categories</span>{categories.map((category) => <span className="category-label" style={categoryVar(category.color)} key={category.id}><i />{category.name}</span>)}</div>}<div className="detail-actions"><button onClick={onClose}>Done</button><button className="quiet-action" onClick={onClose}>More actions later</button></div></section></div> }
 function EmptyState({ text }: { text: string }) { return <div className="empty-state"><span>✓</span><strong>{text}</strong><small>No urgent plans ahead.</small></div> }
-// Normal sync is silent — this renders nothing while the connection is healthy. Only an actual
-// exception (offline) earns header space: a compact warning flag whose detail sits behind a tap
+// Normal sync is silent — this renders nothing while every category below is healthy. Only an
+// actual exception earns header space: a compact warning flag whose detail sits behind a tap
 // (outside interaction and Escape dismiss it), never spelled out in the header itself.
-function SyncStatus({ connection }: { connection: ConnectionState }) {
+function SyncStatus({ apiBaseUrl, issues }: { apiBaseUrl: string; issues: { key: string; label: string; detail: string }[] }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -1371,12 +1404,61 @@ function SyncStatus({ connection }: { connection: ConnectionState }) {
     document.addEventListener('keydown', dismissEscape)
     return () => { document.removeEventListener('pointerdown', dismissOutside); document.removeEventListener('keydown', dismissEscape) }
   }, [open])
-  if (connection !== 'offline') return null
+  if (issues.length === 0) return null
   return (
     <div className="sync-status" ref={ref}>
       <button className="sync-status-flag" aria-label="Sync status" aria-expanded={open} onClick={() => setOpen((value) => !value)}><span aria-hidden>!</span></button>
-      {open && <div className="sync-status-detail" role="status">Offline — showing the last schedule that loaded. The display keeps trying to reconnect on its own.</div>}
+      {open && (
+        <div className="sync-status-detail" role="status">
+          <ul className="sync-issue-list">
+            {issues.map((issue) => <li key={issue.key}><strong>{issue.label}</strong><span>{issue.detail}</span></li>)}
+          </ul>
+          <DebugRestartButton apiBaseUrl={apiBaseUrl} />
+        </div>
+      )}
     </div>
+  )
+}
+
+// A last-resort recovery tap: bounces backend, frontend, and (best-effort) the
+// Invoke mic daemon, mirroring what a developer already runs by hand
+// (scripts/restart-dev.ps1). Fire-and-forget the request — the backend process
+// answering it is about to be killed by its own response, so a dropped
+// connection here is the expected, successful case, not a failure to surface.
+function DebugRestartButton({ apiBaseUrl }: { apiBaseUrl: string }) {
+  const [phase, setPhase] = useState<'idle' | 'restarting' | 'failed'>('idle')
+  const pollRef = useRef<number | null>(null)
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) { window.clearInterval(pollRef.current); pollRef.current = null }
+  }, [])
+  useEffect(() => () => stopPolling(), [stopPolling])
+
+  const onClick = useCallback(() => {
+    setPhase('restarting')
+    fetch(`${apiBaseUrl}/api/debug/restart`, { method: 'POST' }).catch(() => undefined)
+    // Give the bounce a moment to actually kill the old processes before polling
+    // for the new ones, then reload once this page's own origin answers again —
+    // the surest way to reset every bit of in-memory frontend state (voice
+    // session, wake word, cached fetches) along with the backend + mic cycle.
+    const startedAt = Date.now()
+    window.setTimeout(() => {
+      stopPolling()
+      pollRef.current = window.setInterval(() => {
+        if (Date.now() - startedAt > 45_000) { stopPolling(); setPhase('failed'); return }
+        fetch(window.location.origin, { cache: 'no-store' })
+          .then(() => { stopPolling(); window.location.reload() })
+          .catch(() => undefined)
+      }, 2_000)
+    }, 3_000)
+  }, [apiBaseUrl, stopPolling])
+
+  if (phase === 'failed') {
+    return <p className="debug-restart-status">Still restarting — reload the display by hand if this takes much longer.</p>
+  }
+  return (
+    <button className="debug-restart" onClick={onClick} disabled={phase === 'restarting'}>
+      {phase === 'restarting' ? 'Restarting…' : 'Debug Restart'}
+    </button>
   )
 }
 function DayEventsSheet({ day, events, calendarById, colorMode, onSelect, onClose }: { day: Date; events: CalendarEvent[]; calendarById: Map<string, Calendar>; colorMode: SemanticColorMode; onSelect: (event: CalendarEvent) => void; onClose: () => void }) {

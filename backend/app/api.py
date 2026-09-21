@@ -18,6 +18,7 @@ from pydantic import ValidationError
 import app.calendar.personal_auth as personal_auth
 from app.calendar.provider import CalendarProvider, MockCalendarProvider
 from app.config import get_settings
+from app.debug_restart import RestartUnavailable, trigger_restart
 from app.display import get_display_store
 from app.eufy import get_eufy_service
 from app.host import host_capabilities
@@ -178,6 +179,25 @@ def capabilities(request: Request) -> HostCapabilities:
     Always safe to call; LAN-gated like the other config reads."""
     _require_local(request)
     return host_capabilities(get_settings())
+
+
+@router.post("/debug/restart", status_code=202)
+async def debug_restart(request: Request) -> dict[str, str]:
+    """The disconnected-flyout's "Debug Restart" — bounce backend, frontend,
+    and (best-effort) the mic daemon. Host-local only: this process is only
+    colocated with the processes it would restart when
+    ``MISSION_CONTROL_HOST_LOCAL_DISPLAY`` says so (see ``app/host.py``)."""
+    _require_local(request)
+    _require_unlocked()
+    if not get_settings().host_local_display:
+        raise HTTPException(
+            status_code=409, detail="debug restart is only available on the kiosk host"
+        )
+    try:
+        trigger_restart()
+    except RestartUnavailable as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"status": "restarting"}
 
 
 @router.get("/calendar", response_model=CalendarSnapshot)
