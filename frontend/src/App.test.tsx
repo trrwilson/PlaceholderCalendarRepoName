@@ -274,7 +274,7 @@ describe('Mission Control dashboard', () => {
     expect(document.querySelector('.day-events .event-chip')).not.toBeInTheDocument()
   })
 
-  it('paints multi-day spans with the primary colour — category first, then account', async () => {
+  it('paints multi-day spans with the primary colour — category first, then account, then back', async () => {
     const today = new Date()
     const midnight = (offset: number) => new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset).toISOString()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({
@@ -301,6 +301,13 @@ describe('Mission Control dashboard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Color events by person/calendar' }))
     await waitFor(() => expect(document.querySelector('.month-week-spans .span-bar')).toHaveClass('calendar-fern'))
+
+    // Switching back to category-first restores the category colour rather than degrading
+    // to the neutral/uncategorized swatch.
+    fireEvent.click(screen.getByRole('button', { name: 'Color events by category' }))
+    await waitFor(() => expect(document.querySelector('.month-week-spans .span-bar')).toHaveClass('category-dominant'))
+    const barBack = document.querySelector('.month-week-spans .span-bar') as HTMLElement
+    expect(barBack).toHaveStyle({ '--category-color': '#8e44ad' })
   })
 
   it('starts a timer, keeps navigation unlocked, and tracks the countdown in the dock', async () => {
