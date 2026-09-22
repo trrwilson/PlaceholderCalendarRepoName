@@ -26,6 +26,19 @@ _INITIAL_PROMPT = (
     "the month, events, appointments, people, and the kitchen timer."
 )
 
+# ``vad_filter``'s default ``min_silence_duration_ms`` (2000) merges any two
+# speech-like blips less than 2s apart into one segment. A steady background
+# noise source (a running clothes dryer, a fan) trips the VAD's speech
+# probability intermittently throughout a buffer, not just where the real
+# command is — so with the library default, a short command plus a noisy tail
+# gets merged into one long "speech" segment and handed to the decoder
+# wholesale, which Whisper then fills in with fluent-sounding invented text
+# (confirmed against captured local-voice turns: a 1s command decoded as a full
+# unrelated sentence after ~14s of dryer noise). Raising the threshold and
+# shortening the silence gap keeps noise-only stretches segmented separately
+# from real speech instead of absorbed into it.
+_VAD_PARAMETERS = {"threshold": 0.6, "min_silence_duration_ms": 500, "speech_pad_ms": 200}
+
 
 class FasterWhisperRecognizer(SpeechRecognizer):
     streaming = True
@@ -144,6 +157,7 @@ class FasterWhisperRecognizer(SpeechRecognizer):
             task="transcribe",
             beam_size=1 if partial else self._beam_size,
             vad_filter=not partial,
+            vad_parameters=_VAD_PARAMETERS,
             condition_on_previous_text=False,
             initial_prompt=_INITIAL_PROMPT,
             temperature=0.0,

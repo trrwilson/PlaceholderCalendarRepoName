@@ -119,6 +119,17 @@ const NOISE_FLOOR_CEILING = 0.03
  * talking", stalling the turn out to the backstop or `MAX_LISTEN_MS`. This
  * still sits well under a speaking level. */
 const NOISE_FLOOR_SAMPLE_CEILING = 0.028
+/** Consecutive ~100 ms frames clearing `voiceGate` required before a frame
+ * counts as renewed speech and resets the silence-hold clock. A bursty,
+ * non-steady noise source (a running clothes dryer's tumble, not a flat fan
+ * hum) routinely pokes one isolated frame over an otherwise-correct gate;
+ * treating that single frame as "still talking" reset `lastVoiceAt` on every
+ * such poke and the 700 ms hold never elapsed, so the turn rode out to
+ * `MAX_LISTEN_MS` even for a one-second command (confirmed against captured
+ * turns: 15 s+ with a room noise floor of ~0.01-0.02 RMS throughout). Requiring
+ * a short run filters an isolated burst while still catching genuinely
+ * resumed speech within ~200 ms. */
+const SILENCE_RESET_FRAMES = 2
 /** Silence hold when the provider VAD owns the endpoint (`endpointing: hybrid`,
  * or after a `speech-started` on any provider): trust it to send `speech-stopped`
  * and only step in as a backstop if it doesn't.
@@ -343,6 +354,10 @@ export function useVoiceSession({
    *  per-frame minimum, post-AEC-settle, pre-`spoke`). Lifts the end-of-speech
    *  gate above a noisy far-field feed — see `NOISE_FLOOR_MULT`. Reset per turn. */
   const noiseFloorRef = useRef(Infinity)
+  /** Count of consecutive frames currently clearing `voiceGate` in `handleLevel`
+   *  (see `SILENCE_RESET_FRAMES`). Reset per turn and whenever a frame falls
+   *  back under the gate. */
+  const aboveGateRunRef = useRef(0)
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) {
@@ -813,8 +828,16 @@ export function useVoiceSession({
       }
 
       if (rms >= voiceGate) {
-        spokeRef.current = true
-        lastVoiceAtRef.current = now
+        // A single frame over the gate is not trusted on its own — see
+        // `SILENCE_RESET_FRAMES`. Only a short sustained run counts as
+        // renewed speech and resets the silence-hold clock.
+        aboveGateRunRef.current += 1
+        if (aboveGateRunRef.current >= SILENCE_RESET_FRAMES) {
+          spokeRef.current = true
+          lastVoiceAtRef.current = now
+        }
+      } else {
+        aboveGateRunRef.current = 0
       }
 
       if (listenedMs < MIN_LISTEN_MS) return
@@ -921,6 +944,7 @@ export function useVoiceSession({
       peakRmsRef.current = 0
       speechLevelRef.current = 0
       noiseFloorRef.current = Infinity
+      aboveGateRunRef.current = 0
       serverVadSeenRef.current = false
       listenStartRef.current = performance.now()
       // Visual-only acknowledgement for a wake turn (docs/voice-activation-ux-mvp.md
