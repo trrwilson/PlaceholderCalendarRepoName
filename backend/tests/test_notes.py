@@ -237,3 +237,9 @@ def test_notes_dictate_azure_ws_refused_when_not_configured(
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect("/api/notes/dictate/azure"):
             pass
+
+
+def test_notes_dictation_defaults_to_azure_speech() -> None:
+    from app.config import Settings
+
+    assert Settings(_env_file=None).notes_stt_provider == "azure"
