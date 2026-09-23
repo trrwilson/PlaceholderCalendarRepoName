@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { VoiceEvent } from './providers/types'
-import { useVoiceSession } from './useVoiceSession'
+import { MIC_TOO_QUIET_MESSAGE, useVoiceSession } from './useVoiceSession'
 
 const h = vi.hoisted(() => {
   class VoiceUnavailableError extends Error {}
@@ -351,6 +351,8 @@ describe('useVoiceSession', () => {
       await act(async () => {
         vi.advanceTimersByTime(800)
         h.state.level(0.05)
+        vi.advanceTimersByTime(100)
+        h.state.level(0.05)
       })
       // A pause past SILENCE_HOLD_MS (700) — but the provider VAD owns the
       // endpoint now, so the backstop waits much longer.
@@ -466,6 +468,8 @@ describe('useVoiceSession', () => {
       await act(async () => {
         vi.advanceTimersByTime(800)
         h.state.level(0.05)
+        vi.advanceTimersByTime(100)
+        h.state.level(0.05)
       })
       await act(async () => {
         vi.advanceTimersByTime(1_200)
@@ -489,11 +493,11 @@ describe('useVoiceSession', () => {
 
       await act(async () => {
         vi.advanceTimersByTime(800)
-        h.state.level(0.001)
+        h.state.level(0.005)
       })
       await act(async () => {
         vi.advanceTimersByTime(6_000)
-        h.state.level(0.001)
+        h.state.level(0.005)
       })
 
       // Quietly back to idle — not "The assistant stopped responding", and the
@@ -507,6 +511,32 @@ describe('useVoiceSession', () => {
         vi.advanceTimersByTime(20_000)
       })
       expect(result.current.status).toBe('idle')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('says so when a tap-to-talk turn hears almost nothing at all', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useVoiceSession(options))
+      await act(async () => {
+        await result.current.startTurn()
+      })
+
+      // A muted / wrong input: far below even a silent room on a working mic.
+      await act(async () => {
+        vi.advanceTimersByTime(800)
+        h.state.level(0.0005)
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(6_000)
+        h.state.level(0.0005)
+      })
+
+      expect(result.current.status).toBe('error')
+      expect(result.current.error).toEqual({ kind: 'microphone', message: MIC_TOO_QUIET_MESSAGE })
+      expect(h.spies.endActivity).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }

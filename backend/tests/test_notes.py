@@ -214,10 +214,14 @@ def test_notes_stt_config_reports_azure_configured_state(
 
 
 def test_notes_dictate_azure_ws_refused_when_not_the_selected_provider(
-    client: TestClient,
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Default notes_stt_provider is "gemini" — the azure streaming socket
-    # must not be handed out for a different active provider.
+    # The azure streaming socket must not be handed out for a different
+    # active provider.
+    monkeypatch.setenv("MISSION_CONTROL_NOTES_STT_PROVIDER", "gemini")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect("/api/notes/dictate/azure"):
             pass
