@@ -644,16 +644,15 @@ class Settings(BaseSettings):
     # conversation, so it never opens a Live/realtime *conversational* session
     # regardless of which cloud provider the assistant is bench-marking.
     # "gemini" is a plain one-shot transcription call (`google.genai`
-    # `generate_content`, text out, no session) and is the default since
-    # Gemini credentials are already provisioned for the assistant; "local"
+    # `generate_content`, text out, no session); "local"
     # reuses the same `SpeechRecognizer` seam (`local_stt_engine` etc., above)
     # as the local voice pipeline; "azure" streams audio to a real-time Azure
     # Speech continuous-recognition session over `WS /api/notes/dictate/azure`
     # (`app/notes_stt_azure.py`) — the only one of the three that reports
     # interim ("hypothesis") text while the person is still speaking, not just
-    # a result at the end; "disabled" hides the mic affordance in the notes
-    # dialog (typing only).
-    notes_stt_provider: Literal["local", "gemini", "azure", "disabled"] = "gemini"
+    # a result at the end, and so the default; "disabled" hides the mic
+    # affordance in the notes dialog (typing only).
+    notes_stt_provider: Literal["local", "gemini", "azure", "disabled"] = "azure"
     # Model for the one-shot Gemini transcription call above — a fast text-out
     # model, not a Live/native-audio one (those mint sessions, not single calls).
     notes_stt_gemini_model: str = "gemini-flash-latest"

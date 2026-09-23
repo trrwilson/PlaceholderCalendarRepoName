@@ -156,6 +156,14 @@ const PLAYOUT_GRACE_MS = 20_000
 /** End reasons that mean "we decided on our own that nothing was said". Only
  * these abandon the turn; an explicit tap always submits what we captured. */
 const AUTO_ABANDON_REASONS = new Set(['no-speech', 'max-listen-silent'])
+/** A tap-to-talk turn abandoned for no speech whose loudest frame over the
+ * whole turn stayed under this (at `LEVEL_REFERENCE_GAIN_DB`, ~-54 dBFS) was
+ * not a person staying quiet — even a silent room reads above it on a working
+ * mic. It is a muted, unplugged, wrong, or badly under-gained input, so say so
+ * rather than ending quietly and leaving them to guess. */
+const MIC_DEAD_RMS = 0.002
+export const MIC_TOO_QUIET_MESSAGE =
+  "The microphone is barely picking up any sound. Check that the right input device is selected and that it isn't muted or turned down."
 /** The mic's echo canceller (browser AEC over the loopback playout) takes a beat
  * to converge on turn start. For this long, don't trust the level enough to arm
  * `spoke` or grow the speech-level estimate — but do keep the silence clock
@@ -297,6 +305,8 @@ export function useVoiceSession({
   const listenStartRef = useRef(0)
   const levelLoggedAtRef = useRef(0)
   const peakRmsRef = useRef(0)
+  /** Loudest mic frame over the whole turn (`peakRmsRef` resets every log). */
+  const turnPeakRmsRef = useRef(0)
   // Running estimate of this speaker's speech level (peak chunk RMS this turn,
   // clamped), for the relative "still talking" gate.
   const speechLevelRef = useRef(0)
@@ -709,6 +719,11 @@ export function useVoiceSession({
       // the person decided they were done, and a quiet voice that never crossed
       // SPEECH_RMS is exactly the case where they most need it to go through.
       if (!spokeRef.current && AUTO_ABANDON_REASONS.has(reason)) {
+        if (activationStyleRef.current !== 'wake' && turnPeakRmsRef.current < MIC_DEAD_RMS) {
+          timelineRef.current?.mark('mic-too-quiet', { peakRms: turnPeakRmsRef.current })
+          recordFailure({ kind: 'microphone', message: MIC_TOO_QUIET_MESSAGE })
+          return
+        }
         timelineRef.current?.mark('turn-abandoned-no-speech')
         voiceDebugRecorder.note({ outcome: 'abandoned' })
         finishTurn()
@@ -718,7 +733,7 @@ export function useVoiceSession({
       setStatus('thinking')
       armWatchdog()
     },
-    [armWatchdog, clearContentTimeout, finishTurn],
+    [armWatchdog, clearContentTimeout, finishTurn, recordFailure],
   )
 
   const stopTurn = useCallback(() => endUserTurn('tap'), [endUserTurn])
@@ -738,6 +753,7 @@ export function useVoiceSession({
       const listenedMs = now - listenStartRef.current
 
       peakRmsRef.current = Math.max(peakRmsRef.current, rms)
+      turnPeakRmsRef.current = Math.max(turnPeakRmsRef.current, rms)
 
       // Wake turn: sample the room/mic noise floor (per-frame minimum) over the
       // opening window, so the content gate below can be judged relative to it.
@@ -942,6 +958,7 @@ export function useVoiceSession({
       lastVoiceAtRef.current = 0
       levelLoggedAtRef.current = 0
       peakRmsRef.current = 0
+      turnPeakRmsRef.current = 0
       speechLevelRef.current = 0
       noiseFloorRef.current = Infinity
       aboveGateRunRef.current = 0
