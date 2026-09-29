@@ -1,7 +1,11 @@
+import base64
+import binascii
 import ipaddress
 import json
+import uuid
 from datetime import date, datetime, timedelta
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import (
     APIRouter,
@@ -13,7 +17,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 import app.calendar.personal_auth as personal_auth
 from app.calendar.provider import CalendarProvider, MockCalendarProvider
@@ -53,6 +57,7 @@ from app.models import (
     PresenceSettings,
     PrivacyState,
     PrivacyUnlockRequest,
+    StoredClip,
     Timer,
     TimerCreateRequest,
     TimerExtendRequest,
@@ -1162,6 +1167,50 @@ async def camera_clip_video(request: Request, clip_id: str) -> FileResponse:
     if path is None:
         raise HTTPException(status_code=503, detail="video unavailable right now")
     return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "no-store"})
+
+
+# -- TEST MECHANISM: manual clip injection --------------------------------------
+# Not a product feature and deliberately undocumented outside this comment and
+# `scripts/inject_eufy_clip.py`. Off unless `eufy_test_injection_enabled`; then
+# LAN-only + privacy-gated like any mutation. `video_path` is a path on the
+# backend host (the script runs there), copied into the durable gallery cache.
+
+
+class _InjectClipRequest(BaseModel):
+    video_path: str = Field(min_length=1)
+    thumbnail_base64: str = Field(min_length=1)  # JPEG
+    camera_name: str = Field(min_length=1)
+    camera_id: str = "injected-test-camera"
+    occurred_at: datetime  # naive = local; an aware value is converted to local
+    duration_seconds: float | None = None
+
+
+@router.post("/camera/test/inject-clip", response_model=StoredClip)
+async def camera_test_inject_clip(request: Request, body: _InjectClipRequest) -> StoredClip:
+    _require_local(request)
+    _require_unlocked()
+    service = get_eufy_service()
+    if not get_settings().eufy_test_injection_enabled or service is None:
+        raise HTTPException(status_code=404, detail="clip injection is disabled")
+    video = Path(body.video_path)
+    if not video.is_file():
+        raise HTTPException(status_code=400, detail="video_path is not a file on the backend host")
+    try:
+        thumbnail = base64.b64decode(body.thumbnail_base64, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(status_code=400, detail="thumbnail_base64 is not base64") from exc
+    occurred_at = body.occurred_at
+    if occurred_at.tzinfo is not None:
+        occurred_at = occurred_at.astimezone().replace(tzinfo=None)
+    clip = StoredClip(
+        clip_id=f"injected:{uuid.uuid4().hex[:12]}",
+        camera_id=body.camera_id,
+        camera_name=body.camera_name,
+        occurred_at=occurred_at,
+        approx_duration_seconds=body.duration_seconds,
+    )
+    await service.inject_clip(clip, video=video, thumbnail=thumbnail)
+    return clip
 
 
 @router.websocket("/ws")

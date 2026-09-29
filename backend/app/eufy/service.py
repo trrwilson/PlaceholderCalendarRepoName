@@ -193,6 +193,28 @@ class EufyEventService:
                 return persisted
         return candidate
 
+    # -- TEST MECHANISM: manual clip injection ------------------------------
+
+    async def inject_clip(self, clip: StoredClip, *, video: Path, thumbnail: bytes) -> bool:
+        """TEST MECHANISM ONLY — not a product feature. Add an externally
+        supplied recording to the gallery as if the bridge had discovered it.
+
+        The media is written straight into the durable cache *before* the
+        snapshot broadcast, so `get_thumbnail` / `get_video_path` serve it from
+        disk and never ask the bridge about a clip it has never heard of.
+        Requires the durable cache (always present outside unit tests).
+        ``False`` if the clip id is already in the gallery."""
+        if self._cache is None:
+            raise RuntimeError("clip injection needs the durable gallery cache")
+        if not self._insert_clip(clip):
+            return False
+        self._cache.save_thumbnail(clip.clip_id, thumbnail)
+        self._cache_thumbnail(clip.clip_id, thumbnail)
+        if self._cache.save_video(clip.clip_id, video) is None:
+            logger.warning("eufy: injected clip %s has no playable video", clip.clip_id)
+        await self._broadcast_snapshot()
+        return True
+
     # -- the run loop ---------------------------------------------------------
 
     async def run(self) -> None:
@@ -270,9 +292,10 @@ class EufyEventService:
         elif kind == "error":
             logger.warning("eufy-bridge reported an error: %s", message.get("message"))
 
-    async def _add_clip(self, clip: StoredClip) -> None:
+    def _insert_clip(self, clip: StoredClip) -> bool:
+        """Prepend to the ring buffer (+ durable cache). ``False`` for a dup."""
         if clip.clip_id in self._clip_ids:
-            return
+            return False
         if len(self._clips) == (self._clips.maxlen or 0):
             evicted = self._clips.pop()
             self._clip_ids.discard(evicted.clip_id)
@@ -281,6 +304,12 @@ class EufyEventService:
         self._clip_ids.add(clip.clip_id)
         if self._cache is not None:
             self._cache.remember(clip)
+        return True
+
+    async def _add_clip(self, clip: StoredClip) -> None:
+        if not self._insert_clip(clip):
+            return
+        if self._cache is not None:
             # Best-effort pre-warm so the thumbnail is already on disk before
             # anyone asks — `get_thumbnail` writes through to the durable
             # cache itself, so this is the only place that needs to trigger

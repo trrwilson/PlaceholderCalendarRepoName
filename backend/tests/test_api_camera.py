@@ -134,3 +134,54 @@ def test_video_200_streams_the_cached_file(client: TestClient, monkeypatch, tmp_
     assert response.status_code == 200
     assert response.headers["content-type"] == "video/mp4"
     assert response.content == b"not-really-an-mp4"
+
+
+# -- TEST MECHANISM: POST /api/camera/test/inject-clip --------------------------
+
+
+def _inject_body(video_path: str) -> dict:
+    return {
+        "video_path": video_path,
+        "thumbnail_base64": "anBlZw==",  # b"jpeg"
+        "camera_name": "Garage",
+        "occurred_at": "2026-09-29T07:42:00",
+        "duration_seconds": 12.5,
+    }
+
+
+def test_inject_clip_404_unless_flag_enabled(client: TestClient, monkeypatch, tmp_path) -> None:
+    snapshot = CameraGallerySnapshot(clips=[], source_status="connected", cameras_online=True)
+    monkeypatch.setattr(api, "get_eufy_service", lambda: FakeEufyService(snapshot))
+    response = client.post("/api/camera/test/inject-clip", json=_inject_body(str(tmp_path)))
+    assert response.status_code == 404
+
+
+def test_injected_clip_is_a_normal_gallery_entry(client: TestClient, monkeypatch, tmp_path) -> None:
+    from app.eufy.cache import EufyClipCache
+    from app.eufy.service import EufyEventService
+
+    monkeypatch.setenv("MISSION_CONTROL_EUFY_TEST_INJECTION_ENABLED", "true")
+    get_settings.cache_clear()
+
+    async def broadcast(_message) -> None:
+        return None
+
+    service = EufyEventService(
+        settings=get_settings(),
+        broadcast=broadcast,
+        cache=EufyClipCache(tmp_path / "cache", capacity=5),
+    )
+    monkeypatch.setattr(api, "get_eufy_service", lambda: service)
+    video = tmp_path / "external.mp4"
+    video.write_bytes(b"mp4-bytes")
+
+    missing = client.post("/api/camera/test/inject-clip", json=_inject_body(str(tmp_path / "no")))
+    assert missing.status_code == 400
+
+    response = client.post("/api/camera/test/inject-clip", json=_inject_body(str(video)))
+    assert response.status_code == 200
+    clip_id = response.json()["clip_id"]
+    assert response.json()["approx_duration_seconds"] == 12.5
+    assert client.get("/api/household").json()["clips"][0]["camera_name"] == "Garage"
+    assert client.get(f"/api/camera/clip/{clip_id}/thumbnail").content == b"jpeg"
+    assert client.get(f"/api/camera/clip/{clip_id}/video").content == b"mp4-bytes"
