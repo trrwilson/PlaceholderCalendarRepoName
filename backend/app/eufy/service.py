@@ -43,6 +43,10 @@ THUMBNAIL_REQUEST_TIMEOUT_SECONDS = 15.0
 VIDEO_REQUEST_TIMEOUT_SECONDS = 90.0
 
 
+def _is_injected(clip_id: str) -> bool:
+    return clip_id.startswith(INJECTED_CLIP_PREFIX)
+
+
 class EufyBridgeUnavailable(Exception):
     """A thumbnail/video request could not be served because the bridge
     connection is not currently up. The API layer treats this as "not
@@ -89,11 +93,15 @@ class EufyEventService:
         if self._cache is not None:
             self._cache.load()
         ring_buffer_size = max(1, settings.eufy_clip_ring_buffer_size)
-        seed = self._cache.clips[:ring_buffer_size] if self._cache is not None else []
+        cached = self._cache.clips if self._cache is not None else []
+        seed = [c for c in cached if not _is_injected(c.clip_id)][:ring_buffer_size]
 
         self._client: _BridgeClient | None = None
         self._clips: deque[StoredClip] = deque(seed, maxlen=ring_buffer_size)
-        self._clip_ids: set[str] = {clip.clip_id for clip in self._clips}
+        # TEST MECHANISM: injected clips sit pinned above the ring buffer and
+        # are never evicted by real clips — only `remove_injected_clip` drops them.
+        self._pinned: list[StoredClip] = [c for c in cached if _is_injected(c.clip_id)]
+        self._clip_ids: set[str] = {c.clip_id for c in (*self._pinned, *self._clips)}
         self._thumbnail_cache: OrderedDict[str, bytes] = OrderedDict()
         self._status: EufySourceStatus = "connecting"
         self._cameras_online = False
@@ -111,7 +119,7 @@ class EufyEventService:
 
     def snapshot(self) -> CameraGallerySnapshot:
         return CameraGallerySnapshot(
-            clips=list(self._clips),
+            clips=self._gallery(),
             source_status=self._status,
             cameras_online=self._cameras_online,
         )
@@ -207,8 +215,11 @@ class EufyEventService:
         ``False`` if the clip id is already in the gallery."""
         if self._cache is None:
             raise RuntimeError("clip injection needs the durable gallery cache")
-        if not self._insert_clip(clip):
+        if clip.clip_id in self._clip_ids:
             return False
+        self._pinned.insert(0, clip)
+        self._clip_ids.add(clip.clip_id)
+        self._cache.remember(clip)
         self._cache.save_thumbnail(clip.clip_id, thumbnail)
         self._cache_thumbnail(clip.clip_id, thumbnail)
         if self._cache.save_video(clip.clip_id, video) is None:
@@ -219,11 +230,9 @@ class EufyEventService:
     async def remove_injected_clip(self, clip_id: str) -> bool:
         """TEST MECHANISM ONLY — undo `inject_clip`. Refuses anything that is
         not an ``injected:`` id so it can never delete a real camera clip."""
-        if not clip_id.startswith(INJECTED_CLIP_PREFIX) or clip_id not in self._clip_ids:
+        if not _is_injected(clip_id) or clip_id not in self._clip_ids:
             return False
-        self._clips = deque(
-            (c for c in self._clips if c.clip_id != clip_id), maxlen=self._clips.maxlen
-        )
+        self._pinned = [c for c in self._pinned if c.clip_id != clip_id]
         self._clip_ids.discard(clip_id)
         self._thumbnail_cache.pop(clip_id, None)
         if self._cache is not None:
@@ -322,6 +331,9 @@ class EufyEventService:
             self._cache.remember(clip)
         return True
 
+    def _gallery(self) -> list[StoredClip]:
+        return [*self._pinned, *self._clips]
+
     async def _add_clip(self, clip: StoredClip) -> None:
         if not self._insert_clip(clip):
             return
@@ -353,7 +365,7 @@ class EufyEventService:
             ApplicationMessage(
                 type="camera_clips",
                 message="camera clip gallery updated",
-                camera_clips=list(self._clips),
+                camera_clips=self._gallery(),
                 camera_status=self._status,
             )
         )
