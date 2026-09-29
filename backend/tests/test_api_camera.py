@@ -185,3 +185,33 @@ def test_injected_clip_is_a_normal_gallery_entry(client: TestClient, monkeypatch
     assert client.get("/api/household").json()["clips"][0]["camera_name"] == "Garage"
     assert client.get(f"/api/camera/clip/{clip_id}/thumbnail").content == b"jpeg"
     assert client.get(f"/api/camera/clip/{clip_id}/video").content == b"mp4-bytes"
+
+
+def test_remove_injected_clip_only_touches_injected_ids(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    from app.eufy.cache import EufyClipCache
+    from app.eufy.service import EufyEventService
+
+    monkeypatch.setenv("MISSION_CONTROL_EUFY_TEST_INJECTION_ENABLED", "true")
+    get_settings.cache_clear()
+
+    async def broadcast(_message) -> None:
+        return None
+
+    cache = EufyClipCache(tmp_path / "cache", capacity=5)
+    cache.load()
+    cache.remember(CLIP)  # a "real" clip
+    service = EufyEventService(settings=get_settings(), broadcast=broadcast, cache=cache)
+    monkeypatch.setattr(api, "get_eufy_service", lambda: service)
+    video = tmp_path / "external.mp4"
+    video.write_bytes(b"mp4-bytes")
+    clip_id = client.post("/api/camera/test/inject-clip", json=_inject_body(str(video))).json()[
+        "clip_id"
+    ]
+
+    assert client.delete(f"/api/camera/test/inject-clip/{CLIP.clip_id}").status_code == 404
+    assert client.delete(f"/api/camera/test/inject-clip/{clip_id}").status_code == 204
+    assert [c["clip_id"] for c in client.get("/api/household").json()["clips"]] == ["a:1"]
+    assert cache.video_path(clip_id) is None and cache.thumbnail(clip_id) is None
+    assert client.delete(f"/api/camera/test/inject-clip/{clip_id}").status_code == 404

@@ -20,6 +20,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# TEST MECHANISM: clip ids minted by `POST /api/camera/test/inject-clip`.
+INJECTED_CLIP_PREFIX = "injected:"
+
 _service: EufyEventService | None = None
 _bridge: EufyBridgeProcess | None = None
 _task: asyncio.Task[None] | None = None

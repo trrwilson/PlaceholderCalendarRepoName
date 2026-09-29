@@ -158,6 +158,12 @@ class EufyClipCache:
             return None
         return dest
 
+    def forget(self, clip_id: str) -> None:
+        """Drop one clip and its media (used only by the test injection hook)."""
+        self._clips = [c for c in self._clips if c.clip_id != clip_id]
+        self._delete_media(clip_id)
+        self._persist()
+
     # -- helpers -------------------------------------------------------------
 
     def _delete_media(self, clip_id: str) -> None:
