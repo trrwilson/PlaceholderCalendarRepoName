@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.config import Settings
+from app.eufy import INJECTED_CLIP_PREFIX
 from app.eufy.cache import EufyClipCache
 from app.eufy.events import parse_clip_discovered, parse_ready, parse_status
 from app.models import ApplicationMessage, CameraGallerySnapshot, EufySourceStatus, StoredClip
@@ -212,6 +213,21 @@ class EufyEventService:
         self._cache_thumbnail(clip.clip_id, thumbnail)
         if self._cache.save_video(clip.clip_id, video) is None:
             logger.warning("eufy: injected clip %s has no playable video", clip.clip_id)
+        await self._broadcast_snapshot()
+        return True
+
+    async def remove_injected_clip(self, clip_id: str) -> bool:
+        """TEST MECHANISM ONLY — undo `inject_clip`. Refuses anything that is
+        not an ``injected:`` id so it can never delete a real camera clip."""
+        if not clip_id.startswith(INJECTED_CLIP_PREFIX) or clip_id not in self._clip_ids:
+            return False
+        self._clips = deque(
+            (c for c in self._clips if c.clip_id != clip_id), maxlen=self._clips.maxlen
+        )
+        self._clip_ids.discard(clip_id)
+        self._thumbnail_cache.pop(clip_id, None)
+        if self._cache is not None:
+            self._cache.forget(clip_id)
         await self._broadcast_snapshot()
         return True
 

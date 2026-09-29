@@ -24,7 +24,7 @@ from app.calendar.provider import CalendarProvider, MockCalendarProvider
 from app.config import get_settings
 from app.debug_restart import RestartUnavailable, trigger_restart
 from app.display import get_display_store
-from app.eufy import get_eufy_service
+from app.eufy import INJECTED_CLIP_PREFIX, get_eufy_service
 from app.host import host_capabilities
 from app.lists import get_list_store
 from app.models import (
@@ -1203,7 +1203,7 @@ async def camera_test_inject_clip(request: Request, body: _InjectClipRequest) ->
     if occurred_at.tzinfo is not None:
         occurred_at = occurred_at.astimezone().replace(tzinfo=None)
     clip = StoredClip(
-        clip_id=f"injected:{uuid.uuid4().hex[:12]}",
+        clip_id=f"{INJECTED_CLIP_PREFIX}{uuid.uuid4().hex[:12]}",
         camera_id=body.camera_id,
         camera_name=body.camera_name,
         occurred_at=occurred_at,
@@ -1211,6 +1211,19 @@ async def camera_test_inject_clip(request: Request, body: _InjectClipRequest) ->
     )
     await service.inject_clip(clip, video=video, thumbnail=thumbnail)
     return clip
+
+
+@router.delete("/camera/test/inject-clip/{clip_id}", status_code=204)
+async def camera_test_remove_injected_clip(request: Request, clip_id: str) -> Response:
+    """Undo an injection. Only ever removes ``injected:`` ids — 404 otherwise."""
+    _require_local(request)
+    _require_unlocked()
+    service = get_eufy_service()
+    if not get_settings().eufy_test_injection_enabled or service is None:
+        raise HTTPException(status_code=404, detail="clip injection is disabled")
+    if not await service.remove_injected_clip(clip_id):
+        raise HTTPException(status_code=404, detail="no such injected clip")
+    return Response(status_code=204)
 
 
 @router.websocket("/ws")
