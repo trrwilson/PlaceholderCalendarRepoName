@@ -479,3 +479,32 @@ async def test_get_video_path_persists_to_durable_cache_after_bridge_fetch(tmp_p
         assert cache.video_path("a:1").read_bytes() == b"decoded-from-bridge"
     finally:
         await _stop(service, task)
+
+
+# -- TEST MECHANISM: manual clip injection --------------------------------------
+
+
+async def test_inject_clip_serves_media_from_cache_without_the_bridge(tmp_path):
+    cache = EufyClipCache(tmp_path / "cache", capacity=5)
+    service, client, broadcasts = make_service(cache=cache)
+    source = tmp_path / "external.mp4"
+    source.write_bytes(b"mp4-bytes")
+    clip = StoredClip(
+        clip_id="injected:x",
+        camera_id="t",
+        camera_name="Garage",
+        occurred_at="2026-09-29T07:42:00",
+    )
+
+    assert await service.inject_clip(clip, video=source, thumbnail=b"jpeg") is True
+
+    assert [c.clip_id for c in service.snapshot().clips] == ["injected:x"]
+    assert broadcasts[-1].camera_clips[0].clip_id == "injected:x"
+    assert await service.get_thumbnail("injected:x") == b"jpeg"
+    video = await service.get_video_path("injected:x")
+    assert video is not None and video != source and video.read_bytes() == b"mp4-bytes"
+    assert client.sent == []  # never asked the bridge about it
+    # ...and a duplicate id is refused without re-broadcasting.
+    count = len(broadcasts)
+    assert await service.inject_clip(clip, video=source, thumbnail=b"jpeg") is False
+    assert len(broadcasts) == count

@@ -839,6 +839,10 @@ class Settings(BaseSettings):
     # (docs/eufy-sdk-integration.md), so this is the only way a restart shows
     # the same gallery instead of an empty one.
     eufy_gallery_cache_dir: str = ".eufy_gallery_cache"
+    # TEST MECHANISM, not a product feature: enables the LAN-only
+    # `POST /api/camera/test/inject-clip` hook (`scripts/inject_eufy_clip.py`)
+    # that adds an external recording to the gallery. Off ⇒ the route 404s.
+    eufy_test_injection_enabled: bool = False
 
     @field_validator(
         "eufy_clip_ring_buffer_size", "eufy_thumbnail_cache_size", "eufy_clip_cache_ttl_seconds"
