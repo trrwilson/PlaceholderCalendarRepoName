@@ -31,6 +31,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.eufy import INJECTED_CLIP_PREFIX
 from app.models import StoredClip
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,9 @@ class EufyClipCache:
                     "eufy clip cache manifest %s unreadable (%s) -- starting fresh", path, exc
                 )
                 clips = []
-        self._clips = clips[: self._capacity]
+        pinned = [c for c in clips if c.clip_id.startswith(INJECTED_CLIP_PREFIX)]
+        real = [c for c in clips if not c.clip_id.startswith(INJECTED_CLIP_PREFIX)]
+        self._clips = pinned + real[: self._capacity]
         self._sweep_orphans()
 
     def _sweep_orphans(self) -> None:
@@ -125,10 +128,17 @@ class EufyClipCache:
         ring buffer's own order), evict whatever falls past ``capacity``
         (deleting its media files too), and persist the manifest. No
         thumbnail yet — `save_thumbnail` attaches one once fetched."""
-        self._clips = [c for c in self._clips if c.clip_id != clip.clip_id]
-        self._clips.insert(0, clip)
-        evicted = self._clips[self._capacity :]
-        self._clips = self._clips[: self._capacity]
+        # TEST MECHANISM: injected clips stay pinned first and don't count
+        # against ``capacity`` — only an explicit `forget` drops them.
+        others = [c for c in self._clips if c.clip_id != clip.clip_id]
+        pinned = [c for c in others if c.clip_id.startswith(INJECTED_CLIP_PREFIX)]
+        real = [c for c in others if not c.clip_id.startswith(INJECTED_CLIP_PREFIX)]
+        if clip.clip_id.startswith(INJECTED_CLIP_PREFIX):
+            pinned.insert(0, clip)
+        else:
+            real.insert(0, clip)
+        evicted = real[self._capacity :]
+        self._clips = pinned + real[: self._capacity]
         for old in evicted:
             self._delete_media(old.clip_id)
         self._persist()

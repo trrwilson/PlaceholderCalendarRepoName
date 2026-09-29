@@ -508,3 +508,31 @@ async def test_inject_clip_serves_media_from_cache_without_the_bridge(tmp_path):
     count = len(broadcasts)
     assert await service.inject_clip(clip, video=source, thumbnail=b"jpeg") is False
     assert len(broadcasts) == count
+
+
+async def test_injected_clip_stays_pinned_first_and_is_never_evicted(tmp_path):
+    cache = EufyClipCache(tmp_path / "cache", capacity=2)
+    service, _client, _broadcasts = make_service(cache=cache, eufy_clip_ring_buffer_size=2)
+    source = tmp_path / "external.mp4"
+    source.write_bytes(b"mp4")
+    pinned = StoredClip(
+        clip_id="injected:x", camera_id="t", camera_name="London", occurred_at="2026-09-29T04:56:00"
+    )
+    await service.inject_clip(pinned, video=source, thumbnail=b"jpeg")
+    for n in range(3):  # more real clips than the ring buffer holds
+        await service._add_clip(
+            StoredClip(
+                clip_id=f"a:{n}",
+                camera_id="a",
+                camera_name="Cam",
+                occurred_at="2026-09-29T05:00:00",
+            )
+        )
+
+    assert [c.clip_id for c in service.snapshot().clips] == ["injected:x", "a:2", "a:1"]
+    assert cache.video_path("injected:x") is not None
+    # ...and a restart (fresh service over the same cache) keeps it pinned.
+    reloaded = EufyClipCache(tmp_path / "cache", capacity=2)
+    fresh, _c, _b = make_service(cache=reloaded, eufy_clip_ring_buffer_size=2)
+    assert [c.clip_id for c in fresh.snapshot().clips] == ["injected:x", "a:2", "a:1"]
+    await service.stop()
