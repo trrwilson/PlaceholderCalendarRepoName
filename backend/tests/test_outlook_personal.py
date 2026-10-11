@@ -8,7 +8,6 @@ import pytest
 import respx
 
 import app.calendar.outlook_personal as outlook_personal
-from app.calendar.graph import _LOCAL_TZ
 from app.calendar.outlook_personal import (
     PersonalOutlookCalendarProvider,
     _cached_id_token_claims,
@@ -120,7 +119,7 @@ def test_maps_me_calendar_view_to_snapshot(tmp_path) -> None:
     (event,) = snapshot.events
     assert event.calendar_id == "outlook"
     assert event.title == "Product stand-up"
-    expected = datetime(2026, 9, 5, 9, 0, tzinfo=UTC).astimezone(_LOCAL_TZ).replace(tzinfo=None)
+    expected = datetime(2026, 9, 5, 9, 0, tzinfo=UTC).astimezone().replace(tzinfo=None)
     assert event.starts_at == expected
     assert event.starts_at.tzinfo is None
 

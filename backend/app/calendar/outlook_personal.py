@@ -26,7 +26,6 @@ import msal
 
 from app.calendar.graph import (
     _GRAPH_BASE,
-    _LOCAL_TZ,
     _PAGE_SIZE,
     _SELECT_FIELDS,
     CategoryColorCache,
@@ -35,6 +34,7 @@ from app.calendar.graph import (
     _map_event,
     is_foreign_calendar,
     list_calendars,
+    local_aware,
     secondary_calendar_id,
 )
 from app.calendar.secondary import SecondaryCalendarStore, get_secondary_calendar_store
@@ -303,10 +303,8 @@ class PersonalOutlookCalendarProvider:
         return raw_events
 
     def snapshot(self, calendar_range: CalendarRange) -> CalendarSnapshot:
-        start = datetime.combine(calendar_range.starts_on, time.min).replace(tzinfo=_LOCAL_TZ)
-        end = datetime.combine(calendar_range.ends_on + timedelta(days=1), time.min).replace(
-            tzinfo=_LOCAL_TZ
-        )
+        start = local_aware(datetime.combine(calendar_range.starts_on, time.min))
+        end = local_aware(datetime.combine(calendar_range.ends_on + timedelta(days=1), time.min))
 
         if self._app is None:
             accounts = [(self._account_email(), self._token_provider())]

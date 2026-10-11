@@ -74,26 +74,39 @@ _NEUTRAL_CATEGORY_HEX = "#6e8596"
 # cache the per-mailbox colour map rather than refetching it each time.
 _MASTER_CATEGORIES_TTL_SECONDS = 600.0
 
-_LOCAL_TZ: tzinfo = datetime.now().astimezone().tzinfo or UTC
-
-
 def _local_tz_name() -> str:
-    """Best-effort IANA name for the host timezone for the Graph ``Prefer`` header.
+    """Timezone name for the Graph ``Prefer`` header and event writes.
 
-    Falls back to ``UTC`` when the platform only exposes a fixed-offset zone
-    (common on Windows); Graph then returns UTC and we convert locally.
+    Always ``UTC``: the stdlib only exposes the host zone as a fixed offset, so we
+    ask Graph for UTC and convert each instant with the host's own DST rules.
     """
-    return getattr(_LOCAL_TZ, "key", None) or "UTC"
+    return "UTC"
 
 
-def _resolve_tz(name: str | None) -> tzinfo:
+def to_local_naive(value: datetime) -> datetime:
+    """Aware instant -> naive host-local wall time, using the offset in effect *at
+    that instant* (not today's), so events across a DST change keep their clock time.
+    """
+    return value.astimezone().replace(tzinfo=None)
+
+
+def local_aware(value: datetime) -> datetime:
+    """Naive host-local wall time -> aware, with that date's own DST offset."""
+    return value.astimezone()
+
+
+def _resolve_tz(name: str | None) -> tzinfo | None:
+    """``None`` means host-local (applied per instant by ``astimezone``)."""
     if not name or name.upper() == "UTC":
         return UTC
     try:
         return ZoneInfo(name)
     except Exception:
-        # We asked Graph for _local_tz_name(); assume the response echoes it.
-        return _LOCAL_TZ
+        return None
+
+
+def _utc_naive_iso(value: datetime) -> str:
+    return local_aware(value).astimezone(UTC).replace(tzinfo=None).isoformat()
 
 
 def _parse_naive(value: str) -> datetime:
@@ -104,8 +117,9 @@ def _parse_naive(value: str) -> datetime:
 def _to_local_naive(part: dict[str, Any]) -> datetime:
     parsed = datetime.fromisoformat(part["dateTime"])
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=_resolve_tz(part.get("timeZone")))
-    return parsed.astimezone(_LOCAL_TZ).replace(tzinfo=None)
+        tz = _resolve_tz(part.get("timeZone"))
+        parsed = local_aware(parsed) if tz is None else parsed.replace(tzinfo=tz)
+    return to_local_naive(parsed)
 
 
 def _slugify(value: str) -> str:
@@ -412,10 +426,8 @@ class MicrosoftGraphCalendarProvider:
         return raw_events
 
     def snapshot(self, calendar_range: CalendarRange) -> CalendarSnapshot:
-        start = datetime.combine(calendar_range.starts_on, time.min).replace(tzinfo=_LOCAL_TZ)
-        end = datetime.combine(calendar_range.ends_on + timedelta(days=1), time.min).replace(
-            tzinfo=_LOCAL_TZ
-        )
+        start = local_aware(datetime.combine(calendar_range.starts_on, time.min))
+        end = local_aware(datetime.combine(calendar_range.ends_on + timedelta(days=1), time.min))
 
         events: list[CalendarEvent] = []
         calendars: list[HouseholdCalendar] = []
@@ -480,8 +492,8 @@ class MicrosoftGraphCalendarProvider:
         payload: dict[str, Any] = {
             "subject": event.title,
             "isAllDay": event.all_day,
-            "start": {"dateTime": event.starts_at.isoformat(), "timeZone": tz_name},
-            "end": {"dateTime": event.ends_at.isoformat(), "timeZone": tz_name},
+            "start": {"dateTime": _utc_naive_iso(event.starts_at), "timeZone": tz_name},
+            "end": {"dateTime": _utc_naive_iso(event.ends_at), "timeZone": tz_name},
             "categories": [category.name for category in event.categories],
         }
         if event.location:
