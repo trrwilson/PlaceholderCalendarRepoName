@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from app.calendar.graph import _LOCAL_TZ, MicrosoftGraphCalendarProvider
+from app.calendar.graph import MicrosoftGraphCalendarProvider
 from app.config import Settings
 from app.models import CalendarRange, CalendarSnapshot
 
@@ -94,7 +94,7 @@ def test_maps_timed_event_to_domain() -> None:
     assert event.title == "Product stand-up"
     assert event.location == "Study nook"
     assert event.all_day is False
-    expected = datetime(2026, 9, 5, 9, 0, tzinfo=UTC).astimezone(_LOCAL_TZ).replace(tzinfo=None)
+    expected = datetime(2026, 9, 5, 9, 0, tzinfo=UTC).astimezone().replace(tzinfo=None)
     assert event.starts_at == expected
     assert event.starts_at.tzinfo is None
 
@@ -115,7 +115,7 @@ def test_tz_aware_datetime_is_converted_to_naive_local() -> None:
     )
 
     (event,) = snapshot.events
-    expected = datetime(2026, 9, 5, 14, 30, tzinfo=UTC).astimezone(_LOCAL_TZ).replace(tzinfo=None)
+    expected = datetime(2026, 9, 5, 14, 30, tzinfo=UTC).astimezone().replace(tzinfo=None)
     assert event.starts_at == expected
 
 
@@ -515,3 +515,27 @@ def test_create_event_posts_to_graph() -> None:
 
     assert created.id == "evt-new"
     assert captured["subject"] == "Taco night"
+
+
+def test_to_local_naive_uses_each_instants_own_dst_offset(monkeypatch) -> None:
+    # Regression: a fixed "today" offset shifted events across a DST change by an
+    # hour. 8:30 PDT (15:30Z) and 8:30 PST (16:30Z) must both render as 8:30.
+    import time as time_module
+
+    from app.calendar.graph import local_aware, to_local_naive
+
+    if not hasattr(time_module, "tzset"):
+        import pytest
+
+        pytest.skip("needs time.tzset to pin the host zone")
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time_module.tzset()
+    try:
+        before = to_local_naive(datetime(2026, 10, 25, 15, 30, tzinfo=UTC))
+        after = to_local_naive(datetime(2026, 11, 8, 16, 30, tzinfo=UTC))
+        assert (before.hour, before.minute) == (8, 30)
+        assert (after.hour, after.minute) == (8, 30)
+        assert local_aware(datetime(2026, 11, 8, 8, 30)).utcoffset().total_seconds() == -8 * 3600
+    finally:
+        monkeypatch.undo()
+        time_module.tzset()

@@ -13,12 +13,10 @@ providers follow.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, tzinfo
+from datetime import datetime
 from typing import Any
 
 from app.models import EufySourceStatus, StoredClip
-
-_LOCAL_TZ: tzinfo = datetime.now().astimezone().tzinfo or UTC
 
 # The bridge's own connection-state vocabulary maps 1:1 onto EufySourceStatus
 # today; kept as an explicit table (not a bare cast) so a future bridge state
@@ -33,7 +31,7 @@ _STATUS_MAP: dict[str, EufySourceStatus] = {
 
 
 def _parse_local(value: str) -> datetime:
-    return datetime.fromisoformat(value).astimezone(_LOCAL_TZ).replace(tzinfo=None)
+    return datetime.fromisoformat(value).astimezone().replace(tzinfo=None)
 
 
 def parse_status(payload: dict[str, Any]) -> EufySourceStatus | None:
