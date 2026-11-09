@@ -57,6 +57,12 @@ async def lifespan(_app: FastAPI):
         from app.eufy import start_eufy_service
 
         start_eufy_service()
+    # Photo stream sync loop (docs/photo-stream-plan.md). Feature-flagged; a
+    # disabled install never imports app.photos.service.
+    if get_settings().photos_enabled:
+        from app.photos import start_photo_service
+
+        start_photo_service()
     try:
         yield
     finally:
@@ -73,6 +79,10 @@ async def lifespan(_app: FastAPI):
             from app.eufy import stop_eufy_service
 
             await stop_eufy_service()
+        if get_settings().photos_enabled:
+            from app.photos import stop_photo_service
+
+            await stop_photo_service()
 
 
 app = FastAPI(title="Mission Control API", version="0.1.0", lifespan=lifespan)

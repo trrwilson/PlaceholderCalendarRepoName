@@ -58,6 +58,8 @@ backend/.eufy_clip_cache/
 # state, never committed.
 .eufy_gallery_cache/
 backend/.eufy_gallery_cache/
+.photo_cache/
+backend/.photo_cache/
 
 # Voice debug audio captures (MISSION_CONTROL_VOICE_DEBUG_CAPTURE_DIR)
 backend/voice-captures/

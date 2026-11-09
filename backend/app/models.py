@@ -587,6 +587,36 @@ class CameraGallerySnapshot(BaseModel):
     cameras_online: bool
 
 
+class PhotoItem(BaseModel):
+    """One photo in the household photo stream (docs/photo-stream-plan.md).
+
+    ``id`` is the provider's opaque item id; ``version`` changes whenever the
+    cached bytes change (the provider's content tag), so the kiosk can use it as
+    a cache-buster on ``GET /api/photos/{id}``. ``taken_at`` is naive local time
+    like every other domain datetime, or ``None`` when the photo has no EXIF date.
+    """
+
+    id: str
+    name: str
+    width: int | None = None
+    height: int | None = None
+    taken_at: datetime | None = None
+    version: str
+    bytes: int = 0
+
+
+PhotoStreamStatus = Literal["disabled", "starting", "ok", "needs_sign_in", "error"]
+
+
+class PhotoStreamSnapshot(BaseModel):
+    enabled: bool
+    status: PhotoStreamStatus
+    photos: list[PhotoItem] = Field(default_factory=list)
+    last_sync: datetime | None = None
+    # Short human-safe reason for a non-ok status; never a raw provider error.
+    detail: str | None = None
+
+
 class ApplicationMessage(BaseModel):
     type: str
     message: str
@@ -614,6 +644,9 @@ class ApplicationMessage(BaseModel):
     # change and on connect; ``camera_status`` is the source's connection state.
     camera_clips: list[StoredClip] | None = None
     camera_status: str | None = None
+    # The photo stream reuses it too: ``photos`` is the full current snapshot,
+    # pushed after a sync round that changed something (docs/photo-stream-plan.md).
+    photos: PhotoStreamSnapshot | None = None
     # Keep ``list`` last: ``list: … = None`` binds the name in the class body, which
     # would shadow the ``list`` builtin for any annotation evaluated after it.
     list: GroceryList | None = None

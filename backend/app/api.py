@@ -52,6 +52,7 @@ from app.models import (
     NotesSttProviderInfo,
     NoteTranscription,
     NoteUpdateRequest,
+    PhotoStreamSnapshot,
     PresenceActivityRequest,
     PresenceDiagnostics,
     PresenceSettings,
@@ -82,6 +83,7 @@ from app.notes_stt import (
     set_notes_stt_provider_override,
 )
 from app.notes_stt import transcribe as transcribe_notes_audio
+from app.photos import get_photo_service
 from app.presence import (
     KIOSK_SCOPE,
     camera_status,
@@ -1112,6 +1114,51 @@ def presence_activity(request: Request, body: PresenceActivityRequest) -> None:
     note_activity(body.source)
 
 
+# -- photo stream ---------------------------------------------------------------
+# The Home slideshow tile's curated OneDrive folder, mirrored to a local disk
+# cache by `app.photos` (docs/photo-stream-plan.md). Reads are LAN-gated and serve
+# only the cache — never a live Graph call. There is deliberately no delete/edit
+# route (display-only). Privacy-mode read behaviour is an open question (plan Q2):
+# reads stay available while locked, matching the eufy gallery, and the frontend
+# decides what to show.
+
+
+@router.get("/photos", response_model=PhotoStreamSnapshot)
+def photos_snapshot(request: Request) -> PhotoStreamSnapshot:
+    _require_local(request)
+    service = get_photo_service()
+    if service is None:
+        return PhotoStreamSnapshot(enabled=False, status="disabled")
+    return service.snapshot()
+
+
+@router.get("/photos/{photo_id}")
+def photo_image(request: Request, photo_id: str) -> FileResponse:
+    _require_local(request)
+    service = get_photo_service()
+    if service is None:
+        raise HTTPException(status_code=409, detail="photo stream is disabled")
+    path = service.cache.path_for(photo_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="no such photo")
+    # The kiosk requests ?v=<version>, so a given URL's bytes never change.
+    return FileResponse(
+        path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400, immutable"}
+    )
+
+
+@router.post("/photos/sync", status_code=202)
+def photos_sync(request: Request) -> dict[str, str]:
+    """Ask the sync loop to run a round now (e.g. a Settings "refresh")."""
+    _require_local(request)
+    _require_unlocked()
+    service = get_photo_service()
+    if service is None:
+        raise HTTPException(status_code=409, detail="photo stream is disabled")
+    service.request_sync()
+    return {"status": "requested"}
+
+
 # -- eufy camera clip gallery -------------------------------------------------
 # On-demand thumbnails + tap-to-play video for recent eufy clips, replacing the
 # "garage door" placeholder in the home view. These are read-only fetches (a
@@ -1277,6 +1324,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     message="current camera clip gallery",
                     camera_clips=snapshot.clips,
                     camera_status=snapshot.source_status,
+                ).model_dump(mode="json", exclude_none=True)
+            )
+        # ...and the photo stream, if the feature is on.
+        photo_service = get_photo_service()
+        if photo_service is not None:
+            await websocket.send_json(
+                ApplicationMessage(
+                    type="photos", message="current photo stream", photos=photo_service.snapshot()
                 ).model_dump(mode="json", exclude_none=True)
             )
         while True:

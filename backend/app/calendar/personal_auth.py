@@ -25,6 +25,17 @@ _thread: threading.Thread | None = None
 _flow_error: str | None = None
 
 
+def sign_in_scopes(settings: Settings) -> list[str]:
+    """Scopes a kiosk/CLI sign-in requests. The photo stream adds delegated
+    ``Files.Read`` (read the signed-in account's own OneDrive) only while it is
+    enabled, so a calendar-only install never asks for file access
+    (docs/photo-stream-plan.md)."""
+    scopes = list(GRAPH_SCOPES)
+    if settings.photos_enabled:
+        scopes.append("Files.Read")
+    return scopes
+
+
 def _qr_data_uri(text: str) -> str:
     return segno.make(text, error="m").svg_data_uri(scale=8, border=2)
 
@@ -87,7 +98,7 @@ def begin_sign_in(settings: Settings) -> CalendarAuthStatus:
         app, cache, path = shared_msal_app(settings)
         # A device flow is also how an already-connected household adds another
         # account. Microsoft presents account selection on the phone.
-        flow = app.initiate_device_flow(scopes=GRAPH_SCOPES)
+        flow = app.initiate_device_flow(scopes=sign_in_scopes(settings))
         usable = all(k in flow for k in ("user_code", "verification_uri", "expires_in"))
         with _lock:
             if not usable:
@@ -168,7 +179,7 @@ def run_device_flow_blocking(settings: Settings, on_prompt) -> CalendarAuthStatu
             account=app.get_accounts()[0]["username"],
         )
 
-    flow = app.initiate_device_flow(scopes=GRAPH_SCOPES)
+    flow = app.initiate_device_flow(scopes=sign_in_scopes(settings))
     if not all(k in flow for k in ("user_code", "verification_uri", "message")):
         return CalendarAuthStatus(
             provider=settings.calendar_provider,
