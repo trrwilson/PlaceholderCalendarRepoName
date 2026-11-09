@@ -219,7 +219,11 @@ class Settings(BaseSettings):
     calendar_hidden_names: Annotated[list[str], NoDecode] = []
 
     @field_validator(
-        "graph_calendar_users", "graph_calendar_colors", "calendar_hidden_names", mode="before"
+        "graph_calendar_users",
+        "graph_calendar_colors",
+        "calendar_hidden_names",
+        "todo_hidden_list_names",
+        mode="before",
     )
     @classmethod
     def _parse_list(cls, value: object) -> object:
@@ -632,6 +636,23 @@ class Settings(BaseSettings):
     lists_file: str = "lists.json"
     # How many distinct past item names the touch quick-add grid remembers.
     lists_recent_items_max: int = 20
+
+    # -- To Do tasks (docs/todo-integration-plan.md) ------------------------
+    # Read-only Microsoft To Do display. Off by default: enabling it adds the
+    # delegated ``Tasks.Read`` scope to the personal-Outlook sign-in (members who
+    # signed in before must sign in once more) and starts a background delta sync.
+    todo_enabled: bool = False
+    # "mock" serves seeded tasks with no network; "graph" reads /me/todo through
+    # the personal-Outlook MSAL client and token cache.
+    todo_provider: Literal["mock", "graph"] = "mock"
+    todo_sync_interval_seconds: float = 60.0
+    # Delta links + the last task snapshot, so Home is populated before the first
+    # Graph call after a restart. Holds task titles: git-ignored. Blank = memory only.
+    todo_state_file: str = "todo_state.json"
+    # To Do list display names to skip (case-insensitive). The well-known
+    # "Flagged email" list is skipped separately by ``todo_include_flagged_email``.
+    todo_hidden_list_names: Annotated[list[str], NoDecode] = []
+    todo_include_flagged_email: bool = False
 
     # -- Notes (Home pane sticky notes) --------------------------------------
     # Durable like lists, for the same reason — a wall appliance that forgets a

@@ -15,7 +15,7 @@ import time
 import segno
 
 import app.calendar.outlook_personal as outlook_personal
-from app.calendar.outlook_personal import GRAPH_SCOPES, save_cache, shared_msal_app
+from app.calendar.outlook_personal import save_cache, shared_msal_app, sign_in_scopes
 from app.config import Settings
 from app.models import CalendarAuthStatus
 
@@ -87,7 +87,7 @@ def begin_sign_in(settings: Settings) -> CalendarAuthStatus:
         app, cache, path = shared_msal_app(settings)
         # A device flow is also how an already-connected household adds another
         # account. Microsoft presents account selection on the phone.
-        flow = app.initiate_device_flow(scopes=GRAPH_SCOPES)
+        flow = app.initiate_device_flow(scopes=sign_in_scopes(settings))
         usable = all(k in flow for k in ("user_code", "verification_uri", "expires_in"))
         with _lock:
             if not usable:
@@ -168,7 +168,7 @@ def run_device_flow_blocking(settings: Settings, on_prompt) -> CalendarAuthStatu
             account=app.get_accounts()[0]["username"],
         )
 
-    flow = app.initiate_device_flow(scopes=GRAPH_SCOPES)
+    flow = app.initiate_device_flow(scopes=sign_in_scopes(settings))
     if not all(k in flow for k in ("user_code", "verification_uri", "message")):
         return CalendarAuthStatus(
             provider=settings.calendar_provider,

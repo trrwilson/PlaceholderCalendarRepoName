@@ -639,3 +639,33 @@ button.header-period-picker:hover, button.header-period-picker[aria-expanded='tr
 .clip-modal .close-detail { top: clamp(24px, 2vw, 42px); right: clamp(24px, 2vw, 42px); width: clamp(38px, 2.6vw, 50px); height: clamp(38px, 2.6vw, 50px); border: 0; background: #14201eb3; color: #fbfcf8; font-size: 1.6em; }
 .clip-modal-caption { display: flex; align-items: baseline; gap: 10px; margin: 0; color: var(--ink-soft); font-size: clamp(13px, .8vw, 24px); }
 .clip-modal-caption strong { color: var(--ink); }
+
+/* To Do (docs/todo-integration-plan.md): read-only Microsoft To Do tasks. An
+   appliance mode beside Timer/Lists plus a Home NOW card stacked above Notes; never
+   part of the calendar views. Rows reuse the person palette (`.calendar-<name>`)
+   and the data-driven `--category-color` marker. */
+.home-grid > .home-rail { grid-column: 2; grid-row: 1; display: grid; grid-template-rows: max-content minmax(0, 1fr); gap: clamp(10px, .8vw, 26px); min-height: 0; }
+.todo-summary { display: grid; gap: clamp(6px, .5vw, 16px); padding: clamp(14px, 1vw, 34px); border: 2px solid var(--line); border-radius: 16px; background: var(--surface); }
+.todo-rows { display: grid; align-content: start; gap: clamp(6px, .5vw, 16px); min-height: 0; }
+.task-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: clamp(8px, .7vw, 22px); width: 100%; min-height: clamp(56px, 6vh, 120px); padding: clamp(8px, .6vw, 20px) clamp(10px, .8vw, 26px); border: 0; border-left: clamp(6px, .45vw, 15px) solid currentColor; border-radius: 9px; color: var(--ink-soft); background: var(--warm); text-align: left; }
+.task-row:disabled { cursor: default; }
+.task-row.calendar-coral { color: #704537; background: var(--coral-pale); }.task-row.calendar-ocean { color: #276875; background: #c7e5e7; }.task-row.calendar-gold { color: #80661f; background: #f4e6b6; }.task-row.calendar-fern { color: #397145; background: #cbe2c8; }.task-row.calendar-violet { color: #735080; background: #e0d2e8; }
+.task-row.is-done { opacity: .55; }.task-row.is-done strong { text-decoration: line-through; }
+.task-main { display: grid; gap: 4px; min-width: 0; }
+.task-main strong { overflow: hidden; font-size: clamp(17px, 1.05vw, 36px); text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.task-main small { display: flex; gap: clamp(8px, .6vw, 18px); font-size: clamp(12px, .7vw, 24px); font-weight: 700; }
+.task-list-name { color: var(--ink-soft); font-weight: 600; }
+.task-important { color: #b5462f; }
+.task-category { padding: 3px 10px; border-radius: 999px; color: var(--ink); background: color-mix(in srgb, var(--category-color) 28%, transparent); box-shadow: inset 4px 0 0 var(--category-color); font-size: clamp(11px, .62vw, 21px); font-weight: 700; white-space: nowrap; }
+.task-due { font-size: clamp(14px, .85vw, 29px); font-weight: 800; white-space: nowrap; }
+.task-due.is-overdue { color: #b5462f; }
+.todo-view { display: grid; grid-template-rows: max-content minmax(0, 1fr); gap: clamp(10px, .8vw, 26px); height: 100%; min-height: 0; padding-top: clamp(10px, .8vw, 26px); }
+.todo-health { color: #b5462f; font-size: clamp(12px, .7vw, 24px); font-weight: 700; }
+.todo-empty { color: var(--ink-soft); font-size: clamp(18px, 1.1vw, 38px); }
+.todo-columns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); align-items: start; gap: clamp(10px, .8vw, 26px); min-height: 0; }
+.todo-bucket { display: grid; grid-template-rows: max-content minmax(0, 1fr); min-height: 0; max-height: 100%; padding: clamp(14px, 1vw, 34px); border: 2px solid var(--line); border-radius: 16px; background: var(--surface); }
+.todo-bucket h2 { margin: 0 0 clamp(8px, .6vw, 20px); font-family: Georgia, serif; font-weight: 400; font-size: clamp(22px, 1.4vw, 48px); }
+.todo-bucket h2 span { color: var(--muted); font-size: .7em; }
+.todo-bucket .todo-rows { overflow: auto; }
+.todo-bucket-overdue h2 { color: #b5462f; }
+@media (max-width: 760px) { .home-grid > .home-rail { grid-column: 1; grid-row: auto; }.todo-columns { grid-auto-flow: row; } }

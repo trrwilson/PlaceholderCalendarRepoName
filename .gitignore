@@ -114,3 +114,7 @@ backend/.eufy-investigation/
 .claude/worktrees/
 .DS_Store
 Thumbs.db
+
+# To Do sync state (delta links + cached task titles; docs/todo-integration-plan.md)
+todo_state.json
+todo_validate_links.json

@@ -9,6 +9,7 @@ from app.notes import reset_note_store
 from app.presence import reset_presence
 from app.privacy import reset_privacy_store
 from app.timers import reset_timer_store
+from app.todo import reset_todo_service
 from app.voice import reset_voice_token_cache
 from app.voice.local.session import reset_local_tickets, reset_recognizer
 from app.voice.providers import reset_provider_override
@@ -31,6 +32,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MISSION_CONTROL_LISTS_FILE", "")
     monkeypatch.setenv("MISSION_CONTROL_NOTES_FILE", "")
     monkeypatch.setenv("MISSION_CONTROL_PRIVACY_STATE_FILE", "")
+    monkeypatch.setenv("MISSION_CONTROL_TODO_STATE_FILE", "")
     # `host_local_camera` defaults on (app/config.py — an opt-out, not an
     # opt-in) so a plain dev/prod run just opens the webcam. Force it off here
     # regardless: a `with TestClient(app) as client:` test runs the real
@@ -40,6 +42,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     get_settings.cache_clear()
     _build_provider.cache_clear()
     reset_timer_store()
+    reset_todo_service()
     reset_list_store()
     reset_note_store()
     reset_privacy_store()
@@ -57,6 +60,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch):
     get_settings.cache_clear()
     _build_provider.cache_clear()
     reset_timer_store()
+    reset_todo_service()
     reset_list_store()
     reset_note_store()
     reset_privacy_store()

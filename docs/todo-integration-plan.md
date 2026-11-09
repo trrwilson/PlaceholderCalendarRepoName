@@ -1,6 +1,6 @@
 ---
 status: future
-summary: Data-source vetting and implementation sketch for showing Microsoft To Do tasks (issue #5). Not built.
+summary: Data-source vetting and design for Microsoft To Do tasks (issue #5). An initial read-only slice is built behind a flag; see §8 for what is built and what is still open.
 ---
 
 # Mission Control: To Do tasks — integration plan
@@ -14,7 +14,7 @@ match the rest of Mission Control; **never** mix tasks into the Home/Week/Month
 calendar displays. The backend keeps a cached local copy that it updates
 incrementally ("rolling"), like the calendar providers. **Read-only to start.**
 
-This is research and design only. Nothing here is built.
+An initial implementation exists behind `MISSION_CONTROL_TODO_ENABLED` (off by default). §8 lists what is built, what differs from this sketch, and the gaps.
 
 > **Evidence note.** This session's network could not reach `learn.microsoft.com`,
 > so the official pages are cited by URL but were checked through search-engine
@@ -183,12 +183,15 @@ the To Do apps expose categories at all for personal accounts (they are often on
 set from Outlook). Unknown categories degrade to the neutral marker, as for events.
 
 **Time zones.** `dueDateTime` is a `dateTimeTimeZone`. In practice To Do returns
-`timeZone: "UTC"`, and a due date is set as a *date* (midnight in the user's zone,
-shifted to UTC), so a naive UTC read can land on the **previous day**. Rules for the
-provider boundary (root AGENTS.md: naive local time):
+`timeZone: "UTC"` with a midnight time for a due *date*. Which instant that midnight
+stands for is the open point. If it is midnight UTC standing for the date itself
+(the commonly reported behaviour), converting it to a US zone lands on the
+**previous day**. If it is local midnight shifted to UTC, the time part would not be
+00:00. Rules for the provider boundary (root AGENTS.md: naive local time):
 
-1. Convert with the existing `_to_local_naive({dateTime, timeZone})` helper in `graph.py`
-   (resolves Windows/IANA names, converts to the household zone, drops tzinfo).
+1. A UTC value at exactly 00:00 is taken as the date itself (`due_on`, no conversion).
+   Any other time or named zone goes through `_to_local_naive({dateTime, timeZone})`
+   in `graph.py` and keeps the local date. **[verify]** with the live script.
 2. Expose `due_on: date` (the local date) as the primary field; most To Do due dates
    carry no meaningful time. Keep `due_at` only if the live script shows tasks with
    real times.
@@ -422,3 +425,59 @@ AGENTS.md lists voice writes as narrow and deliberate. Not proposed.
 9. **Sync cadence vs freshness:** is 60 s acceptable after a phone edit?
 10. **Relationship to #3:** should To Do lists or checklist items back the project
     planner (a list per project, checklist = steps), or does #3 stay in-app?
+
+---
+
+## 8. Initial implementation (built, behind a flag)
+
+**Built:**
+
+- `app/models.py`: `TaskList` (adds `is_owner`, not in the §3.1 sketch), `TaskItem`,
+  `TaskSnapshot`, and a `tasks` field on `ApplicationMessage`. Mirrored in
+  `frontend/src/todo/types.ts`, following the `lists/types.ts` precedent rather than
+  `App.tsx`.
+- `app/todo/`: `source.py` (protocol + `DeltaResult` + `DeltaExpired` /
+  `TodoAuthRequired` / `Throttled`), `graph_todo.py` (Graph delta + mapping),
+  `mock.py` (seeded, owners match the mock calendars), `service.py` (sync loop,
+  dedupe, 410 re-baseline, Retry-After, backoff, `todo_state.json`).
+- Settings: `MISSION_CONTROL_TODO_ENABLED`, `_TODO_PROVIDER` (`mock` | `graph`),
+  `_TODO_SYNC_INTERVAL_SECONDS`, `_TODO_STATE_FILE`, `_TODO_HIDDEN_LIST_NAMES`,
+  `_TODO_INCLUDE_FLAGGED_EMAIL`.
+- Sign-in: `outlook_personal.sign_in_scopes()` adds `Tasks.Read` to the device-code
+  consent only when `todo_provider=graph`. Token acquisition for tasks is separate
+  and never sets the calendar's `auth_error`.
+- API: `GET /api/tasks` (`_require_local`); the socket sends `tasks` on connect and
+  on change. No mutating endpoint exists, so `_require_unlocked` is not needed yet.
+- Frontend: `useTasks`, `TodoView` (To Do mode: Overdue / Today / Upcoming / No date
+  / Done columns sized to content, plus a read-only detail sheet), and `TodoSummary`
+  (Home card above Notes, overdue + due today, at most 3 rows then "+N more", hidden
+  when empty). A To Do dock button with a due-count badge appears only when the
+  feature is on. Privacy mode redacts titles, list names and categories.
+- Tests: `backend/tests/test_todo.py` (mapping, pagination, incremental, 410,
+  429, flagged/hidden lists, shared-list dedupe, consent loss, calendar-auth
+  isolation, state file, routes, scopes); `frontend/src/todo/taskView.test.ts`;
+  `frontend/e2e/todo.spec.ts` (Home/To Do fit at 4K and 1080p with no document
+  scroll, never in Week, absent when disabled).
+- Live check: `backend/scripts/validate_todo_graph.py` (prints each [verify] answer;
+  `--resume` measures delta-link lifetime).
+
+**Gaps and known limitations:**
+
+1. **Nothing has run against live Graph.** Every [verify] item above is still open.
+   Run the live script on the kiosk before turning on `todo_provider=graph`.
+2. **Checklist counts are always 0 from Graph.** Delta does not return
+   `checklistItems`, and the code does not request `$expand` or fetch them per task.
+   The mock and UI already support counts.
+3. **Shared-list dedupe assumes the list id is the same for every account.** If it
+   is not, a shared list shows twice (once per member).
+4. **Re-consent UX is minimal.** `needs_sign_in` shows as an inline line in To Do
+   mode. It is not wired into the header warning slot or the calendar-connect sheet,
+   and the auth status endpoint has no `todo_needs_consent` hint.
+5. **Delta round per list each pass.** Fine at household scale (§2.1 budget). No
+   parallelism, by design (4-concurrent limit).
+6. **Due dates follow the UTC-midnight rule in §2.1**, which is unverified.
+7. **The Home card is placed above Notes** in the right column. This is a layout
+   choice that needs review (open question 4).
+8. **No per-list enable toggle** in the People flyout or Settings. Lists are filtered
+   only by the env-var hidden names.
+9. **No voice tool** (`get_tasks`) yet (§3.4).
