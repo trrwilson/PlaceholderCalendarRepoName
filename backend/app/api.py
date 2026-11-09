@@ -58,6 +58,7 @@ from app.models import (
     PrivacyState,
     PrivacyUnlockRequest,
     StoredClip,
+    TaskSnapshot,
     Timer,
     TimerCreateRequest,
     TimerExtendRequest,
@@ -92,6 +93,7 @@ from app.presence import (
 from app.privacy import get_privacy_store
 from app.realtime import connections
 from app.timers import TimerError, get_timer_store
+from app.todo import todo_snapshot
 from app.voice import VoiceUnavailable, get_voice_token, reset_voice_token_cache
 from app.voice.base import PROVIDER_LABELS
 from app.voice.debug_capture import VoiceCaptureError, store_capture
@@ -746,6 +748,17 @@ async def restart_timer(request: Request, timer_id: str) -> Timer:
         raise HTTPException(status_code=404, detail="no such timer") from exc
 
 
+# -- To Do tasks -------------------------------------------------------------
+# Read-only display of Microsoft To Do (docs/todo-integration-plan.md). No
+# mutating endpoint exists yet; a future one MUST add _require_unlocked().
+
+
+@router.get("/tasks", response_model=TaskSnapshot)
+async def get_tasks(request: Request) -> TaskSnapshot:
+    _require_local(request)
+    return todo_snapshot()
+
+
 # -- lists ------------------------------------------------------------------
 # Backend-owned, persisted to one JSON file (unlike timers — a wall appliance
 # that forgets the grocery list on reboot is broken UX). One list for now
@@ -1267,6 +1280,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 display=get_display_store().state(),
             ).model_dump(mode="json", exclude_none=True)
         )
+        # ...and the current To Do tasks, if the feature is on.
+        tasks = todo_snapshot()
+        if tasks.status != "disabled":
+            await websocket.send_json(
+                ApplicationMessage(type="tasks", message="current tasks", tasks=tasks).model_dump(
+                    mode="json", exclude_none=True
+                )
+            )
         # ...and the current camera clip gallery, if the feature is on.
         eufy_service = get_eufy_service()
         if eufy_service is not None:

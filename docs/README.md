@@ -45,6 +45,7 @@ you can triage without opening it.
 
 | Doc | Summary |
 |---|---|
+| [todo-integration-plan.md](todo-integration-plan.md) | Microsoft To Do tasks (issue #5): Graph data-source vetting (delta sync, scopes, shared lists, tz, throttling) and a read-only provider + Home tile / To Do mode. Initial slice built behind `MISSION_CONTROL_TODO_ENABLED`; live Graph checks still open. |
 | [voice-activation-ux-plan.md](voice-activation-ux-plan.md) | Fixing staged + one-shot keyword activation: leading-silence tolerance, cue timing, keyword-free transcript, silent dismissal of empty queries. MVP slice built (see below); earcon classifier / shorter pre-roll lead / warm sessions still parked here. |
 | [presence-module-plan.md](presence-module-plan.md) | General presence-signal contract (`PresenceSignal`, sources, aggregator) shared by the kiosk activity seam and remote/ambient camera events — designed, not started. |
 | [camera-support-plan.md](camera-support-plan.md) | Local webcam presence detection — implements the presence plan's `kiosk` scope. A coarse-motion MVP is built (`app/presence/`); the full "Phase 1 build spec" (real person/presence detector, display-policy wiring) is not. |

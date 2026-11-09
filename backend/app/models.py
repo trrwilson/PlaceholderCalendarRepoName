@@ -587,6 +587,64 @@ class CameraGallerySnapshot(BaseModel):
     cameras_online: bool
 
 
+# -- To Do tasks (docs/todo-integration-plan.md) ----------------------------
+# Provider-neutral, read-only. Tasks are never part of CalendarSnapshot: they
+# have their own route, push, and UI (issue #5: never mixed into the calendar).
+
+
+class TaskStatus(StrEnum):
+    not_started = "not_started"
+    in_progress = "in_progress"
+    completed = "completed"
+    waiting = "waiting"
+    deferred = "deferred"
+
+
+class TaskImportance(StrEnum):
+    low = "low"
+    normal = "normal"
+    high = "high"
+
+
+class TaskList(BaseModel):
+    id: str = Field(min_length=1)
+    name: str
+    # The owning account's HouseholdCalendar.id, so a task takes the same person
+    # colour (and the viewer's per-calendar remap) as that member's events.
+    owner_id: str = Field(min_length=1)
+    is_shared: bool = False
+    # False for a list someone else shared with this account. A shared list shows
+    # under every member who can see it; the owner's copy wins de-duplication.
+    is_owner: bool = True
+    is_default: bool = False
+
+
+class TaskItem(BaseModel):
+    id: str = Field(min_length=1)
+    list_id: str = Field(min_length=1)
+    title: str
+    status: TaskStatus = TaskStatus.not_started
+    importance: TaskImportance = TaskImportance.normal
+    # The household-local due *date*; To Do due dates carry no meaningful time.
+    due_on: date | None = None
+    completed_at: datetime | None = None
+    category: EventCategory | None = None
+    checklist_total: int = 0
+    checklist_done: int = 0
+    has_note: bool = False
+
+
+TaskSyncStatus = Literal["ok", "stale", "needs_sign_in", "disabled"]
+
+
+class TaskSnapshot(BaseModel):
+    lists: list[TaskList] = Field(default_factory=list)
+    tasks: list[TaskItem] = Field(default_factory=list)
+    synced_at: datetime | None = None
+    status: TaskSyncStatus = "disabled"
+    error: str | None = None
+
+
 class ApplicationMessage(BaseModel):
     type: str
     message: str
@@ -614,6 +672,9 @@ class ApplicationMessage(BaseModel):
     # change and on connect; ``camera_status`` is the source's connection state.
     camera_clips: list[StoredClip] | None = None
     camera_status: str | None = None
+    # To Do tasks reuse it too: ``tasks`` is the full current TaskSnapshot,
+    # pushed when a sync changes anything and sent on connect.
+    tasks: TaskSnapshot | None = None
     # Keep ``list`` last: ``list: … = None`` binds the name in the class body, which
     # would shadow the ``list`` builtin for any annotation evaluated after it.
     list: GroceryList | None = None

@@ -48,6 +48,18 @@ from app.models import (
 )
 
 GRAPH_SCOPES = ["Calendars.Read"]
+
+
+def sign_in_scopes(settings: Settings) -> list[str]:
+    """Scopes a device-code sign-in asks consent for: the calendar always, plus
+    ``Tasks.Read`` when the To Do feature reads Graph. Token *acquisition* stays
+    per feature, so a member who never consented to tasks keeps a working calendar.
+    """
+    if settings.todo_enabled and settings.todo_provider == "graph":
+        return [*GRAPH_SCOPES, "Tasks.Read"]
+    return list(GRAPH_SCOPES)
+
+
 SIGN_IN_HINT = "sign in from the kiosk or run `python -m app.auth login`"
 
 # "Microsoft Graph Command Line Tools" — Microsoft's own first-party public
@@ -398,6 +410,7 @@ class PersonalOutlookCalendarProvider:
 
 __all__ = [
     "GRAPH_SCOPES",
+    "sign_in_scopes",
     "PersonalOutlookCalendarProvider",
     "load_msal_app",
     "save_cache",
