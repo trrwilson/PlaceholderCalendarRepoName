@@ -6,8 +6,10 @@ summary: Photo Stream (#4): data-source vetting (OneDrive vs Google) and an impl
 # Mission Control: Photo Stream: research and design plan
 
 Issue: [#4 "[Feature] Photo Stream"](https://github.com/trrwilson/PlaceholderCalendarRepoName/issues/4).
-Status: **research only (2026-11-09).** No product code has changed. Open
-questions (§7) are listed for the household to decide, not decided here.
+Status: **initial implementation (2026-11-09), behind `photos_enabled`.** The
+OneDrive-folder path (§3) is built and covered by tests; see §8 for what was
+built, the provisional defaults it chose, and the remaining gaps. Open questions
+(§7) are still for the household to decide.
 
 **Requirement as refined:** a Home tile that works like a digital photo frame. It
 shows a slideshow of a household-curated set of photos, with a timed fade and
@@ -337,3 +339,61 @@ Run by hand on `sartra-server` against the household account, like the other
 11. **Voice:** should "next photo" or "show the beach photos" be voice tools
     later? (Read-only, so it fits the tool rules.)
 12. **Dimming and night:** pause or hide photos when the display dims?
+
+---
+
+## 8. Implementation status (initial build, 2026-11-09)
+
+**Built:**
+
+- `backend/app/photos/` — `cache.py` (manifest + `state.json`, atomic writes,
+  orphan sweep, item/MB caps, thread-safe), `onedrive.py` (folder resolve,
+  folder-scoped delta with paging, 410 → full re-enumeration, 429/503 →
+  `Throttled(retry_after)`, 401/403 → `NeedsSignIn`, `c{W}x{H}` thumbnail
+  fetch), `service.py` (async loop + worker-thread rounds, mark-and-sweep on
+  full rounds, delta link only advanced when every download succeeded,
+  exponential backoff, `photos` push on change), `__init__.py` (lazy singleton,
+  `Files.Read` silent token from the shared MSAL cache, lifespan start/stop).
+- Config `MISSION_CONTROL_PHOTOS_*` (see `backend/.env.example`); the kiosk/CLI
+  device-code sign-in adds `Files.Read` only while photos are enabled
+  (`personal_auth.sign_in_scopes`).
+- API: `GET /api/photos`, `GET /api/photos/{id}` (cache-only, immutable
+  `?v=` URLs), `POST /api/photos/sync` (`_require_local` + `_require_unlocked`).
+  `/api/ws` sends the snapshot on connect and after changes.
+- Frontend: `src/photos/` (`usePhotoStream`, `PhotoTile`): two-layer
+  decode-then-crossfade, 20 s dwell, swipe or side-third tap to step,
+  `object-fit: contain` on a dark matte, reduced-motion respected.
+- Tests: `backend/tests/test_photos.py` (respx-mocked Graph, cache, service,
+  gates), `src/photos/*.test.ts(x)`, `e2e/photos.spec.ts` (fit at both kiosk
+  sizes). Live check: `backend/scripts/verify_photo_source.py`.
+
+**Provisional defaults (chosen to ship something; each maps to an open question):**
+
+| Default | Question |
+|---|---|
+| Tile takes the rail's lower slot only when there is no sign-in alert and no camera clips (alert > camera > photos) | Q4 |
+| Tile is hidden while privacy mode is on; `GET /api/photos` stays readable (like the eufy gallery) | Q2 |
+| Fixed 20 s dwell, 1.2 s fade, both constants/tokens | Q5 |
+| Newest-taken first, undated last; cap keeps the newest; no shuffle | Q6 |
+| Dark plain matte, no blur fill; no captions | Q7, Q9 |
+| Tap on side thirds steps; centre tap does nothing | Q8 |
+| Videos skipped | Q10 |
+
+**Gaps / not yet done:**
+
+- **Not validated against a live account.** The [verify] items (first-party
+  client consent for `Files.Read`, items moved out of the folder appearing as
+  `deleted` in folder delta, custom thumbnail sizes, HEIC) need
+  `scripts/verify_photo_source.py` run on `sartra-server`.
+- **Work/school accounts:** folder delta is personal-only; root delta +
+  `parentReference.path` filtering is not implemented.
+- **No sign-in surfacing:** a `needs_sign_in` status is reported by
+  `/api/photos` but not yet shown in the header warning slot, and the kiosk
+  sign-in sheet doesn't say that photos need a re-consent.
+- **No Settings UI** (refresh-now, status, folder name) — the sync route exists.
+- **Not paused on display dim** (`docs/display-dimming-plan.md`) — Q12.
+- **Albums** (Candidate B) not implemented.
+- Thumbnail fetch has no fallback to the original (`downloadUrl`) when a
+  rendition is unavailable; such photos are retried each round.
+- A capped-out photo is skipped, not queued: if the cap later frees up, it only
+  appears on the next full (410/re-config) enumeration.

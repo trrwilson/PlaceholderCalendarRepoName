@@ -1,4 +1,5 @@
 import math
+import re
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -707,6 +708,42 @@ class Settings(BaseSettings):
         if pin and (not pin.isdigit() or len(pin) != 4):
             raise ValueError("privacy_mode_pin must be exactly four digits (or blank to disable)")
         return pin
+
+    # -- Photo stream (Home slideshow tile) ---------------------------------
+    # A household-curated OneDrive folder mirrored to a capped on-disk cache via
+    # Graph delta (docs/photo-stream-plan.md). Off by default — false ⇒ nothing in
+    # app.photos is imported, no sync loop runs, and /api/photos reports disabled.
+    # Uses the same personal-account MSAL cache as `outlook_personal`, with the
+    # extra delegated `Files.Read` scope (sign in again once after enabling).
+    photos_enabled: bool = False
+    # Folder path relative to the OneDrive root, e.g. "Pictures/Mission Control".
+    photos_folder_path: str = "Pictures/Mission Control"
+    # Which signed-in account owns the folder (username/email, case-insensitive).
+    # Blank ⇒ the first account in the token cache.
+    photos_account: str | None = None
+    photos_cache_dir: str = ".photo_cache"
+    photos_cache_max_items: int = 500
+    photos_cache_max_mb: int = 1024
+    photos_sync_interval_seconds: int = 600
+    # Graph custom thumbnail size requested per photo: server-resized JPEG (also
+    # converts HEIC). The tile is never full-screen 4K, so 2560x1440 is ample.
+    photos_rendition: str = "c2560x1440"
+
+    @field_validator(
+        "photos_cache_max_items", "photos_cache_max_mb", "photos_sync_interval_seconds"
+    )
+    @classmethod
+    def _check_photos_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("photo stream limits must be positive")
+        return value
+
+    @field_validator("photos_rendition")
+    @classmethod
+    def _check_photos_rendition(cls, value: str) -> str:
+        if not re.fullmatch(r"c\d{2,5}x\d{2,5}", value):
+            raise ValueError("photos_rendition must look like c2560x1440")
+        return value
 
     # -- Eufy camera clip gallery ------------------------------------------
     # On-demand thumbnail/video review of recent eufy camera clips, replacing

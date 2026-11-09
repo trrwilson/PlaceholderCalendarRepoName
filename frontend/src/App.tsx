@@ -23,6 +23,9 @@ import { useDisplay } from './display/useDisplay'
 import { useActivityPing } from './presence/useActivityPing'
 import { useCameraActivity } from './camera/useCameraActivity'
 import type { StoredClip } from './camera/types'
+import { PhotoTile } from './photos/PhotoTile'
+import type { PhotoStreamSnapshot } from './photos/types'
+import { usePhotoStream } from './photos/usePhotoStream'
 import { NotesPane } from './notes/NotesPane'
 import { useNotesSttConfig } from './notes/useNotesSttConfig'
 
@@ -416,6 +419,7 @@ function App() {
   // holds the eufy bridge connection); this hook reconciles from
   // GET /api/household and the shared ws push. See docs/eufy-sdk-integration.md.
   const camera = useCameraActivity(API_URL)
+  const photos = usePhotoStream(API_URL)
   const [selectedClip, setSelectedClip] = useState<StoredClip | null>(null)
 
   function enterPrivacyMode() {
@@ -666,7 +670,7 @@ function App() {
       </header>
 
       <section className="view-frame">
-        {mode === 'home' && <HomeView now={now} todayEvents={shownTodayEvents} todaySpans={shownTodaySpans} events={shownVisibleEvents} stripLoadedRange={stripRange} onExpandStripRange={handleExpandStripRange} calendarById={calendarById} onSelect={selectEvent} colorMode={displayColorMode} calendarAlert={authNeedsSetup && !redacting ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} camera={camera} redacting={redacting} onSelectClip={redacting ? () => undefined : setSelectedClip} apiBaseUrl={API_URL} />}
+        {mode === 'home' && <HomeView now={now} todayEvents={shownTodayEvents} todaySpans={shownTodaySpans} events={shownVisibleEvents} stripLoadedRange={stripRange} onExpandStripRange={handleExpandStripRange} calendarById={calendarById} onSelect={selectEvent} colorMode={displayColorMode} calendarAlert={authNeedsSetup && !redacting ? { account: auth?.account ?? null, onConnect: () => { setAddingCalendar(false); setConnectOpen(true) } } : null} camera={camera} redacting={redacting} onSelectClip={redacting ? () => undefined : setSelectedClip} apiBaseUrl={API_URL}  photos={photos} />}
         {mode === 'week' && <WeekView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'timer' && <TimerView timer={timers.timer} remainingMs={timers.remainingMs} alarm={timers.alarm} onStart={startTimerFromTouch} onExtend={extendTimer} onPause={() => timerAction('pause')} onResume={() => timerAction('resume')} onRestart={() => timerAction('restart')} onCancel={() => { void timers.cancel() }} onDismiss={() => { void timers.dismiss() }} />}
@@ -938,13 +942,18 @@ function HolidayNote({ date, className }: { date: Date; className: string }) {
   )
 }
 
-function HomeView({ now, todayEvents, todaySpans, events, stripLoadedRange, onExpandStripRange, calendarById, onSelect, colorMode, calendarAlert, camera, redacting, onSelectClip, apiBaseUrl }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; events: CalendarEvent[]; stripLoadedRange: { start: Date; end: Date }; onExpandStripRange: (day: Date) => void; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null; camera: ReturnType<typeof useCameraActivity>; redacting: boolean; onSelectClip: (clip: StoredClip) => void; apiBaseUrl: string }) {
+function HomeView({ now, todayEvents, todaySpans, events, stripLoadedRange, onExpandStripRange, calendarById, onSelect, colorMode, calendarAlert, camera, redacting, onSelectClip, apiBaseUrl, photos }: { now: Date; todayEvents: CalendarEvent[]; todaySpans: CalendarEvent[]; events: CalendarEvent[]; stripLoadedRange: { start: Date; end: Date }; onExpandStripRange: (day: Date) => void; calendarById: Map<string, Calendar>; onSelect: (event: CalendarEvent) => void; colorMode: SemanticColorMode; calendarAlert: { account: string | null; onConnect: () => void } | null; camera: ReturnType<typeof useCameraActivity>; redacting: boolean; onSelectClip: (clip: StoredClip) => void; apiBaseUrl: string; photos: PhotoStreamSnapshot }) {
   const [openDay, setOpenDay] = useState<Date | null>(null)
+  // The photo tile takes the rail's lower slot only when nothing more actionable
+  // wants it (sign-in alert > camera clips > photos). It is hidden while privacy
+  // mode is on — a provisional, conservative default; the real policy is open
+  // question Q2 in docs/photo-stream-plan.md.
+  const showPhotos = photos.enabled && photos.photos.length > 0 && !redacting
   return <div className="home-view"><div className="home-grid">
     <section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><HolidayNote date={now} className="holiday-note-home" /></div></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section>
     <NotesPane apiBaseUrl={apiBaseUrl} redacting={redacting} />
     <DayStrip now={now} events={events} loadedRange={stripLoadedRange} onExpandRange={onExpandStripRange} calendarById={calendarById} onSelect={onSelect} colorMode={colorMode} onOpenDay={setOpenDay} />
-    {calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} />}
+    {calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : camera.available && camera.clips.length > 0 ? <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} /> : showPhotos ? <PhotoTile photos={photos.photos} apiBaseUrl={apiBaseUrl} paused={openDay !== null} /> : null}
   </div>
   {openDay && <DayEventsSheet day={openDay} events={events} calendarById={calendarById} colorMode={colorMode} onSelect={(event) => { setOpenDay(null); onSelect(event) }} onClose={() => setOpenDay(null)} />}
   </div>
