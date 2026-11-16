@@ -123,7 +123,10 @@ class TodoSyncService:
         for list_id in [lid for lid, acct in self._list_account.items() if acct not in accounts]:
             self._drop_list(list_id)
         self._account_errors = errors
-        self._failures = self._failures + 1 if errors else 0
+        # Back off only when nothing synced: one member who hasn't re-consented
+        # must not slow every other member's refresh down to the backoff cap.
+        all_failed = bool(accounts) and len(errors) == len(accounts)
+        self._failures = self._failures + 1 if all_failed else 0
         if not errors and accounts:
             self._has_synced = True
             self._synced_at = now
