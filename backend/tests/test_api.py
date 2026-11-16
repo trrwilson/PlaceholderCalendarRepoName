@@ -59,7 +59,9 @@ def test_calendar_visibility_toggles_a_non_primary_calendar_on(
     before = client.get("/api/calendar").json()
     assert next(c for c in before["calendars"] if c["id"] == "family::holidays")["enabled"] is False
 
-    r = client.put("/api/calendar/calendars", json={"calendar_id": "family::holidays", "enabled": True})
+    r = client.put(
+        "/api/calendar/calendars", json={"calendar_id": "family::holidays", "enabled": True}
+    )
     assert r.status_code == 204
 
     after = client.get("/api/calendar").json()

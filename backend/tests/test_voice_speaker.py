@@ -105,8 +105,7 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def _enable(monkeypatch: pytest.MonkeyPatch, port: int, ppm: str = "0",
-            codec: str = "s16") -> None:
+def _enable(monkeypatch: pytest.MonkeyPatch, port: int, ppm: str = "0", codec: str = "s16") -> None:
     monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
     monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_HOST", "127.0.0.1")
     monkeypatch.setenv("MISSION_CONTROL_INVOKE_SPEAKER_AUDIO_PORT", str(port))
@@ -123,8 +122,16 @@ def test_encode_raw_mono_s16_to_stereo_s32_left_justified() -> None:
     out = _encode(mono, _DriftSlip(0.0), "raw")
     got = struct.unpack("<10i", out)
     assert got == (
-        0, 0, 1 << 16, 1 << 16, -2 << 16, -2 << 16,
-        32767 << 16, 32767 << 16, -32768 << 16, -32768 << 16,
+        0,
+        0,
+        1 << 16,
+        1 << 16,
+        -2 << 16,
+        -2 << 16,
+        32767 << 16,
+        32767 << 16,
+        -32768 << 16,
+        -32768 << 16,
     )
 
 
@@ -150,8 +157,8 @@ def test_encode_g711u_matches_reference_and_is_stereo() -> None:
     mono = array.array("h", [0, 100, -100, 4000, -4000, 32767, -32768])
     out = _encode(mono.tobytes(), _DriftSlip(0.0), "g711u")
     ref = audioop.lin2ulaw(mono.tobytes(), 2)
-    assert out[0::2] == ref and out[1::2] == ref          # both channels
-    assert out[0:1] == b"\xff"                            # 0 -> canonical µ-law idle
+    assert out[0::2] == ref and out[1::2] == ref  # both channels
+    assert out[0:1] == b"\xff"  # 0 -> canonical µ-law idle
 
 
 def test_drift_slip_drops_samples_when_sink_is_fast() -> None:
@@ -204,8 +211,16 @@ def test_bridge_raw_codec_still_widens_to_s32(
         raw = fake_daemon.wait_bytes(prime_bytes + 32)
     assert raw[:prime_bytes] == b"\x00" * prime_bytes
     tail = struct.unpack("<8i", raw[prime_bytes : prime_bytes + 32])
-    assert tail == (100 << 16, 100 << 16, -200 << 16, -200 << 16,
-                    300 << 16, 300 << 16, -400 << 16, -400 << 16)
+    assert tail == (
+        100 << 16,
+        100 << 16,
+        -200 << 16,
+        -200 << 16,
+        300 << 16,
+        300 << 16,
+        -400 << 16,
+        -400 << 16,
+    )
 
 
 def _decode_as_daemon(payload: bytes, codec: str) -> array.array:
@@ -297,9 +312,7 @@ def test_status_frame_reports_link_up(
     assert "up" in seen
 
 
-def test_shed_is_reported_immediately(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_shed_is_reported_immediately(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     # Device unreachable, so the client-side buffer overflows and sheds; the
     # bridge must surface that at once (the kiosk un-mutes local playout on it),
     # not wait for the 5 s status ticker.
