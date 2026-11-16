@@ -105,8 +105,11 @@ class WmiDisplayController(DisplayController):
         # exits 0, so a dud ``WmiSetBrightness`` would look like success.
         return subprocess.run(
             [
-                "powershell.exe", "-NoProfile", "-NonInteractive",
-                "-Command", f"$ErrorActionPreference='Stop'; {script}",
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                f"$ErrorActionPreference='Stop'; {script}",
             ],
             capture_output=True,
             text=True,

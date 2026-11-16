@@ -74,6 +74,7 @@ _NEUTRAL_CATEGORY_HEX = "#6e8596"
 # cache the per-mailbox colour map rather than refetching it each time.
 _MASTER_CATEGORIES_TTL_SECONDS = 600.0
 
+
 def _local_tz_name() -> str:
     """Timezone name for the Graph ``Prefer`` header and event writes.
 
@@ -230,7 +231,9 @@ class ProfileNameCache:
 _CALENDAR_LIST_SELECT = "id,name,isDefaultCalendar,owner"
 
 
-def list_calendars(client: httpx.Client, base_url: str, headers: dict[str, str]) -> list[dict[str, Any]]:
+def list_calendars(
+    client: httpx.Client, base_url: str, headers: dict[str, str]
+) -> list[dict[str, Any]]:
     """List a mailbox's calendars (``{base_url}/calendars``, paged) — the ones
     beyond the default calendar a household member can opt into displaying
     (see ``app/calendar/secondary.py``)."""
@@ -238,7 +241,9 @@ def list_calendars(client: httpx.Client, base_url: str, headers: dict[str, str])
     url: str | None = f"{base_url}/calendars"
     calendars: list[dict[str, Any]] = []
     while url:
-        response = client.get(url, params=params if url.endswith("/calendars") else None, headers=headers)
+        response = client.get(
+            url, params=params if url.endswith("/calendars") else None, headers=headers
+        )
         response.raise_for_status()
         body = response.json()
         calendars.extend(body.get("value", []))
@@ -440,7 +445,9 @@ class MicrosoftGraphCalendarProvider:
             calendars.append(self._household_calendar(user, index))
 
             try:
-                raw_calendars = list_calendars(self._client, f"{_GRAPH_BASE}/users/{user}", self._headers())
+                raw_calendars = list_calendars(
+                    self._client, f"{_GRAPH_BASE}/users/{user}", self._headers()
+                )
             except httpx.HTTPError:
                 raw_calendars = []
             for raw_calendar in raw_calendars:
