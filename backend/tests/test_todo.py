@@ -263,6 +263,38 @@ def test_missing_consent_marks_needs_sign_in_and_keeps_cached_tasks() -> None:
     assert len(snap.tasks) == cached > 0
 
 
+def test_one_unconsented_account_does_not_slow_the_others() -> None:
+    class OneMissing(MockTodoSource):
+        def accounts(self):
+            return ["a@x.com", "b@x.com"]
+
+        def list_delta(self, account, link):
+            if account == "b@x.com":
+                raise TodoAuthRequired("no consent")
+            return super().list_delta(account, link)
+
+    service = TodoSyncService(
+        OneMissing(today=lambda: NOW.date()), clock=lambda: NOW, interval_seconds=60
+    )
+    for _ in range(3):
+        service.sync_once()
+    assert service.snapshot().status == "needs_sign_in"
+    assert service.next_delay() == pytest.approx(60)
+
+
+def test_every_account_failing_backs_off() -> None:
+    class AllMissing(MockTodoSource):
+        def list_delta(self, account, link):
+            raise TodoAuthRequired("no consent")
+
+    service = TodoSyncService(
+        AllMissing(today=lambda: NOW.date()), clock=lambda: NOW, interval_seconds=60
+    )
+    service.sync_once()
+    service.sync_once()
+    assert service.next_delay() == pytest.approx(120)
+
+
 def test_todo_auth_failure_never_touches_calendar_auth_error() -> None:
     import app.calendar.outlook_personal as outlook_personal
 
