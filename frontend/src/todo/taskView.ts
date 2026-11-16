@@ -48,10 +48,22 @@ export function dueLabel(dueOn: string | null, today: Date): string | null {
   return due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+/** How far back Done reaches. Older completions are history, not household status. */
+export const DONE_WINDOW_DAYS = 7
+
 export function groupByBucket(tasks: TaskItem[], today: Date): Map<DueBucket, TaskItem[]> {
   const groups = new Map<DueBucket, TaskItem[]>()
   for (const bucket of BUCKET_ORDER) groups.set(bucket, [])
-  for (const task of tasks) groups.get(bucketOf(task, today))!.push(task)
+  const base = parseDay(isoDay(today))
+  base.setDate(base.getDate() - DONE_WINDOW_DAYS)
+  const doneSince = isoDay(base)
+  for (const task of tasks) {
+    const bucket = bucketOf(task, today)
+    // completed_at is naive local ISO, so string order is time order.
+    if (bucket === 'done' && !(task.completed_at && task.completed_at >= doneSince)) continue
+    groups.get(bucket)!.push(task)
+  }
+  groups.get('done')!.sort((a, b) => b.completed_at!.localeCompare(a.completed_at!))
   return groups
 }
 
