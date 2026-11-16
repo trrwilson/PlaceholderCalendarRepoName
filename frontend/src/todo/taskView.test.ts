@@ -38,10 +38,27 @@ describe('taskView', () => {
     expect(dueLabel('2026-11-12', today)).toMatch(/Thu/)
   })
 
-  it('groups every task exactly once', () => {
+  it('groups every open task exactly once', () => {
     const groups = groupByBucket([task('a', { due_on: '2026-11-08' }), task('b')], today)
     expect(groups.get('overdue')!.map((t) => t.id)).toEqual(['a'])
     expect(groups.get('someday')!.map((t) => t.id)).toEqual(['b'])
+  })
+
+  it('done keeps only the last week of completions, newest first', () => {
+    const done = (id: string, completed_at: string | null) =>
+      task(id, { status: 'completed', completed_at })
+    const groups = groupByBucket(
+      [
+        done('older', '2026-11-03T10:00:00'),
+        done('monday', '2026-11-09T08:00:00'),
+        done('edge', '2026-11-02T00:00:00'),
+        done('ancient', '2026-10-01T12:00:00'),
+        done('undated', null),
+        done('friday', '2026-11-06T17:30:00'),
+      ],
+      today,
+    )
+    expect(groups.get('done')!.map((t) => t.id)).toEqual(['monday', 'friday', 'older', 'edge'])
   })
 
   it('home summary keeps only overdue and due-today open tasks, overdue first', () => {
