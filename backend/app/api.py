@@ -208,7 +208,7 @@ async def debug_restart(request: Request) -> dict[str, str]:
 
 
 @router.get("/calendar", response_model=CalendarSnapshot)
-async def get_calendar(
+def get_calendar(
     starts_on: date | None = None,
     ends_on: date | None = None,
     calendar_provider: CalendarProvider = Depends(get_provider),

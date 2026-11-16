@@ -173,11 +173,11 @@ class LocalCameraMotionSource:
         # off `_status_lock`, since the two are updated independently.
         self._liveness_lock = threading.Lock()
         self._last_live_frame_at = time.monotonic()
-        # The currently-open capture, mirrored here (only) so the watchdog
-        # can force it closed from outside `_run`'s thread — the standard
-        # way to unstick a thread blocked inside a native `read()` call.
-        self._capture_lock = threading.Lock()
-        self._capture = None
+        # Set by the watchdog, honoured by `_run`. Only `_run`'s thread ever
+        # touches the capture: releasing a cv2.VideoCapture from another thread
+        # while `_run` is reading from it corrupts the native heap and kills
+        # the whole backend process (0xc0000374).
+        self._reopen_requested = threading.Event()
 
     @property
     def status(self) -> CameraStatus:
@@ -225,25 +225,18 @@ class LocalCameraMotionSource:
             self._watchdog_thread.join(timeout=5)
         self._thread = None
         self._watchdog_thread = None
-        with self._capture_lock:
-            self._capture = None
         self._set_status("disabled")
 
     def _watchdog_run(self) -> None:
         while not self._stop.wait(_WATCHDOG_POLL_SECONDS):
             if not self._watchdog_should_reopen(self.status, self._seconds_since_alive()):
                 continue
-            with self._capture_lock:
-                capture, self._capture = self._capture, None
-            if capture is None:
-                continue
             logger.warning(
-                "presence: local camera watchdog forcing reopen (no live frame for %.0fs)",
+                "presence: local camera watchdog requesting reopen (no live frame for %.0fs)",
                 _STALE_FRAME_TIMEOUT_SECONDS,
             )
-            capture.release()
-            # Avoid re-firing every poll interval while `_run` notices the
-            # forced release and works through its own reconnect backoff.
+            self._reopen_requested.set()
+            # Avoid re-firing every poll interval while `_run` acts on it.
             self._touch_alive()
 
     def _open_capture(self):
@@ -293,16 +286,19 @@ class LocalCameraMotionSource:
                     subtractor = new_subtractor()
                     prev_frame = None
                     self._touch_alive()
-                    with self._capture_lock:
-                        self._capture = capture
+                    self._reopen_requested.clear()
                     self._set_status("ok")
                     logger.info("presence: local camera opened (device=%s)", self._device or "auto")
+
+                if self._reopen_requested.is_set():
+                    self._reopen_requested.clear()
+                    capture.release()
+                    capture = None
+                    continue
 
                 ok, frame = capture.read()
                 if not ok or frame is None:
                     self._set_status("disconnected")
-                    with self._capture_lock:
-                        self._capture = None
                     capture.release()
                     capture = None
                     continue
@@ -318,8 +314,6 @@ class LocalCameraMotionSource:
             logger.exception("presence: local camera loop failed")
             self._set_status("error")
         finally:
-            with self._capture_lock:
-                self._capture = None
             if capture is not None:
                 capture.release()
 
