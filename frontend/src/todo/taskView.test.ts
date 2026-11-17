@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { bucketOf, dueLabel, groupByBucket, homeSummary, isoDay } from './taskView'
+import { bucketOf, dueLabel, groupByBucket, homeSummary, isoDay, matchPersonByName } from './taskView'
 import type { TaskItem } from './types'
 
 const today = new Date(2026, 10, 9, 9, 0) // Mon 9 Nov 2026, local
@@ -59,6 +59,16 @@ describe('taskView', () => {
       today,
     )
     expect(groups.get('done')!.map((t) => t.id)).toEqual(['monday', 'friday', 'older', 'edge'])
+  })
+
+  it('matches a category to a person by full or first name', () => {
+    const people = [{ name: 'Travis Wilson' }, { name: 'Sarah Shapro' }]
+    const nameOf = (p: { name: string }) => p.name
+    expect(matchPersonByName('Travis', people, nameOf)?.name).toBe('Travis Wilson')
+    expect(matchPersonByName(' sarah shapro ', people, nameOf)?.name).toBe('Sarah Shapro')
+    expect(matchPersonByName('Life Admin', people, nameOf)).toBeUndefined()
+    expect(matchPersonByName('Wilson', people, nameOf)).toBeUndefined()
+    expect(matchPersonByName(null, people, nameOf)).toBeUndefined()
   })
 
   it('home summary lists open dated tasks: overdue, today, then upcoming', () => {

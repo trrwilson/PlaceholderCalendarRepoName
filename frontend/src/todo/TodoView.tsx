@@ -5,8 +5,8 @@ import type { TaskItem, TaskList, TaskSnapshot } from './types'
 
 const REDACTED = '•••'
 
-/** Resolves a list's owner to a person (name + palette colour class). */
-export type OwnerLookup = (ownerId: string) => { name: string; colorClass: string } | null
+/** Who a task is for: a category naming a household member wins over the list owner. */
+export type OwnerLookup = (ownerId: string, categoryName?: string | null) => { name: string; colorClass: string } | null
 
 interface RowProps {
   task: TaskItem
@@ -18,7 +18,7 @@ interface RowProps {
 }
 
 function TaskRow({ task, list, owner, today, redacted, onSelect }: RowProps) {
-  const person = list ? owner(list.owner_id) : null
+  const person = list ? owner(list.owner_id, task.category?.name) : null
   const due = dueLabel(task.due_on, today)
   const done = bucketOf(task, today) === 'done'
   const overdue = bucketOf(task, today) === 'overdue'
@@ -87,7 +87,7 @@ export function TodoView({ snapshot, owner, now, redacted }: ViewProps) {
         <div className="detail-scrim" onClick={() => setSelected(null)} onKeyDown={(e) => e.key === 'Escape' && setSelected(null)} role="presentation">
           <section className="detail-sheet task-detail" role="dialog" aria-label={selected.title} onClick={(e) => e.stopPropagation()}>
             <button className="close-detail" aria-label="Close" onClick={() => setSelected(null)}>×</button>
-            <span className={`detail-bar ${lists.get(selected.list_id) ? owner(lists.get(selected.list_id)!.owner_id)?.colorClass ?? '' : ''}`} />
+            <span className={`detail-bar ${lists.get(selected.list_id) ? owner(lists.get(selected.list_id)!.owner_id, selected.category?.name)?.colorClass ?? '' : ''}`} />
             <h2>{selected.title}</h2>
             <p className="detail-time">{dueLabel(selected.due_on, now) ?? 'No due date'} · {lists.get(selected.list_id)?.name}</p>
             {selected.checklist_total > 0 && <p className="detail-location">{selected.checklist_done} of {selected.checklist_total} steps done</p>}

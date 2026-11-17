@@ -16,7 +16,7 @@ import { TimerView } from './timers/TimerView'
 import { useTimers } from './timers/useTimers'
 import { ListsView } from './lists/ListsView'
 import { useLists } from './lists/useLists'
-import { homeSummary } from './todo/taskView'
+import { homeSummary, matchPersonByName } from './todo/taskView'
 import { TodoSummary, TodoView, type OwnerLookup } from './todo/TodoView'
 import { useTasks } from './todo/useTasks'
 import type { ListItem } from './lists/types'
@@ -458,9 +458,13 @@ function App() {
   })
   const calendarById = new Map(calendars.map((calendar) => [calendar.id, calendar]))
   // To Do (docs/todo-integration-plan.md): a task takes its owner's person colour,
-  // i.e. the same (viewer-remapped) palette entry as that member's calendar.
-  const taskOwner: OwnerLookup = (ownerId) => {
-    const calendar = calendarById.get(ownerId)
+  // i.e. the same (viewer-remapped) palette entry as that member's calendar. To Do has
+  // no assignee field, so a category naming a member ("Travis" or "Travis Wilson")
+  // stands in for "assigned to" and takes that member's colour instead.
+  const taskOwner: OwnerLookup = (ownerId, categoryName) => {
+    const people = calendars.filter((calendar) => calendar.is_primary !== false)
+    const named = matchPersonByName(categoryName, people, personName)
+    const calendar = named ?? calendarById.get(ownerId)
     return calendar ? { name: personName(calendar), colorClass: colorClass(calendar.color) } : null
   }
   const todoAvailable = !!tasks && tasks.status !== 'disabled'
