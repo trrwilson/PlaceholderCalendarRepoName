@@ -18,11 +18,13 @@ const snapshot: TaskSnapshot = {
 }
 
 describe('To Do UI', () => {
-  it('Home summary shows due-today tasks only and hides when nothing is due', () => {
+  it('Home tile shows dated tasks and stays up with an empty state when nothing is due', () => {
     const { rerender, container } = render(<TodoSummary snapshot={snapshot} owner={owner} now={now} redacted={false} onOpen={vi.fn()} />)
     expect(screen.getByText('Call the dentist')).toBeInTheDocument()
     expect(screen.queryByText('Book camp')).toBeNull()
     rerender(<TodoSummary snapshot={{ ...snapshot, tasks: [snapshot.tasks[1]] }} owner={owner} now={now} redacted={false} onOpen={vi.fn()} />)
+    expect(screen.getByText('Nothing due.')).toBeInTheDocument()
+    rerender(<TodoSummary snapshot={{ ...snapshot, status: 'disabled' }} owner={owner} now={now} redacted={false} onOpen={vi.fn()} />)
     expect(container).toBeEmptyDOMElement()
   })
 

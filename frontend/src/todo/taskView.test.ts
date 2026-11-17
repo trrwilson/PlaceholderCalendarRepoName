@@ -61,7 +61,7 @@ describe('taskView', () => {
     expect(groups.get('done')!.map((t) => t.id)).toEqual(['monday', 'friday', 'older', 'edge'])
   })
 
-  it('home summary keeps only overdue and due-today open tasks, overdue first', () => {
+  it('home summary lists open dated tasks: overdue, today, then upcoming', () => {
     const summary = homeSummary(
       [
         task('later', { due_on: '2026-11-12' }),
@@ -73,6 +73,6 @@ describe('taskView', () => {
       ],
       today,
     )
-    expect(summary.map((t) => t.id)).toEqual(['late', 'urgent', 'today'])
+    expect(summary.map((t) => t.id)).toEqual(['late', 'urgent', 'today', 'later'])
   })
 })

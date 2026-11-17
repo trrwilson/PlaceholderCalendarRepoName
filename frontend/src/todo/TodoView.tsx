@@ -104,22 +104,23 @@ interface SummaryProps extends ViewProps {
   maxRows?: number
 }
 
-/** Home's NOW/NEXT card: overdue + due today only. Renders nothing when empty. */
-export function TodoSummary({ snapshot, owner, now, redacted, onOpen, maxRows = 3 }: SummaryProps) {
+/** Home's full-height To Do tile: overdue and due today first, then upcoming. */
+export function TodoSummary({ snapshot, owner, now, redacted, onOpen, maxRows = 8 }: SummaryProps) {
   if (!snapshot || snapshot.status === 'disabled') return null
-  const due = homeSummary(snapshot.tasks, now)
-  if (!due.length) return null
+  const rows = homeSummary(snapshot.tasks, now)
   const lists = new Map(snapshot.lists.map((list) => [list.id, list]))
-  const shown = due.slice(0, maxRows)
-  const more = due.length - shown.length
+  const shown = rows.slice(0, maxRows)
+  const more = rows.length - shown.length
   return (
     <section className="todo-summary">
-      <div className="view-heading"><p className="section-kicker">To Do</p></div>
-      <div className="todo-rows">
-        {shown.map((task) => (
-          <TaskRow key={`${task.list_id}:${task.id}`} task={task} list={lists.get(task.list_id)} owner={owner} today={now} redacted={redacted} onSelect={() => onOpen()} />
-        ))}
-      </div>
+      <div className="view-heading"><p className="section-kicker">To Do</p>{snapshot.status === 'needs_sign_in' && <span className="todo-health">Sign in again</span>}</div>
+      {shown.length ? (
+        <div className="todo-rows">
+          {shown.map((task) => (
+            <TaskRow key={`${task.list_id}:${task.id}`} task={task} list={lists.get(task.list_id)} owner={owner} today={now} redacted={redacted} onSelect={() => onOpen()} />
+          ))}
+        </div>
+      ) : <p className="todo-empty">Nothing due.</p>}
       {more > 0 && <button className="day-more todo-more" onClick={onOpen}>+{more} more</button>}
     </section>
   )

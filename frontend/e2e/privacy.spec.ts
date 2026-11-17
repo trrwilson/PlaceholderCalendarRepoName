@@ -28,6 +28,15 @@ test('privacy mode redacts the specifics, keeps the shape, and unlocks with the 
   await page.route('**/api/calendar**', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify(calendar) }),
   )
+  // Keep the Today schedule on Home regardless of the dev backend's To Do flag: the
+  // live socket pushes current tasks on connect, so hold it silent too.
+  await page.routeWebSocket('**/api/ws', () => {})
+  await page.route('**/api/tasks', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ status: 'disabled', lists: [], tasks: [], synced_at: null }),
+    }),
+  )
   await page.route('**/api/privacy', (route) =>
     route.fulfill({
       contentType: 'application/json',

@@ -61,11 +61,12 @@ const assertNoOverflow = async (page: import('@playwright/test').Page) => {
   expect(overflow.vertical).toBe(0)
 }
 
-test('Home shows only overdue and due-today tasks, and To Do mode groups the rest', async ({ page }) => {
+test('Home To Do tile replaces the Today schedule, and To Do mode groups the rest', async ({ page }) => {
   await page.setViewportSize({ width: 1920, height: 1080 })
   await page.goto('/')
 
   const summary = page.locator('.todo-summary')
+  await expect(page.locator('.today-schedule')).toHaveCount(0)
   await expect(summary.getByText('Renew car registration')).toBeVisible()
   await expect(summary.getByText('Call the dentist')).toBeVisible()
   await expect(summary.getByText('Book summer camp')).toHaveCount(0)
