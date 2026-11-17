@@ -67,6 +67,7 @@ test('Home To Do tile replaces the Today schedule, and To Do mode groups the res
 
   const summary = page.locator('.todo-summary')
   await expect(page.locator('.today-schedule')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Photos' })).toBeVisible()
   await expect(summary.getByText('Renew car registration')).toBeVisible()
   await expect(summary.getByText('Call the dentist')).toBeVisible()
   await expect(summary.getByText('Book summer camp')).toHaveCount(0)
