@@ -960,6 +960,7 @@ function HomeView({ now, todayEvents, todaySpans, events, stripLoadedRange, onEx
   // With To Do on, its tile replaces the Today schedule: the day strip below already
   // carries today's events, so the schedule was a second copy of the same fact.
   return <div className="home-view"><div className={`home-grid${todo ? ' has-todo' : ''}`}>
+    {todo && <section className="photos-placeholder" aria-label="Photos"><p className="section-kicker">Photos</p><p className="photos-placeholder-note">Coming soon</p></section>}
     {todo ? todo : <section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><HolidayNote date={now} className="holiday-note-home" /></div></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section>}
     <NotesPane apiBaseUrl={apiBaseUrl} redacting={redacting} />
     <DayStrip now={now} events={events} loadedRange={stripLoadedRange} onExpandRange={onExpandStripRange} calendarById={calendarById} onSelect={onSelect} colorMode={colorMode} onOpenDay={setOpenDay} />

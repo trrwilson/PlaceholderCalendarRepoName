@@ -644,11 +644,15 @@ button.header-period-picker:hover, button.header-period-picker[aria-expanded='tr
    part of the calendar views. Rows reuse the person palette (`.calendar-<name>`)
    and the data-driven `--category-color` marker. */
 /* With To Do on, its tile takes the Today schedule's slot: the left third of that
-   column at full height, Notes widening into the rest. Same overall split as the
-   default grid (1.7fr : .8fr), so the day strip and camera card keep their sizes. */
+   column at full height, with a Photos placeholder (a future feature) in the other
+   two thirds. Same overall split as the default grid (1.7fr : .8fr), so Notes, the
+   day strip, and the camera card keep their sizes and places. */
 .home-grid.has-todo { grid-template-columns: minmax(0, .567fr) minmax(0, 1.133fr) minmax(340px, .8fr); }
 .home-grid.has-todo > .todo-summary { grid-column: 1; grid-row: 1; }
-.home-grid.has-todo > .notes-pane { grid-column: 2 / 4; }
+.home-grid.has-todo > .photos-placeholder { grid-column: 2; grid-row: 1; }
+.home-grid.has-todo > .notes-pane { grid-column: 3; }
+.photos-placeholder { display: grid; grid-template-rows: max-content minmax(0, 1fr); min-height: 0; padding: clamp(14px, 1vw, 34px); border: 2px dashed var(--line); border-radius: 16px; }
+.photos-placeholder-note { place-self: center; margin: 0; color: var(--muted); font-size: clamp(14px, .85vw, 29px); font-weight: 600; }
 .home-grid.has-todo > .day-strip { grid-column: 1 / 3; }
 .home-grid.has-todo > .camera-review, .home-grid.has-todo > .exception-card { grid-column: 3; }
 .todo-summary .todo-rows { overflow: hidden; }
