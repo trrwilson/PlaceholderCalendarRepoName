@@ -67,6 +67,16 @@ export function groupByBucket(tasks: TaskItem[], today: Date): Map<DueBucket, Ta
   return groups
 }
 
+/** The person a label names, by full name or first name, case-insensitive. */
+export function matchPersonByName<T>(label: string | null | undefined, people: T[], nameOf: (person: T) => string): T | undefined {
+  const wanted = label?.trim().toLowerCase()
+  if (!wanted) return undefined
+  return people.find((person) => {
+    const name = nameOf(person).trim().toLowerCase()
+    return name === wanted || name.split(/\s+/)[0] === wanted
+  })
+}
+
 const HOME_RANK: Partial<Record<DueBucket, number>> = { overdue: 0, today: 1, upcoming: 2 }
 
 /** Home tile: open dated tasks — overdue, then today, then upcoming by date. */
