@@ -67,17 +67,17 @@ export function groupByBucket(tasks: TaskItem[], today: Date): Map<DueBucket, Ta
   return groups
 }
 
-/** NOW/NEXT for Home: open tasks overdue or due today, most urgent first. */
+const HOME_RANK: Partial<Record<DueBucket, number>> = { overdue: 0, today: 1, upcoming: 2 }
+
+/** Home tile: open dated tasks — overdue, then today, then upcoming by date. */
 export function homeSummary(tasks: TaskItem[], today: Date): TaskItem[] {
-  const rank = (task: TaskItem) => (bucketOf(task, today) === 'overdue' ? 0 : 1)
+  const rank = (task: TaskItem) => HOME_RANK[bucketOf(task, today)] ?? 9
   return tasks
-    .filter((task) => {
-      const bucket = bucketOf(task, today)
-      return bucket === 'overdue' || bucket === 'today'
-    })
+    .filter((task) => rank(task) < 9)
     .sort(
       (a, b) =>
         rank(a) - rank(b) ||
+        (rank(a) === 2 ? a.due_on!.localeCompare(b.due_on!) : 0) ||
         Number(b.importance === 'high') - Number(a.importance === 'high') ||
         a.title.localeCompare(b.title),
     )
