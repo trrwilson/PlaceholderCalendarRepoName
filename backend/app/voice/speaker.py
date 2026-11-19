@@ -189,10 +189,10 @@ def _ulaw_table() -> bytes:
     seg_uend = (0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF, 0x1FFF)
     out = bytearray(65536)
     for u in range(65536):
-        s = u - 65536 if u >= 32768 else u          # uint16 -> int16
-        x = s >> 2                                   # 16-bit -> 14-bit
+        s = u - 65536 if u >= 32768 else u  # uint16 -> int16
+        x = s >> 2  # 16-bit -> 14-bit
         mask = 0x7F if x < 0 else 0xFF
-        x = min(abs(x), 32635) + (0x84 >> 2)         # CLIP + (BIAS >> 2)
+        x = min(abs(x), 32635) + (0x84 >> 2)  # CLIP + (BIAS >> 2)
         seg = next((i for i, e in enumerate(seg_uend) if x <= e), 8)
         if seg >= 8:
             out[u] = (0x7F ^ mask) & 0xFF

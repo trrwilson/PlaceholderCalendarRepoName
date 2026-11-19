@@ -299,3 +299,13 @@ When processing a backlog:
 5. Continue processing other issues when one legitimately requires reporter input.
 
 The goal is a backlog where `ready` means the **user need is understood**, not that someone has already designed the solution.
+
+# Kiosk evaluation handoff
+
+This step belongs to the later implementation stage, not refinement, but it closes the loop on the same issue.
+
+When a candidate change for an issue is deployed to the household kiosk (`sartra-server`) for hands-on evaluation:
+
+1. Reply on the issue, with the attribution header above, saying it is ready for evaluation: what is deployed (branch/PR), what to try, and any setup the household must do first (e.g. signing in again).
+2. Add the `kiosk-eval` label.
+3. Check back on the issue thread regularly (roughly every 30 minutes while the session is alive) for an evaluator's confirmation or feedback. Act on feedback; on confirmation, remove `kiosk-eval` and report back on the PR.

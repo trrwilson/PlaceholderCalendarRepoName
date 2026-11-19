@@ -338,7 +338,11 @@ def test_hidden_calendar_names_are_excluded_entirely() -> None:
                 "value": [
                     {"id": "cal-holidays", "name": "US Holidays", "isDefaultCalendar": False},
                     {"id": "cal-family", "name": "Your family", "isDefaultCalendar": False},
-                    {"id": "cal-birthdays", "name": "Birthday calendar", "isDefaultCalendar": False},
+                    {
+                        "id": "cal-birthdays",
+                        "name": "Birthday calendar",
+                        "isDefaultCalendar": False,
+                    },
                 ]
             },
         )

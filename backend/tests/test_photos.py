@@ -316,7 +316,7 @@ def test_api_rejects_remote_clients(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_sign_in_requests_files_read_only_when_photos_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.calendar.personal_auth import sign_in_scopes
+    from app.calendar.outlook_personal import sign_in_scopes
 
     get_settings.cache_clear()
     assert "Files.Read" not in sign_in_scopes(get_settings())

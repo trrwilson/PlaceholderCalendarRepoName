@@ -15,7 +15,7 @@ import time
 import segno
 
 import app.calendar.outlook_personal as outlook_personal
-from app.calendar.outlook_personal import GRAPH_SCOPES, save_cache, shared_msal_app
+from app.calendar.outlook_personal import save_cache, shared_msal_app, sign_in_scopes
 from app.config import Settings
 from app.models import CalendarAuthStatus
 
@@ -23,17 +23,6 @@ _lock = threading.Lock()
 _pending: dict | None = None
 _thread: threading.Thread | None = None
 _flow_error: str | None = None
-
-
-def sign_in_scopes(settings: Settings) -> list[str]:
-    """Scopes a kiosk/CLI sign-in requests. The photo stream adds delegated
-    ``Files.Read`` (read the signed-in account's own OneDrive) only while it is
-    enabled, so a calendar-only install never asks for file access
-    (docs/photo-stream-plan.md)."""
-    scopes = list(GRAPH_SCOPES)
-    if settings.photos_enabled:
-        scopes.append("Files.Read")
-    return scopes
 
 
 def _qr_data_uri(text: str) -> str:

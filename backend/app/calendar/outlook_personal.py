@@ -48,6 +48,23 @@ from app.models import (
 )
 
 GRAPH_SCOPES = ["Calendars.Read"]
+
+
+def sign_in_scopes(settings: Settings) -> list[str]:
+    """Scopes a device-code sign-in asks consent for: the calendar always, plus
+    ``Tasks.Read`` when the To Do feature reads Graph and ``Files.Read`` (the
+    account's own OneDrive) while the photo stream is enabled
+    (docs/photo-stream-plan.md). Token *acquisition* stays per feature, so a
+    member who never consented to tasks or files keeps a working calendar.
+    """
+    scopes = list(GRAPH_SCOPES)
+    if settings.todo_enabled and settings.todo_provider == "graph":
+        scopes.append("Tasks.Read")
+    if settings.photos_enabled:
+        scopes.append("Files.Read")
+    return scopes
+
+
 SIGN_IN_HINT = "sign in from the kiosk or run `python -m app.auth login`"
 
 # "Microsoft Graph Command Line Tools" — Microsoft's own first-party public
@@ -398,6 +415,7 @@ class PersonalOutlookCalendarProvider:
 
 __all__ = [
     "GRAPH_SCOPES",
+    "sign_in_scopes",
     "PersonalOutlookCalendarProvider",
     "load_msal_app",
     "save_cache",

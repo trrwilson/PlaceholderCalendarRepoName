@@ -90,6 +90,14 @@ socket import), `_require_local`-gated, and `_require_unlocked`-gated on every m
   - Redaction is a render choice on the frontend, not a data change — unlock is
     instant. A blank `MISSION_CONTROL_PRIVACY_MODE_PIN` disables the whole feature.
 
+## To Do tasks (`app/todo/`)
+
+Read-only Microsoft To Do, feature-flagged (`todo_enabled`), never part of
+`CalendarSnapshot`. Delegated only: it reuses the personal-Outlook MSAL cache, but
+acquires its own `Tasks.Read` token. A missing tasks consent must never touch the
+calendar's `auth_error`. Delta links are a cache, not a checkpoint: on 410,
+re-baseline that list. Design and open gaps: `docs/todo-integration-plan.md`.
+
 ## Restarting during development
 
 After a backend change, use `scripts/restart-dev.ps1` (repo root) rather than

@@ -63,6 +63,12 @@ async def lifespan(_app: FastAPI):
         from app.photos import start_photo_service
 
         start_photo_service()
+    # To Do tasks: feature-flagged background delta sync, isolated from the
+    # calendar (docs/todo-integration-plan.md).
+    if get_settings().todo_enabled:
+        from app.todo import start_todo_service
+
+        start_todo_service()
     try:
         yield
     finally:
@@ -83,6 +89,10 @@ async def lifespan(_app: FastAPI):
             from app.photos import stop_photo_service
 
             await stop_photo_service()
+        if get_settings().todo_enabled:
+            from app.todo import stop_todo_service
+
+            await stop_todo_service()
 
 
 app = FastAPI(title="Mission Control API", version="0.1.0", lifespan=lifespan)

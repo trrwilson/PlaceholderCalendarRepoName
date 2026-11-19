@@ -45,6 +45,7 @@ def is_wake_surface(surface: str | None) -> bool:
     """True when ``surface`` marks a keyword-activated turn (see :data:`WAKE_SURFACES`)."""
     return surface in WAKE_SURFACES
 
+
 # Friendly names for the Settings picker and diagnostics. Keyed by every known
 # provider id (implemented or not) so the UI can label a contestant that is not
 # wired up yet.
