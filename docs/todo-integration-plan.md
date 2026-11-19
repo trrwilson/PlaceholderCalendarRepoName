@@ -450,8 +450,7 @@ AGENTS.md lists voice writes as narrow and deliberate. Not proposed.
   on change. No mutating endpoint exists, so `_require_unlocked` is not needed yet.
 - Frontend: `useTasks`, `TodoView` (To Do mode: Overdue / Today / Upcoming / No date
   / Done columns sized to content, plus a read-only detail sheet), and `TodoSummary`
-  (Home card above Notes, overdue + due today, at most 3 rows then "+N more", hidden
-  when empty). A To Do dock button with a due-count badge appears only when the
+  (Home tile; see "Kiosk evaluation" below). A To Do dock button with a due-count badge appears only when the
   feature is on. Privacy mode redacts titles, list names and categories.
 - Tests: `backend/tests/test_todo.py` (mapping, pagination, incremental, 410,
   429, flagged/hidden lists, shared-list dedupe, consent loss, calendar-auth
@@ -476,8 +475,32 @@ AGENTS.md lists voice writes as narrow and deliberate. Not proposed.
 5. **Delta round per list each pass.** Fine at household scale (§2.1 budget). No
    parallelism, by design (4-concurrent limit).
 6. **Due dates follow the UTC-midnight rule in §2.1**, which is unverified.
-7. **The Home card is placed above Notes** in the right column. This is a layout
-   choice that needs review (open question 4).
+7. ~~Home card placement~~: settled by household feedback, see below.
 8. **No per-list enable toggle** in the People flyout or Settings. Lists are filtered
    only by the env-var hidden names.
 9. **No voice tool** (`get_tasks`) yet (§3.4).
+
+**Kiosk evaluation (2026-11-16 to 11-18, issue #5):**
+
+Ran on the kiosk with `todo_provider=graph`. One member (sshapro@live.com) re-consented;
+`Tasks.Read` consent on the default client **worked** for that account. The second
+account was not re-consented, so `validate_todo_graph.py` was not run and the other
+[verify] items stay open.
+
+- **Fixed:** one unconsented account counted every pass as a failure, so healthy
+  accounts refreshed on the backoff schedule (up to 10 min). Backoff now applies only
+  when every account fails.
+- **Observed:** live `completedDateTime` values all land on 16:00 local (UTC midnight),
+  so completion is effectively day-granular. Done shows the last 7 days
+  (`DONE_WINDOW_DAYS`), newest first by day; same-day order is arbitrary.
+- **Layout (household request):** with To Do on, Home's Today schedule is removed (the
+  day strip already carries today's events). To Do takes the left third of that slot
+  at full height (overdue, today, then upcoming by date; "Nothing due." when empty),
+  a "Photos" placeholder takes the middle two thirds, and Notes keeps its original
+  slot. With To Do off, Home is unchanged.
+- **Assignee colour (household request):** To Do exposes no assignee, so a category
+  naming a household member (full or first name) colours the task as that member's;
+  otherwise the list owner's colour. Live data is sparse: one open task had any
+  category. [verify] that no assignee field exists, with a second account.
+- **Still open:** run `validate_todo_graph.py` (and `--resume` a day later for the 410
+  lifetime) once both accounts have consented.
