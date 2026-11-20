@@ -19,6 +19,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
+from time import sleep
 from typing import Any
 
 import httpx
@@ -52,12 +53,17 @@ GRAPH_SCOPES = ["Calendars.Read"]
 
 def sign_in_scopes(settings: Settings) -> list[str]:
     """Scopes a device-code sign-in asks consent for: the calendar always, plus
-    ``Tasks.Read`` when the To Do feature reads Graph. Token *acquisition* stays
-    per feature, so a member who never consented to tasks keeps a working calendar.
+    ``Tasks.Read`` when the To Do feature reads Graph and ``Files.Read`` (the
+    account's own OneDrive) while the photo stream is enabled
+    (docs/photo-stream-plan.md). Token *acquisition* stays per feature, so a
+    member who never consented to tasks or files keeps a working calendar.
     """
+    scopes = list(GRAPH_SCOPES)
     if settings.todo_enabled and settings.todo_provider == "graph":
-        return [*GRAPH_SCOPES, "Tasks.Read"]
-    return list(GRAPH_SCOPES)
+        scopes.append("Tasks.Read")
+    if settings.photos_enabled:
+        scopes.append("Files.Read")
+    return scopes
 
 
 SIGN_IN_HINT = "sign in from the kiosk or run `python -m app.auth login`"
@@ -102,6 +108,9 @@ _shared_lock = threading.Lock()
 # client_id -> [app, cache, path, cache_mtime]
 _shared: dict[str, list[Any]] = {}
 _written: dict[str, str] = {}
+# Serialises cache writes: the calendar poll, kiosk sign-in and photo sync all
+# save from their own threads, and two writers sharing one .tmp file collide.
+_save_lock = threading.Lock()
 
 
 def shared_msal_app(
@@ -131,14 +140,24 @@ def shared_msal_app(
 
 def save_cache(cache: msal.SerializableTokenCache, path: Path) -> None:
     """Persist the token cache atomically, only when its contents changed."""
-    data = cache.serialize()
-    if _written.get(str(path)) == data:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(data, encoding="utf-8")
-    tmp.replace(path)
-    _written[str(path)] = data
+    with _save_lock:
+        data = cache.serialize()
+        if _written.get(str(path)) == data:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(data, encoding="utf-8")
+        # Windows refuses the rename while another process (a second checkout's
+        # backend, a CLI run, a scanner) has the file open; that clears quickly.
+        for attempt in range(5):
+            try:
+                tmp.replace(path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                sleep(0.05 * (attempt + 1))
+        _written[str(path)] = data
     _touch_shared_mtime(path)
 
 
