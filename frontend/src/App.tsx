@@ -49,7 +49,7 @@ type ConnectionState = 'connecting' | 'live' | 'offline'
 type ViewMode = 'home' | 'week' | 'month' | 'timer' | 'lists' | 'todo'
 type SemanticColorMode = 'category-first' | 'people-first'
 type CalendarAuthState = 'connected' | 'connecting' | 'disconnected' | 'not_applicable'
-type CalendarAuth = { provider: string; state: CalendarAuthState; account: string | null; accounts?: string[]; user_code: string | null; verification_uri: string | null; verification_uri_complete: string | null; verification_qr: string | null; expires_in: number | null; error: string | null }
+type CalendarAuth = { provider: string; state: CalendarAuthState; account: string | null; accounts?: string[]; user_code: string | null; verification_uri: string | null; verification_uri_complete: string | null; verification_qr: string | null; expires_in: number | null; error: string | null; last_sign_in_at?: string | null }
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -213,6 +213,10 @@ function App() {
   const settingsRef = useRef<HTMLDivElement>(null)
   const monthPickerRef = useRef<HTMLDivElement>(null)
   const linkedAccountsRef = useRef(0)
+  // last_sign_in_at as seen while the add flow showed its code (undefined until
+  // then): re-consenting an already-linked account (e.g. to grant photos)
+  // finishes without the account count growing, so this marks completion.
+  const signInMarkRef = useRef<string | null | undefined>(undefined)
   const hadActiveTimerRef = useRef(false)
 
   const authNeedsSetup = auth != null && auth.state !== 'connected' && auth.state !== 'not_applicable'
@@ -229,20 +233,22 @@ function App() {
   }, [auth?.state])
 
   useEffect(() => {
+    if (addingCalendar && auth?.state === 'connecting') signInMarkRef.current = auth.last_sign_in_at ?? null
     if (auth?.state !== 'connected') return
     const linked = auth.accounts?.length ?? (auth.account ? 1 : 0)
     const gainedAccount = linked > linkedAccountsRef.current
     linkedAccountsRef.current = linked
+    const completedSignIn = signInMarkRef.current !== undefined && !!auth.last_sign_in_at && auth.last_sign_in_at !== signInMarkRef.current
     // A bare "connected" while a sign-in is in flight (an expired code, a stray
     // poll) must not tear down the QR — only close once the new calendar is
-    // actually linked, or when this was the first sign-in.
-    if (addingCalendar && !gainedAccount) return
+    // actually linked or a sign-in completed, or when this was the first sign-in.
+    if (addingCalendar && !gainedAccount && !completedSignIn) return
     setConnectOpen((open) => {
       if (open || gainedAccount) setReloadKey((key) => key + 1)
       return false
     })
     setAddingCalendar(false)
-  }, [auth?.state, auth?.accounts?.length, auth?.account, addingCalendar])
+  }, [auth?.state, auth?.accounts?.length, auth?.account, auth?.last_sign_in_at, addingCalendar])
 
   function beginConnect() {
     setConnectOpen(true)
@@ -253,6 +259,7 @@ function App() {
   }
 
   function addCalendar() {
+    signInMarkRef.current = undefined
     setAddingCalendar(true)
     setSettingsOpen(false)
     beginConnect()

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime
 
 import segno
 
@@ -23,6 +24,7 @@ _lock = threading.Lock()
 _pending: dict | None = None
 _thread: threading.Thread | None = None
 _flow_error: str | None = None
+_last_sign_in_at: datetime | None = None
 
 
 def _qr_data_uri(text: str) -> str:
@@ -30,6 +32,13 @@ def _qr_data_uri(text: str) -> str:
 
 
 def _status(settings: Settings) -> CalendarAuthStatus:
+    status = _base_status(settings)
+    with _lock:
+        completed = _last_sign_in_at
+    return status.model_copy(update={"last_sign_in_at": completed}) if completed else status
+
+
+def _base_status(settings: Settings) -> CalendarAuthStatus:
     provider = settings.calendar_provider
     try:
         app, _cache, _path = shared_msal_app(settings)
@@ -122,13 +131,20 @@ def begin_sign_in(settings: Settings) -> CalendarAuthStatus:
 
 
 def _complete(cache, path, app, flow: dict) -> None:
-    global _pending, _flow_error
+    global _pending, _flow_error, _last_sign_in_at
     try:
         result = app.acquire_token_by_device_flow(flow)
         if "access_token" in result:
             save_cache(cache, path)
             outlook_personal.auth_error = None
             _flow_error = None
+            with _lock:
+                _last_sign_in_at = datetime.now()
+            # A sign-in may have just granted the photo stream's Files.Read;
+            # don't leave it waiting out a needs-sign-in backoff.
+            from app.photos import request_sync_threadsafe
+
+            request_sync_threadsafe()
         else:
             _flow_error = result.get("error_description") or "sign-in did not complete"
     except Exception as exc:  # noqa: BLE001 - report any failure back through status
@@ -195,11 +211,12 @@ def run_device_flow_blocking(settings: Settings, on_prompt) -> CalendarAuthStatu
 
 
 def _reset_for_tests() -> None:
-    global _pending, _thread, _flow_error
+    global _pending, _thread, _flow_error, _last_sign_in_at
     with _lock:
         _pending = None
         _thread = None
         _flow_error = None
+        _last_sign_in_at = None
     outlook_personal.auth_error = None
     outlook_personal._shared.clear()
     outlook_personal._written.clear()

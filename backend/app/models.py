@@ -963,4 +963,8 @@ class CalendarAuthStatus(BaseModel):
     verification_uri_complete: str | None = None
     verification_qr: str | None = None  # data: URI for an SVG QR code
     expires_in: int | None = None
+    # When the last kiosk device-code sign-in completed. Re-consenting an account
+    # that is already linked (e.g. to add Files.Read) doesn't change ``accounts``,
+    # so the kiosk watches this to know the sign-in finished.
+    last_sign_in_at: datetime | None = None
     error: str | None = None

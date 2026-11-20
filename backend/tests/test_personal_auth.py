@@ -183,6 +183,39 @@ def test_complete_persists_token_and_clears_error(tmp_path):
     assert outlook_personal.auth_error is None
 
 
+def test_complete_records_sign_in_time_and_wakes_photos(tmp_path, monkeypatch):
+    # Re-consenting an already-linked account leaves `accounts` unchanged, so the
+    # kiosk relies on last_sign_in_at to close its sheet; the photo stream is
+    # woken so a fresh Files.Read grant isn't stuck behind a backoff.
+    woken = []
+    monkeypatch.setattr("app.photos.request_sync_threadsafe", lambda: woken.append(True))
+    settings = make_settings(tmp_path)
+    assert personal_auth.get_status(settings).last_sign_in_at is None
+
+    class FakeApp:
+        def acquire_token_by_device_flow(self, flow):
+            return {"access_token": "tok"}
+
+    personal_auth._complete(msal.SerializableTokenCache(), tmp_path / "c.json", FakeApp(), {})
+
+    assert personal_auth.get_status(settings).last_sign_in_at is not None
+    assert woken == [True]
+
+
+def test_failed_sign_in_records_no_completion(tmp_path, monkeypatch):
+    woken = []
+    monkeypatch.setattr("app.photos.request_sync_threadsafe", lambda: woken.append(True))
+
+    class FakeApp:
+        def acquire_token_by_device_flow(self, flow):
+            return {"error_description": "code expired"}
+
+    personal_auth._complete(msal.SerializableTokenCache(), tmp_path / "c.json", FakeApp(), {})
+
+    assert personal_auth.get_status(make_settings(tmp_path)).last_sign_in_at is None
+    assert woken == []
+
+
 def test_cancel_and_sign_out(client, monkeypatch):
     fake_flow = {
         "user_code": "C-ODE",

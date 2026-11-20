@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 _service: PhotoStreamService | None = None
 _task: asyncio.Task[None] | None = None
+_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _token_provider():
@@ -76,11 +77,21 @@ def get_photo_service() -> PhotoStreamService | None:
 
 
 def start_photo_service() -> None:
-    global _task
+    global _task, _loop
     service = get_photo_service()
     if service is None or _task is not None:
         return
+    _loop = asyncio.get_running_loop()
     _task = asyncio.create_task(service.run())
+
+
+def request_sync_threadsafe() -> None:
+    """Wake the sync loop from any thread (e.g. the kiosk sign-in worker once a
+    sign-in completes). A no-op while photos are disabled or not started."""
+    service, loop = _service, _loop
+    if service is None or loop is None or loop.is_closed():
+        return
+    loop.call_soon_threadsafe(service.request_sync)
 
 
 async def stop_photo_service() -> None:
@@ -97,5 +108,5 @@ async def stop_photo_service() -> None:
 
 
 def _reset_for_tests() -> None:
-    global _service, _task
-    _service, _task = None, None
+    global _service, _task, _loop
+    _service, _task, _loop = None, None, None

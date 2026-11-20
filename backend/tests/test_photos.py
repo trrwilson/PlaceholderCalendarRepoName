@@ -324,3 +324,32 @@ def test_sign_in_requests_files_read_only_when_photos_enabled(
     get_settings.cache_clear()
     assert sign_in_scopes(get_settings()) == ["Calendars.Read", "Files.Read"]
     get_settings.cache_clear()
+
+
+def test_request_sync_threadsafe_wakes_the_loop_from_another_thread() -> None:
+    import threading
+
+    import app.photos as photos
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def request_sync(self) -> None:
+            self.calls += 1
+
+    photos.request_sync_threadsafe()  # not started: a silent no-op
+
+    async def scenario() -> int:
+        service = FakeService()
+        photos._service, photos._loop = service, asyncio.get_running_loop()
+        worker = threading.Thread(target=photos.request_sync_threadsafe)
+        worker.start()
+        worker.join()
+        await asyncio.sleep(0)
+        return service.calls
+
+    try:
+        assert asyncio.run(scenario()) == 1
+    finally:
+        photos._reset_for_tests()
