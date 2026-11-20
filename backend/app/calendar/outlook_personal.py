@@ -19,6 +19,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
+from time import sleep
 from typing import Any
 
 import httpx
@@ -107,6 +108,9 @@ _shared_lock = threading.Lock()
 # client_id -> [app, cache, path, cache_mtime]
 _shared: dict[str, list[Any]] = {}
 _written: dict[str, str] = {}
+# Serialises cache writes: the calendar poll, kiosk sign-in and photo sync all
+# save from their own threads, and two writers sharing one .tmp file collide.
+_save_lock = threading.Lock()
 
 
 def shared_msal_app(
@@ -136,14 +140,24 @@ def shared_msal_app(
 
 def save_cache(cache: msal.SerializableTokenCache, path: Path) -> None:
     """Persist the token cache atomically, only when its contents changed."""
-    data = cache.serialize()
-    if _written.get(str(path)) == data:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(data, encoding="utf-8")
-    tmp.replace(path)
-    _written[str(path)] = data
+    with _save_lock:
+        data = cache.serialize()
+        if _written.get(str(path)) == data:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(data, encoding="utf-8")
+        # Windows refuses the rename while another process (a second checkout's
+        # backend, a CLI run, a scanner) has the file open; that clears quickly.
+        for attempt in range(5):
+            try:
+                tmp.replace(path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                sleep(0.05 * (attempt + 1))
+        _written[str(path)] = data
     _touch_shared_mtime(path)
 
 

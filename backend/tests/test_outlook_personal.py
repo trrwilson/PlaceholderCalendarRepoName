@@ -457,3 +457,34 @@ def test_create_event_is_not_supported(tmp_path) -> None:
                 ends_at=datetime(2026, 9, 5, 10, 0),
             )
         )
+
+
+def test_save_cache_is_safe_from_concurrent_threads(tmp_path) -> None:
+    # Calendar poll, kiosk sign-in and photo sync each save from their own thread.
+    import json
+    import threading
+
+    import msal
+
+    from app.calendar.outlook_personal import save_cache
+
+    path = tmp_path / "cache.json"
+    errors: list[BaseException] = []
+
+    def writer(n: int) -> None:
+        cache = msal.SerializableTokenCache()
+        cache.deserialize(json.dumps({"AppMetadata": {f"k{n}": {"n": n}}}))
+        cache.has_state_changed = True
+        try:
+            for _ in range(20):
+                save_cache(cache, path)
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    json.loads(path.read_text(encoding="utf-8"))
