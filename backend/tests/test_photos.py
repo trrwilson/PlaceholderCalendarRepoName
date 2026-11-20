@@ -52,9 +52,11 @@ def _thumb(item_id: str) -> str:
     return f"{GRAPH}/me/drive/items/{item_id}/thumbnails/0/c2560x1440/content"
 
 
-def _list_fields(fields: dict | None = None, status: int = 200) -> None:
-    """Mock the per-photo list-item lookup (place name, owner tags)."""
-    body = {"id": "x", "listItem": {"fields": fields or {}}}
+def _list_fields(
+    fields: dict | None = None, status: int = 200, description: str | None = None
+) -> None:
+    """Mock the per-photo lookup (caption, place name, owner tags)."""
+    body = {"id": "x", "description": description, "listItem": {"fields": fields or {}}}
     respx.get(url__regex=rf"^{GRAPH}/me/drive/items/[^/?]+\?").mock(
         return_value=httpx.Response(status, json=body)
     )
@@ -112,9 +114,11 @@ def test_parse_place_short_and_full() -> None:
 
 
 @respx.mock
-def test_delta_adds_place_and_owner_tags_from_list_fields() -> None:
+def test_delta_adds_caption_place_and_owner_tags_per_item() -> None:
+    # Delta itself never carries `description`; the per-item lookup supplies it.
     _list_fields(
-        {"MediaServiceLocation": "Ireland    Co Dublin    Dublin", "UserAddedTags": "Crumb, Dog"}
+        {"MediaServiceLocation": "Ireland    Co Dublin    Dublin", "UserAddedTags": "Crumb, Dog"},
+        description="Crumb's annual birthday pic!",
     )
     respx.get(DELTA).mock(
         return_value=httpx.Response(200, json={"value": [_photo("a")], "@odata.deltaLink": "d"})
@@ -123,6 +127,7 @@ def test_delta_adds_place_and_owner_tags_from_list_fields() -> None:
         [item] = _source(client).changes(FOLDER, None).upserts
     assert (item.place, item.place_detail) == ("Dublin, Ireland", "Dublin, Co Dublin, Ireland")
     assert item.tags == ["Crumb", "Dog"]
+    assert item.caption == "Crumb's annual birthday pic!"
 
 
 @respx.mock

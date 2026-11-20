@@ -225,23 +225,28 @@ class OneDriveFolderSource:
             return result
 
     def _with_list_fields(self, item: PhotoItem) -> PhotoItem:
-        """Add the resolved place name and owner-added tags. Delta can't expand
-        list items, so this is one extra request per changed photo; best-effort:
-        any failure just leaves the photo without them."""
+        """Add the caption, resolved place name and owner-added tags. Delta never
+        returns ``description`` and can't expand list items, so this is one extra
+        request per changed photo (a caption edit changes the eTag, so it does
+        show up in delta); best-effort: any failure leaves them out."""
         url = f"{GRAPH}/me/drive/items/{quote(item.id)}"
         expand = f"listItem($expand=fields($select={_LIST_FIELDS}))"
         try:
-            response = self._get(url, params={"$select": "id", "$expand": expand})
+            response = self._get(url, params={"$select": "id,description", "$expand": expand})
         except PhotoSourceError as exc:
             logger.info("photo stream: no list fields for %s: %s", item.name, exc)
             return item
         if response.status_code != 200:
             return item
-        fields = (response.json().get("listItem") or {}).get("fields") or {}
+        body = response.json()
+        fields = (body.get("listItem") or {}).get("fields") or {}
         place, place_detail = parse_place(fields.get("MediaServiceLocation"))
         raw_tags = str(fields.get("UserAddedTags") or "").split(",")
         tags = [tag.strip() for tag in raw_tags if tag.strip()]
-        return item.model_copy(update={"place": place, "place_detail": place_detail, "tags": tags})
+        caption = _text(body.get("description")) or item.caption
+        return item.model_copy(
+            update={"caption": caption, "place": place, "place_detail": place_detail, "tags": tags}
+        )
 
     def fetch(self, photo_id: str) -> bytes:
         """The display rendition as JPEG bytes."""

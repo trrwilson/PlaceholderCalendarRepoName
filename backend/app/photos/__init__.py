@@ -75,7 +75,7 @@ def get_photo_service() -> PhotoStreamService | None:
                     "onedrive_folder",
                     settings.photos_account or "",
                     settings.photos_folder_path,
-                    "meta2",
+                    "meta3",
                 )
             ),
             interval_seconds=settings.photos_sync_interval_seconds,
