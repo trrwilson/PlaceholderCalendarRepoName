@@ -18,6 +18,7 @@ you can triage without opening it.
 | [voice-commands.md](voice-commands.md) | What you can say to Mission Control today, what each does, and its limits. Keep current with tool/prompt changes. |
 | [comparative-product-research.md](comparative-product-research.md) | Method + maintained catalogue for "has anyone else shipped this?" passes. |
 | [controls-layout-design.md](controls-layout-design.md) | Design record for the header / dock / settings layout grammar. |
+| [kiosk-integration-testing.md](kiosk-integration-testing.md) | Running a topic branch on sartra-server, and migrating credentials it creates to the main checkout on merge (open migration log). |
 | [credits.md](credits.md) | Source + licence for every bundled media asset and trained model artifact. |
 | [local-stt-evaluation.md](local-stt-evaluation.md) | Evidence behind the local STT engine choice and how to re-benchmark. |
 | [wake-word-model-training.md](wake-word-model-training.md) | Training, licensing, and provenance of the "Mission Control" wake-word model. |
