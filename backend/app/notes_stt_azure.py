@@ -64,6 +64,9 @@ async def run_notes_dictation_relay(client: WebSocket, settings: Settings) -> No
     speech_config = speechsdk.SpeechConfig(
         subscription=settings.azure_speech_api_key, region=settings.azure_speech_region
     )
+    # Azure masks profanity with asterisks by default; notes are the
+    # household's own words, so transcribe them verbatim.
+    speech_config.set_profanity(speechsdk.ProfanityOption.Raw)
     stream_format = speechsdk.audio.AudioStreamFormat(
         samples_per_second=_SAMPLE_RATE, bits_per_sample=16, channels=1
     )

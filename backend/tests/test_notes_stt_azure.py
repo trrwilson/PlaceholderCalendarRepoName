@@ -73,13 +73,27 @@ class _FakeSpeechRecognizer:
         return SimpleNamespace(get=lambda: None)
 
 
+class _FakeSpeechConfig:
+    last: _FakeSpeechConfig | None = None
+
+    def __init__(self, **kw) -> None:
+        self.kw = kw
+        self.profanity = None
+        _FakeSpeechConfig.last = self
+
+    def set_profanity(self, option) -> None:
+        self.profanity = option
+
+
 @pytest.fixture
 def fake_speechsdk(monkeypatch: pytest.MonkeyPatch):
     _FakeSpeechRecognizer.last = None
+    _FakeSpeechConfig.last = None
     speechsdk = types.ModuleType("azure.cognitiveservices.speech")
     speechsdk.ResultReason = SimpleNamespace(RecognizedSpeech="RecognizedSpeech", NoMatch="NoMatch")
     speechsdk.CancellationReason = SimpleNamespace(EndOfStream="EndOfStream", Error="Error")
-    speechsdk.SpeechConfig = lambda **kw: ("speech_config", kw)
+    speechsdk.ProfanityOption = SimpleNamespace(Masked="Masked", Removed="Removed", Raw="Raw")
+    speechsdk.SpeechConfig = _FakeSpeechConfig
     speechsdk.SpeechRecognizer = _FakeSpeechRecognizer
     speechsdk.audio = SimpleNamespace(
         AudioStreamFormat=lambda **kw: ("fmt", kw),
@@ -165,6 +179,8 @@ async def test_relay_forwards_partial_and_final_text(fake_speechsdk) -> None:
     assert push.closed is True
     assert _FakeSpeechRecognizer.last.started is True
     assert _FakeSpeechRecognizer.last.stopped is True
+    # Profanity comes back verbatim, not Azure's default asterisk masking.
+    assert _FakeSpeechConfig.last.profanity == "Raw"
 
 
 async def test_relay_reports_a_real_cancellation_as_error(fake_speechsdk) -> None:
