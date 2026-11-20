@@ -371,20 +371,33 @@ Run by hand on `sartra-server` against the household account, like the other
 
 | Default | Question |
 |---|---|
-| Tile takes the rail's lower slot only when there is no sign-in alert and no camera clips (alert > camera > photos) | Q4 |
+| With To Do on, the tile owns the top-row slot beside To Do (master's Photos placeholder, shown when there are no photos). Without To Do it takes the rail's lower slot only when there is no sign-in alert and no camera clips (alert > camera > photos) | Q4 |
 | Tile is hidden while privacy mode is on; `GET /api/photos` stays readable (like the eufy gallery) | Q2 |
 | Fixed 20 s dwell, 1.2 s fade, both constants/tokens | Q5 |
-| Newest-taken first, undated last; cap keeps the newest; no shuffle | Q6 |
-| Dark plain matte, no blur fill; no captions | Q7, Q9 |
-| Tap on side thirds steps; centre tap does nothing | Q8 |
+| Shuffled play order, reshuffled each pass (never repeating the last photo); new photos scattered in, not appended. The cache cap still keeps the newest-taken | Q6 |
+| Dark plain matte, no blur fill. **Captions (experiment):** owner's OneDrive caption, else short place ("Dublin, Ireland"), else month + year taken, else none. A captioned photo is pushed to a random edge along the axis with letterbox space (any edge when aspects match) and the caption sits opposite on frosted glass (backdrop blur + dark tint + hairline edge), overlapping the photo only when the band is too narrow. Fallbacks are smaller and quieter | Q7, Q9 |
+| Swipe or side-third tap steps; a centre tap opens a Photo details modal (taken/added, place + coordinates, camera + exposure, owner tags, file facts) and pauses the slideshow; privacy mode closes it | Q8 |
 | Videos skipped | Q10 |
 
 **Gaps / not yet done:**
 
-- **Not validated against a live account.** The [verify] items (first-party
-  client consent for `Files.Read`, items moved out of the folder appearing as
-  `deleted` in folder delta, custom thumbnail sizes, HEIC) need
-  `scripts/verify_photo_source.py` run on `sartra-server`.
+- **Partly validated on `sartra-server` (2026-11-19)** against a personal
+  account whose OneDrive has moved to SharePoint storage (`migratedtospo`):
+  - **Confirmed:** `Files.Read` consent works on the default first-party
+    client via the kiosk's Settings → Add calendar flow, and the refresh token
+    lands in the shared cache next to the calendar grant; folder-scoped delta
+    works on that migrated personal drive (full enumeration + deltaLink); the
+    `c2560x1440` rendition comes back as JPEG, including for a WebP original.
+  - **Found:** driveItem delta never returns `description` (captions), with or
+    without `$select`; the per-item lookup fetches it (and the list-item place
+    name, `MediaServiceLocation`, which only SharePoint-backed drives have).
+  - **Still open:** items moved out of the folder appearing as `deleted`; the
+    `c3840x2160` size; HEIC (no HEIC in the folder yet); albums listing.
+- **Photo metadata seen live (74 photos):** caption 14, place name 37, GPS 37,
+  date taken 30, camera/exposure 20–27, owner tags 2. Captions are OneDrive's
+  `description` (= list-item `_ExtendedDescription`), not EXIF/IPTC; only 2
+  files also embed one. List-item `MediaServiceOCR` holds auto-tags such as
+  "People; Group photo", deliberately not shown.
 - **Work/school accounts:** folder delta is personal-only; root delta +
   `parentReference.path` filtering is not implemented.
 - **No sign-in surfacing:** a `needs_sign_in` status is reported by

@@ -182,7 +182,8 @@ function captionStyle(layer: Layer, box: Box): CSSProperties {
   const gap = 'var(--photo-caption-gap)'
   if (side === 'left' || side === 'right') {
     const width = Math.min(box.width * CAPTION_MAX, Math.max(box.width * CAPTION_MIN, band))
-    return { [side]: 0, bottom: 0, width: `calc(${Math.round(width)}px - 2 * ${gap})`, margin: gap }
+    // Hug short captions; the computed width only caps how far a long one runs.
+    return { [side]: 0, bottom: 0, width: 'fit-content', maxWidth: `calc(${Math.round(width)}px - 2 * ${gap})`, margin: gap }
   }
   return { [side]: 0, left: 0, right: 0, margin: `${gap} auto`, maxWidth: `calc(${Math.round(box.width * 0.7)}px - 2 * ${gap})`, width: 'fit-content' }
 }
