@@ -117,7 +117,7 @@ class PhotoStreamService:
         """One delta round. Returns whether the cached set changed. Raises
         only `Throttled` (the loop honours Retry-After); every other source
         failure becomes a status and returns False."""
-        before = {p.id: p.version for p in self._cache.photos()}
+        before = [p.model_dump() for p in self._cache.photos()]
         try:
             self._sync()
         except Throttled:
@@ -132,8 +132,8 @@ class PhotoStreamService:
             self._set_status("error", str(exc) if "folder" in str(exc) else "Photo sync failed")
             self._failures += 1
             return False
-        after = {p.id: p.version for p in self._cache.photos()}
-        return before != after
+        # Metadata-only changes (a caption edit) count too: the kiosk shows them.
+        return before != [p.model_dump() for p in self._cache.photos()]
 
     def _sync(self) -> None:
         state = self._cache.load_state()

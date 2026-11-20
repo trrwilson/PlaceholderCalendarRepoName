@@ -26,8 +26,9 @@ import { useDisplay } from './display/useDisplay'
 import { useActivityPing } from './presence/useActivityPing'
 import { useCameraActivity } from './camera/useCameraActivity'
 import type { StoredClip } from './camera/types'
+import { PhotoDetail } from './photos/PhotoDetail'
 import { PhotoTile } from './photos/PhotoTile'
-import type { PhotoStreamSnapshot } from './photos/types'
+import type { PhotoItem, PhotoStreamSnapshot } from './photos/types'
 import { usePhotoStream } from './photos/usePhotoStream'
 import { NotesPane } from './notes/NotesPane'
 import { useNotesSttConfig } from './notes/useNotesSttConfig'
@@ -976,14 +977,17 @@ function HomeView({ now, todayEvents, todaySpans, events, stripLoadedRange, onEx
   // until there are photos). Without To Do it falls back to the rail's lower
   // slot, only when nothing more actionable wants it (alert > camera > photos).
   const showPhotos = photos.enabled && photos.photos.length > 0 && !redacting
+  // Photo details pause the slideshow; privacy mode closes them with the tile.
+  const [openPhoto, setOpenPhoto] = useState<PhotoItem | null>(null)
   return <div className="home-view"><div className={`home-grid${todo ? ' has-todo' : ''}`}>
-    {todo && showPhotos && <PhotoTile photos={photos.photos} apiBaseUrl={apiBaseUrl} paused={openDay !== null} />}
+    {todo && showPhotos && <PhotoTile photos={photos.photos} apiBaseUrl={apiBaseUrl} paused={openDay !== null || openPhoto !== null} onOpen={setOpenPhoto} />}
     {todo && !showPhotos && <section className="photos-placeholder" aria-label="Photos"><p className="section-kicker">Photos</p><p className="photos-placeholder-note">Coming soon</p></section>}
     {todo ? todo : <section className="today-schedule"><div className="view-heading"><div><p className="section-kicker">Today</p><HolidayNote date={now} className="holiday-note-home" /></div></div>{todaySpans.length > 0 && <div className="today-banners">{todaySpans.map((event) => <SpanBanner event={event} calendar={calendarById.get(event.calendar_id)} now={now} onSelect={onSelect} colorMode={colorMode} key={event.id} />)}</div>}{todayEvents.length ? <div className="large-agenda">{todayEvents.map((event) => <LargeEvent event={event} calendar={calendarById.get(event.calendar_id)} onSelect={onSelect} past={new Date(event.ends_at) < now} colorMode={colorMode} key={event.id} />)}</div> : todaySpans.length ? null : <EmptyState text="A clear rest of the day." />}</section>}
     <NotesPane apiBaseUrl={apiBaseUrl} redacting={redacting} />
     <DayStrip now={now} events={events} loadedRange={stripLoadedRange} onExpandRange={onExpandStripRange} calendarById={calendarById} onSelect={onSelect} colorMode={colorMode} onOpenDay={setOpenDay} />
-    {calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : camera.available && camera.clips.length > 0 ? <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} /> : showPhotos && !todo ? <PhotoTile photos={photos.photos} apiBaseUrl={apiBaseUrl} paused={openDay !== null} /> : null}
+    {calendarAlert ? <section className="exception-card"><span className="exception-mark">!</span><div><p className="section-kicker">Needs attention</p><strong>Calendar sign-in needed</strong><span>{calendarAlert.account ? `Reconnect ${calendarAlert.account}` : 'Connect a household calendar'}</span></div><button onClick={calendarAlert.onConnect}>Connect</button></section> : camera.available && camera.clips.length > 0 ? <CameraGalleryCard camera={camera} redacting={redacting} onSelectClip={onSelectClip} apiBaseUrl={apiBaseUrl} /> : showPhotos && !todo ? <PhotoTile photos={photos.photos} apiBaseUrl={apiBaseUrl} paused={openDay !== null || openPhoto !== null} onOpen={setOpenPhoto} /> : null}
   </div>
+  {openPhoto && showPhotos && <PhotoDetail photo={openPhoto} apiBaseUrl={apiBaseUrl} onClose={() => setOpenPhoto(null)} />}
   {openDay && <DayEventsSheet day={openDay} events={events} calendarById={calendarById} colorMode={colorMode} onSelect={(event) => { setOpenDay(null); onSelect(event) }} onClose={() => setOpenDay(null)} />}
   </div>
 }

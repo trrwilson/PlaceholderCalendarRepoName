@@ -603,6 +603,24 @@ class PhotoItem(BaseModel):
     taken_at: datetime | None = None
     version: str
     bytes: int = 0
+    # Display/detail metadata, all best-effort (absent on many photos).
+    # ``caption`` is the owner's own OneDrive caption; ``place`` a short
+    # "Locality, Country" and ``place_detail`` the full resolved place name.
+    caption: str | None = None
+    place: str | None = None
+    place_detail: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    camera_make: str | None = None
+    camera_model: str | None = None
+    f_number: float | None = None
+    exposure_seconds: float | None = None
+    iso: int | None = None
+    focal_length_mm: float | None = None
+    tags: list[str] = Field(default_factory=list)
+    added_at: datetime | None = None
+    original_type: str | None = None
+    original_bytes: int | None = None
 
 
 PhotoStreamStatus = Literal["disabled", "starting", "ok", "needs_sign_in", "error"]

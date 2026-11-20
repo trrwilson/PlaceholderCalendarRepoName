@@ -52,6 +52,14 @@ def _thumb(item_id: str) -> str:
     return f"{GRAPH}/me/drive/items/{item_id}/thumbnails/0/c2560x1440/content"
 
 
+def _list_fields(fields: dict | None = None, status: int = 200) -> None:
+    """Mock the per-photo list-item lookup (place name, owner tags)."""
+    body = {"id": "x", "listItem": {"fields": fields or {}}}
+    respx.get(url__regex=rf"^{GRAPH}/me/drive/items/[^/?]+\?").mock(
+        return_value=httpx.Response(status, json=body)
+    )
+
+
 # -- source --------------------------------------------------------------------
 
 
@@ -63,8 +71,63 @@ def test_to_photo_skips_folders_and_videos() -> None:
     assert item.taken_at is not None and item.taken_at.tzinfo is None  # naive local
 
 
+def test_to_photo_maps_caption_and_camera_metadata() -> None:
+    raw = _photo("a") | {
+        "description": "  Hiking the PCT  ",
+        "size": 2_500_000,
+        "createdDateTime": "2026-11-20T00:10:00Z",
+        "location": {"latitude": 47.6, "longitude": -122.3},
+        "photo": {
+            "takenDateTime": "2018-04-23T17:00:48Z",
+            "cameraMake": "samsung",
+            "cameraModel": "SM-G960U",
+            "fNumber": 1.7,
+            "exposureNumerator": 1,
+            "exposureDenominator": 120,
+            "iso": 50,
+            "focalLength": 4.3,
+        },
+    }
+    item = to_photo(raw)
+    assert item is not None
+    assert item.caption == "Hiking the PCT"
+    assert (item.latitude, item.longitude) == (47.6, -122.3)
+    assert (item.camera_make, item.camera_model, item.iso) == ("samsung", "SM-G960U", 50)
+    assert item.exposure_seconds == pytest.approx(1 / 120)
+    assert (item.original_type, item.original_bytes) == ("image/jpeg", 2_500_000)
+    assert item.added_at is not None and item.added_at.tzinfo is None
+    blank = to_photo(_photo("b") | {"description": "   "})
+    assert blank is not None and blank.caption is None and blank.exposure_seconds is None
+
+
+def test_parse_place_short_and_full() -> None:
+    from app.photos.onedrive import parse_place
+
+    assert parse_place("Ireland    Co Dublin    Dublin") == (
+        "Dublin, Ireland",
+        "Dublin, Co Dublin, Ireland",
+    )
+    assert parse_place("France") == ("France", "France")
+    assert parse_place("") == (None, None)
+
+
+@respx.mock
+def test_delta_adds_place_and_owner_tags_from_list_fields() -> None:
+    _list_fields(
+        {"MediaServiceLocation": "Ireland    Co Dublin    Dublin", "UserAddedTags": "Crumb, Dog"}
+    )
+    respx.get(DELTA).mock(
+        return_value=httpx.Response(200, json={"value": [_photo("a")], "@odata.deltaLink": "d"})
+    )
+    with httpx.Client() as client:
+        [item] = _source(client).changes(FOLDER, None).upserts
+    assert (item.place, item.place_detail) == ("Dublin, Ireland", "Dublin, Co Dublin, Ireland")
+    assert item.tags == ["Crumb", "Dog"]
+
+
 @respx.mock
 def test_initial_delta_pages_and_returns_delta_link() -> None:
+    _list_fields()
     respx.get(DELTA).mock(
         return_value=httpx.Response(
             200,
@@ -93,6 +156,7 @@ def test_initial_delta_pages_and_returns_delta_link() -> None:
 
 @respx.mock
 def test_410_restarts_as_full_enumeration() -> None:
+    _list_fields(status=404)  # best-effort: a failed lookup just omits place
     respx.get(f"{GRAPH}/stale").mock(
         return_value=httpx.Response(
             410,
@@ -200,6 +264,24 @@ def test_service_full_then_incremental(tmp_path) -> None:
     assert source.links_seen == [None, "L1", "L2"]
     assert source.fetched == ["a", "b", "a"]
     assert service.snapshot().status == "ok"
+
+
+def test_caption_edit_updates_metadata_without_redownload(tmp_path) -> None:
+    from app.photos.onedrive import DeltaResult
+
+    source = FakeSource()
+    source.rounds = [
+        DeltaResult(upserts=[_item("a")], delta_link="L1", full=True),
+        # Same version (bytes unchanged), new caption: an eTag-only change.
+        DeltaResult(
+            upserts=[_item("a").model_copy(update={"caption": "Sunrise"})], delta_link="L2"
+        ),
+    ]
+    service = _service(tmp_path, source)
+    assert service.sync_once() is True
+    assert service.sync_once() is True  # counts as a change, so the kiosk is pushed
+    assert service.snapshot().photos[0].caption == "Sunrise"
+    assert source.fetched == ["a"]
 
 
 def test_failed_download_does_not_advance_delta_link(tmp_path) -> None:

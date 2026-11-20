@@ -12,6 +12,8 @@ thread so the event loop never blocks on Graph.
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,8 +23,17 @@ import httpx
 
 from app.models import PhotoItem
 
+logger = logging.getLogger(__name__)
+
 GRAPH = "https://graph.microsoft.com/v1.0"
-_SELECT = "id,name,file,image,photo,deleted,folder,cTag,eTag,size,parentReference,root"
+_SELECT = (
+    "id,name,file,image,photo,location,description,createdDateTime,"
+    "deleted,folder,cTag,eTag,size,parentReference,root"
+)
+# SharePoint list-item fields that OneDrive's photo services fill in. They exist
+# on SharePoint-backed drives (incl. personal OneDrives migrated to that
+# storage); elsewhere the lookup just yields nothing.
+_LIST_FIELDS = "MediaServiceLocation,UserAddedTags"
 
 
 class PhotoSourceError(RuntimeError):
@@ -60,6 +71,29 @@ def _taken_at(value: object) -> datetime | None:
     return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo else parsed
 
 
+def _text(value: object) -> str | None:
+    return (value.strip() or None) if isinstance(value, str) else None
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
+def parse_place(value: object) -> tuple[str | None, str | None]:
+    """``MediaServiceLocation`` ("Country   Region   Locality": broadest first,
+    parts separated by runs of spaces) → (short "Locality, Country", full
+    "Locality, Region, Country")."""
+    text = _text(value)
+    if not text:
+        return None, None
+    parts = [part.strip() for part in re.split(r"\s{2,}|\t", text) if part.strip()]
+    country, finest = parts[0], parts[-1]
+    short = country if finest == country else f"{finest}, {country}"
+    return short, ", ".join(dict.fromkeys(reversed(parts)))
+
+
 def to_photo(raw: dict) -> PhotoItem | None:
     """A delta/children entry → PhotoItem, or None for anything that isn't a
     still image (folders, videos, documents)."""
@@ -69,13 +103,32 @@ def to_photo(raw: dict) -> PhotoItem | None:
         return None
     image = raw.get("image") or {}
     photo = raw.get("photo") or {}
+    location = raw.get("location") or {}
+    numerator = _number(photo.get("exposureNumerator"))
+    denominator = _number(photo.get("exposureDenominator"))
+    iso = _number(photo.get("iso"))
+    size = raw.get("size")
     return PhotoItem(
         id=str(raw["id"]),
         name=str(raw.get("name") or ""),
         width=image.get("width"),
         height=image.get("height"),
         taken_at=_taken_at(photo.get("takenDateTime")),
+        # cTag tracks the image bytes; a caption edit changes only the eTag and
+        # arrives as a metadata-only update for the same version.
         version=str(raw.get("cTag") or raw.get("eTag") or ""),
+        caption=_text(raw.get("description")),
+        latitude=_number(location.get("latitude")),
+        longitude=_number(location.get("longitude")),
+        camera_make=_text(photo.get("cameraMake")),
+        camera_model=_text(photo.get("cameraModel")),
+        f_number=_number(photo.get("fNumber")),
+        exposure_seconds=numerator / denominator if numerator and denominator else None,
+        iso=int(iso) if iso else None,
+        focal_length_mm=_number(photo.get("focalLength")),
+        added_at=_taken_at(raw.get("createdDateTime")),
+        original_type=_text(file.get("mimeType")),
+        original_bytes=size if isinstance(size, int) and not isinstance(size, bool) else None,
     )
 
 
@@ -162,7 +215,7 @@ class OneDriveFolderSource:
                 if item is None:
                     continue
                 result.deleted.discard(item.id)
-                result.upserts.append(item)
+                result.upserts.append(self._with_list_fields(item))
             if "@odata.nextLink" in body:
                 url = body["@odata.nextLink"]
                 continue
@@ -170,6 +223,25 @@ class OneDriveFolderSource:
             if not result.delta_link:
                 raise PhotoSourceError("delta round ended without a deltaLink")
             return result
+
+    def _with_list_fields(self, item: PhotoItem) -> PhotoItem:
+        """Add the resolved place name and owner-added tags. Delta can't expand
+        list items, so this is one extra request per changed photo; best-effort:
+        any failure just leaves the photo without them."""
+        url = f"{GRAPH}/me/drive/items/{quote(item.id)}"
+        expand = f"listItem($expand=fields($select={_LIST_FIELDS}))"
+        try:
+            response = self._get(url, params={"$select": "id", "$expand": expand})
+        except PhotoSourceError as exc:
+            logger.info("photo stream: no list fields for %s: %s", item.name, exc)
+            return item
+        if response.status_code != 200:
+            return item
+        fields = (response.json().get("listItem") or {}).get("fields") or {}
+        place, place_detail = parse_place(fields.get("MediaServiceLocation"))
+        raw_tags = str(fields.get("UserAddedTags") or "").split(",")
+        tags = [tag.strip() for tag in raw_tags if tag.strip()]
+        return item.model_copy(update={"place": place, "place_detail": place_detail, "tags": tags})
 
     def fetch(self, photo_id: str) -> bytes:
         """The display rendition as JPEG bytes."""

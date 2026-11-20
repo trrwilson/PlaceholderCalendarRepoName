@@ -67,8 +67,16 @@ def get_photo_service() -> PhotoStreamService | None:
                 max_items=settings.photos_cache_max_items,
                 max_bytes=settings.photos_cache_max_mb * 1024 * 1024,
             ),
+            # Bump the trailing schema tag when PhotoItem gains source metadata:
+            # a changed key forces one full pass that backfills cached photos
+            # (no re-download, since their versions still match).
             source_key=":".join(
-                ("onedrive_folder", settings.photos_account or "", settings.photos_folder_path)
+                (
+                    "onedrive_folder",
+                    settings.photos_account or "",
+                    settings.photos_folder_path,
+                    "meta2",
+                )
             ),
             interval_seconds=settings.photos_sync_interval_seconds,
             broadcast=connections.broadcast,

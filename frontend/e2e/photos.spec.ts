@@ -26,6 +26,8 @@ const photos = {
 }
 
 test.beforeEach(async ({ page }) => {
+  // Keep the live backend's socket (which pushes its real photo snapshot) out of the test.
+  await page.routeWebSocket('**/api/ws', () => {})
   await page.route('**/api/calendar**', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ calendars: [], events: [] }) }))
   await page.route('**/api/photos', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(photos) }))
   await page.route('**/api/photos/one?**', (route) => route.fulfill({ contentType: 'image/png', body: PNG('red') }))
@@ -38,16 +40,35 @@ for (const size of [{ width: 3840, height: 2160 }, { width: 1920, height: 1080 }
     await page.goto('/')
     const tile = page.locator('.photo-tile')
     await expect(tile).toBeVisible()
-    await expect(tile.getByRole('img', { name: 'Beach.jpg' })).toBeVisible()
+    // Play order is shuffled: whichever photo is up first, a right-third tap shows the other.
+    const shown = tile.locator('.photo-layer.front img')
+    await expect(shown).toHaveAttribute('alt', /Beach\.jpg|Garden\.jpg/)
+    const first = await shown.getAttribute('alt')
 
     const box = (await tile.boundingBox())!
     await page.mouse.click(box.x + box.width * 0.9, box.y + box.height / 2)
-    await expect(tile.getByRole('img', { name: 'Garden.jpg' })).toBeVisible()
+    await expect(shown).toHaveAttribute('alt', first === 'Beach.jpg' ? 'Garden.jpg' : 'Beach.jpg')
 
     const overflow = await page.evaluate(() => document.documentElement.scrollHeight - document.documentElement.clientHeight)
     expect(overflow).toBe(0)
   })
 }
+
+test('a middle tap opens photo details, which close again', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 })
+  await page.goto('/')
+  const tile = page.locator('.photo-tile')
+  await expect(tile).toBeVisible()
+  const box = (await tile.boundingBox())!
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+  const dialog = page.getByRole('dialog', { name: 'Photo details' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByText(/Beach\.jpg|Garden\.jpg/)).toBeVisible()
+  const overflow = await page.evaluate(() => document.documentElement.scrollHeight - document.documentElement.clientHeight)
+  expect(overflow).toBe(0)
+  await dialog.getByRole('button', { name: 'Done' }).click()
+  await expect(dialog).toHaveCount(0)
+})
 
 test('with To Do on, the photo tile takes the top-row slot instead of the rail', async ({ page }) => {
   const snapshot = { status: 'ok', synced_at: new Date().toISOString(), lists: [{ id: 'l1', name: 'Tasks', owner_id: 'alex', is_shared: false, is_owner: true, is_default: true }], tasks: [] }
