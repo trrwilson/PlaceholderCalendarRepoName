@@ -54,6 +54,28 @@ export function shuffled<T>(items: readonly T[], random: () => number = Math.ran
   return out
 }
 
+/** Shuffle `items` for a new pass so that no photo comes back within `gap`
+ * showings of its last one. `recent` is the recently shown ids, oldest first
+ * (the last entry is the photo on screen now). The gap is capped at
+ * `items.length - 1`, the most any permutation can guarantee. Always
+ * satisfiable: by position p there are p + (n - gap) eligible ids. */
+export function shuffledAvoidingRecent<T>(items: readonly T[], recent: readonly T[], gap: number, random: () => number = Math.random): T[] {
+  const pool = shuffled(items, random)
+  const window = Math.max(0, Math.min(gap, pool.length - 1))
+  // Earliest index each recently shown id may take: shown j steps ago → index ≥ window - j + 1.
+  const release = new Map<T, number>()
+  for (let j = 1; j <= window && j <= recent.length; j++) {
+    const id = recent[recent.length - j]
+    if (!release.has(id)) release.set(id, window - j + 1)
+  }
+  const out: T[] = []
+  while (pool.length) {
+    const at = pool.findIndex((id) => (release.get(id) ?? 0) <= out.length)
+    out.push(pool.splice(at < 0 ? 0 : at, 1)[0])
+  }
+  return out
+}
+
 /** Keep a shuffled play order in step with the current photo ids: removed ids
  * drop out, surviving ids keep their relative order, and new ids are dropped in
  * at random positions so a batch of additions doesn't play back-to-back. */

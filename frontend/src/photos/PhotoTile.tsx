@@ -1,12 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
 
-import { chooseSkew, freeBand, OPPOSITE, reconcileOrder, resolveCaption, shuffled, type ResolvedCaption, type Skew } from './captionLayout'
+import { chooseSkew, freeBand, OPPOSITE, reconcileOrder, resolveCaption, shuffled, shuffledAvoidingRecent, type ResolvedCaption, type Skew } from './captionLayout'
 import type { PhotoItem } from './types'
 import { photoUrl } from './usePhotoStream'
 
 // How long each photo stays up. Open question Q5 in docs/photo-stream-plan.md —
 // a constant for now, not a Setting.
 export const PHOTO_DWELL_MS = 20_000
+// Minimum number of other photos shown before any photo may come round again
+// (capped by library size). Guards the pass boundary, where a fresh shuffle
+// could otherwise replay something shown moments ago.
+export const PHOTO_MIN_REPEAT_GAP = 10
 const SWIPE_PX = 40
 // Caption block width as a share of the tile: never narrower than reads well,
 // never wider than a comfortable line, whatever the letterbox happens to be.
@@ -30,7 +34,7 @@ type Layer = { src: string; photo: PhotoItem; caption: ResolvedCaption | null; s
  * Two stacked layers: the incoming photo is decoded off-screen first, then its
  * layer fades in over the outgoing one, so there's never a blank flash.
  */
-export function PhotoTile({ photos, apiBaseUrl, paused = false, onOpen }: { photos: PhotoItem[]; apiBaseUrl: string; paused?: boolean; onOpen?: (photo: PhotoItem) => void }) {
+export function PhotoTile({ photos, apiBaseUrl, paused = false, onOpen, minRepeatGap = PHOTO_MIN_REPEAT_GAP }: { photos: PhotoItem[]; apiBaseUrl: string; paused?: boolean; onOpen?: (photo: PhotoItem) => void; minRepeatGap?: number }) {
   const [order, setOrder] = useState<string[]>(() => shuffled(photos.map((p) => p.id)))
   const [currentId, setCurrentId] = useState<string | null>(null)
   const [layers, setLayers] = useState<{ a: Layer | null; b: Layer | null; front: 'a' | 'b' }>({ a: null, b: null, front: 'a' })
@@ -41,6 +45,8 @@ export function PhotoTile({ photos, apiBaseUrl, paused = false, onOpen }: { phot
   boxRef.current = box
   const tileRef = useRef<HTMLElement | null>(null)
   const start = useRef<{ x: number; y: number } | null>(null)
+  // Recently shown ids, oldest first, so a new pass can keep its distance.
+  const shown = useRef<string[]>([])
 
   const byId = new Map(photos.map((p) => [p.id, p]))
   const idsKey = photos.map((p) => p.id).join('\n')
@@ -52,6 +58,14 @@ export function PhotoTile({ photos, apiBaseUrl, paused = false, onOpen }: { phot
   const current = byId.get(order[Math.max(position, 0)] ?? '') ?? null
   const count = order.length
   const src = current ? photoUrl(apiBaseUrl, current.id, current.version) : null
+
+  const currentShownId = current?.id
+  useEffect(() => {
+    if (!currentShownId) return
+    const history = shown.current.filter((id) => id !== currentShownId)
+    history.push(currentShownId)
+    shown.current = history.slice(-Math.max(1, minRepeatGap))
+  }, [currentShownId, minRepeatGap])
 
   const hasCurrent = current !== null
   useLayoutEffect(() => {
@@ -104,9 +118,8 @@ export function PhotoTile({ photos, apiBaseUrl, paused = false, onOpen }: { phot
     if (!count) return
     const at = Math.max(position, 0)
     if (delta > 0 && at === count - 1 && count > 2) {
-      // End of a pass: reshuffle for the next one, never repeating the photo just shown.
-      const next = shuffled(order)
-      if (next[0] === order[at]) next.push(next.shift()!)
+      // End of a pass: reshuffle for the next one, keeping recent photos out of its opening stretch.
+      const next = shuffledAvoidingRecent(order, shown.current, minRepeatGap)
       setOrder(next)
       setCurrentId(next[0])
       return

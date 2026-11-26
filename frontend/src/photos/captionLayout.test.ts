@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { chooseSkew, freeBand, reconcileOrder, resolveCaption } from './captionLayout'
+import { chooseSkew, freeBand, reconcileOrder, resolveCaption, shuffledAvoidingRecent } from './captionLayout'
 import type { PhotoItem } from './types'
 
 const photo = (extra: Partial<PhotoItem> = {}): PhotoItem => ({ id: 'x', name: 'x.jpg', width: 4000, height: 3000, taken_at: null, version: 'v', bytes: 1, ...extra })
@@ -48,5 +48,29 @@ describe('reconcileOrder', () => {
     const next = reconcileOrder(['a', 'b'], ['a', 'b', 'n'], seq(0, 0))
     expect(next).toEqual(['n', 'a', 'b'])
     expect(reconcileOrder([], ['a', 'b', 'c']).sort()).toEqual(['a', 'b', 'c'])
+  })
+})
+
+describe('shuffledAvoidingRecent', () => {
+  const ids = Array.from({ length: 25 }, (_, i) => `p${i}`)
+
+  it('never replays a photo within the gap across many pass boundaries', () => {
+    for (const n of [2, 3, 5, 11, 25]) {
+      const library = ids.slice(0, n)
+      const gap = Math.min(10, n - 1)
+      const played: string[] = []
+      for (let pass = 0; pass < 40; pass++) played.push(...shuffledAvoidingRecent(library, played.slice(-10), 10))
+      played.forEach((id, i) => expect(played.slice(Math.max(0, i - gap), i)).not.toContain(id))
+    }
+  })
+
+  it('is a plain shuffle with no history', () => {
+    expect(shuffledAvoidingRecent(['a', 'b', 'c'], [], 10).sort()).toEqual(['a', 'b', 'c'])
+  })
+
+  it('pushes the photo on screen past the gap even when the shuffle puts it first', () => {
+    // random 0.999 keeps the identity order: a would come first.
+    const next = shuffledAvoidingRecent(['a', 'b', 'c', 'd'], ['a'], 2, () => 0.999)
+    expect(next.indexOf('a')).toBeGreaterThanOrEqual(2)
   })
 })
