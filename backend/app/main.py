@@ -57,6 +57,12 @@ async def lifespan(_app: FastAPI):
         from app.eufy import start_eufy_service
 
         start_eufy_service()
+    # Photo stream sync loop (docs/photo-stream-plan.md). Feature-flagged; a
+    # disabled install never imports app.photos.service.
+    if get_settings().photos_enabled:
+        from app.photos import start_photo_service
+
+        start_photo_service()
     # To Do tasks: feature-flagged background delta sync, isolated from the
     # calendar (docs/todo-integration-plan.md).
     if get_settings().todo_enabled:
@@ -79,6 +85,10 @@ async def lifespan(_app: FastAPI):
             from app.eufy import stop_eufy_service
 
             await stop_eufy_service()
+        if get_settings().photos_enabled:
+            from app.photos import stop_photo_service
+
+            await stop_photo_service()
         if get_settings().todo_enabled:
             from app.todo import stop_todo_service
 

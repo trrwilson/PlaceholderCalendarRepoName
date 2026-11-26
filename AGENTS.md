@@ -25,6 +25,7 @@ an agent gets wrong without it. `.github/copilot-instructions.md` points here.
 | `eufy-bridge/AGENTS.md` | Node sidecar: process boundary, config, SDK/testing conventions |
 | `docs/README.md` | Index of the deep-dive docs (design records vs history vs plans) |
 | `docs/audio-pipeline.md` | The authority on mic capture, gain, and playout |
+| `docs/kiosk-integration-testing.md` | Running a branch on the kiosk; **credentials it creates replace main's on merge** (open log) |
 
 ## What this project is
 

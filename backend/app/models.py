@@ -587,6 +587,54 @@ class CameraGallerySnapshot(BaseModel):
     cameras_online: bool
 
 
+class PhotoItem(BaseModel):
+    """One photo in the household photo stream (docs/photo-stream-plan.md).
+
+    ``id`` is the provider's opaque item id; ``version`` changes whenever the
+    cached bytes change (the provider's content tag), so the kiosk can use it as
+    a cache-buster on ``GET /api/photos/{id}``. ``taken_at`` is naive local time
+    like every other domain datetime, or ``None`` when the photo has no EXIF date.
+    """
+
+    id: str
+    name: str
+    width: int | None = None
+    height: int | None = None
+    taken_at: datetime | None = None
+    version: str
+    bytes: int = 0
+    # Display/detail metadata, all best-effort (absent on many photos).
+    # ``caption`` is the owner's own OneDrive caption; ``place`` a short
+    # "Locality, Country" and ``place_detail`` the full resolved place name.
+    caption: str | None = None
+    place: str | None = None
+    place_detail: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    camera_make: str | None = None
+    camera_model: str | None = None
+    f_number: float | None = None
+    exposure_seconds: float | None = None
+    iso: int | None = None
+    focal_length_mm: float | None = None
+    tags: list[str] = Field(default_factory=list)
+    added_at: datetime | None = None
+    original_type: str | None = None
+    original_bytes: int | None = None
+
+
+PhotoStreamStatus = Literal["disabled", "starting", "ok", "needs_sign_in", "error"]
+
+
+class PhotoStreamSnapshot(BaseModel):
+    enabled: bool
+    status: PhotoStreamStatus
+    photos: list[PhotoItem] = Field(default_factory=list)
+    last_sync: datetime | None = None
+    # Short human-safe reason for a non-ok status; never a raw provider error.
+    detail: str | None = None
+
+
 # -- To Do tasks (docs/todo-integration-plan.md) ----------------------------
 # Provider-neutral, read-only. Tasks are never part of CalendarSnapshot: they
 # have their own route, push, and UI (issue #5: never mixed into the calendar).
@@ -672,6 +720,9 @@ class ApplicationMessage(BaseModel):
     # change and on connect; ``camera_status`` is the source's connection state.
     camera_clips: list[StoredClip] | None = None
     camera_status: str | None = None
+    # The photo stream reuses it too: ``photos`` is the full current snapshot,
+    # pushed after a sync round that changed something (docs/photo-stream-plan.md).
+    photos: PhotoStreamSnapshot | None = None
     # To Do tasks reuse it too: ``tasks`` is the full current TaskSnapshot,
     # pushed when a sync changes anything and sent on connect.
     tasks: TaskSnapshot | None = None
@@ -930,4 +981,8 @@ class CalendarAuthStatus(BaseModel):
     verification_uri_complete: str | None = None
     verification_qr: str | None = None  # data: URI for an SVG QR code
     expires_in: int | None = None
+    # When the last kiosk device-code sign-in completed. Re-consenting an account
+    # that is already linked (e.g. to add Files.Read) doesn't change ``accounts``,
+    # so the kiosk watches this to know the sign-in finished.
+    last_sign_in_at: datetime | None = None
     error: str | None = None

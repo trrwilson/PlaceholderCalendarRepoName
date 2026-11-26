@@ -110,6 +110,31 @@ describe('calendar sign-in', () => {
     expect(screen.getByRole('button', { name: /People/ })).toHaveTextContent('2/2')
   }, 10000)
 
+  it('closes the add sheet when an already-linked account signs in again', async () => {
+    // Re-consent (e.g. to grant photos) completes without adding an account, so
+    // the sheet closes on the backend's last_sign_in_at changing instead.
+    let auth: Auth = { provider: 'outlook_personal', state: 'connected', account: 'mia@outlook.com', accounts: ['mia@outlook.com'], last_sign_in_at: '2026-11-01T09:00:00' } as Auth
+    const fetchMock = vi.fn((url: string | URL, opts?: { method?: string }) => {
+      if (String(url).includes('/api/calendar/auth')) {
+        if (opts?.method === 'POST') {
+          auth = { ...auth, state: 'connecting', user_code: 'ABCD-EFGH', verification_uri: 'https://microsoft.com/devicelogin', verification_qr: 'data:image/svg+xml;charset=utf-8,%3Csvg%2F%3E', expires_in: 880 }
+          setTimeout(() => { auth = { provider: 'outlook_personal', state: 'connected', account: 'mia@outlook.com', accounts: ['mia@outlook.com'], last_sign_in_at: '2026-11-19T16:30:00' } as Auth }, 400)
+        }
+        return Promise.resolve({ ok: true, json: async () => auth })
+      }
+      return Promise.resolve({ ok: true, json: async () => EMPTY_SNAPSHOT })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Calendars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add another Outlook calendar' }))
+    expect(await screen.findByText('ABCD-EFGH')).toBeInTheDocument()
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Connect calendar' })).not.toBeInTheDocument(), { timeout: 5000 })
+  }, 10000)
+
   it('keeps the add sheet open when the flow cannot start, instead of vanishing', async () => {
     // Backend can't begin a device flow (throttled / offline) and, because a
     // household is already linked, keeps reporting "connected". The old code
