@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { bucketOf, dueLabel, groupByBucket, homeSummary, isoDay, matchPersonByName, splitAssignee } from './taskView'
+import { bucketOf, dueLabel, groupByBucket, homeSummary, isoDay, matchPersonByName, splitAssignee, taskPerson } from './taskView'
 import type { TaskItem } from './types'
 
 const today = new Date(2026, 10, 9, 9, 0) // Mon 9 Nov 2026, local
@@ -86,6 +86,25 @@ describe('taskView', () => {
     expect(split('Fix the x-ray machine')).toEqual(['Fix the x-ray machine', undefined])
     expect(split('Read chapter - Hamlet')).toEqual(['Read chapter - Hamlet', undefined])
     expect(split('Travis')).toEqual(['Travis', undefined])
+  })
+
+  it('picks the assignee, then title marker, category, creator, then the list owner', () => {
+    const travis = { name: 'Travis Wilson' }
+    const sarah = { name: 'Sarah Shapro' }
+    const people = [travis, sarah]
+    const nameOf = (p: { name: string }) => p.name
+    const base = { id: 'x', list_id: 'l', status: 'not_started', importance: 'normal', due_on: null, completed_at: null, category: null, checklist_total: 0, checklist_done: 0, has_note: false } as const
+    const who = (task: Partial<TaskItem>) => taskPerson({ ...base, title: 'Bulb', ...task }, sarah, people, nameOf)
+    expect(who({ assignee_name: 'Travis Wilson', created_by_name: 'Sarah Shapro' }).person).toBe(travis)
+    // The real assignee beats a stale title marker, which is still dropped from the title.
+    expect(who({ title: 'Bulb--Sarah', assignee_name: 'Travis Wilson' })).toEqual({ title: 'Bulb', person: travis })
+    // Source down (no names): the marker, then a category, then the creator, then the owner.
+    expect(who({ title: 'Bulb--Travis' }).person).toBe(travis)
+    expect(who({ category: { id: 'c', name: 'Travis', color: '#000' } }).person).toBe(travis)
+    expect(who({ created_by_name: 'Travis Wilson' }).person).toBe(travis)
+    expect(who({}).person).toBe(sarah)
+    // An assignee outside the household is skipped, not shown.
+    expect(who({ assignee_name: 'A Guest', created_by_name: 'Travis Wilson' }).person).toBe(travis)
   })
 
   it('home summary lists open dated tasks: overdue, today, then upcoming', () => {

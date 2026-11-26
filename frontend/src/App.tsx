@@ -16,7 +16,7 @@ import { TimerView } from './timers/TimerView'
 import { useTimers } from './timers/useTimers'
 import { ListsView } from './lists/ListsView'
 import { useLists } from './lists/useLists'
-import { homeSummary, matchPersonByName, splitAssignee } from './todo/taskView'
+import { homeSummary, taskPerson } from './todo/taskView'
 import { TodoSummary, TodoView, type OwnerLookup } from './todo/TodoView'
 import { useTasks } from './todo/useTasks'
 import type { ListItem } from './lists/types'
@@ -470,13 +470,11 @@ function App() {
   })
   const calendarById = new Map(calendars.map((calendar) => [calendar.id, calendar]))
   // To Do (docs/todo-integration-plan.md): a task takes its person's colour, i.e. the
-  // same (viewer-remapped) palette entry as that member's calendar. Graph exposes no
-  // assignee, so a member named at the end of the title ("…--Travis") is the assignee,
-  // then a category naming a member; an unassigned task stays with its list owner.
+  // same (viewer-remapped) palette entry as that member's calendar. Who that person is
+  // (assignee, then creator, then list owner) is decided in taskPerson.
   const taskOwner: OwnerLookup = (task, list) => {
     const people = calendars.filter((calendar) => calendar.is_primary !== false)
-    const { title, assignee } = splitAssignee(task.title, people, personName)
-    const calendar = assignee ?? matchPersonByName(task.category?.name, people, personName) ?? (list ? calendarById.get(list.owner_id) : undefined)
+    const { title, person: calendar } = taskPerson(task, list ? calendarById.get(list.owner_id) : undefined, people, personName)
     return calendar ? { name: personName(calendar), colorClass: colorClass(calendar.color), title } : { name: null, colorClass: '', title }
   }
   const todoAvailable = !!tasks && tasks.status !== 'disabled'

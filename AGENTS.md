@@ -121,6 +121,9 @@ method and a maintained catalogue.
   store, Redis, Postgres, or a broker.
 - **Real-time is one small typed endpoint** (`/api/ws`, `ApplicationMessage`), not an
   event bus. Keep any addition a small typed extension. See `backend/AGENTS.md`.
+- **Undocumented first-party APIs** (To Do assignee/creator via the apps' own
+  `todob2` API, `app/todo/assignments.py`) are best effort only: read-only, behind a
+  setting, and fail open to the documented behaviour — never an error on the wall.
 - **Unofficial third-party integrations** (eufy: `eufy-security-client`, against
   Anker's ToS) stay feature-flagged, isolated in their own package/sidecar, and
   severable — failure must never degrade the core calendar experience. Full

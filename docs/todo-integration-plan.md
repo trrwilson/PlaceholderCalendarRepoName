@@ -523,3 +523,24 @@ account was not re-consented, so `validate_todo_graph.py` was not run and the ot
   depends on it. The sign-in asks for `Tasks.ReadWrite` too; until a member signs in
   again the button answers "Sign in again from the kiosk". Touch only, from the To Do
   detail sheet (two taps), with Reopen to undo; the Home tile stays read-only.
+
+### 2026-11-26 — real assignee and creator from the apps' own API
+
+- The To Do apps use an undocumented API, `substrate.office.com/todob2/api/v1`. Per
+  task it returns `Assignments[].Assignee.Id` and `CreatedByUser.Id` (Microsoft account
+  ids); `GET /taskfolders/{id}/members` maps ids to display names. Task ids equal
+  Graph's. An Outlook-audience `Tasks.Read` token (`https://outlook.office.com/Tasks.Read`)
+  comes silently from the existing sign-in — no new consent. `Todo-Internal.*` is
+  refused for our client and not needed. No `$select`; responses carry `Value` and a
+  `DeltaLink`.
+- Built as `app/todo/assignments.py`, called each sync round for **shared** lists only
+  (personal lists have one owner). The names ride on `TaskItem.assignee_name` /
+  `created_by_name`. Display order: assignee → title marker → category → creator →
+  list owner; names matching no household member are skipped.
+- **Fails open:** any error or changed shape → names cleared (not left stale), the
+  display falls back to the rules above, one warning logged, and To Do sync status is
+  unaffected. `MISSION_CONTROL_TODO_ASSIGNMENTS_ENABLED=false` turns it off.
+- **Found on the way:** Travis's member id on Sarah's shared list is not
+  `trrwilson@hotmail.com`'s — he joined with another Microsoft account, which is why
+  the hotmail account doesn't see the list. Irrelevant here: Sarah's token reads the
+  list, its members and assignments.

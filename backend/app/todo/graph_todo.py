@@ -28,6 +28,7 @@ from app.calendar.graph import (
 )
 from app.config import Settings
 from app.models import TaskImportance, TaskItem, TaskList, TaskStatus
+from app.todo.assignments import AssignmentReader, TaskPeople
 from app.todo.source import DeltaExpired, DeltaResult, Throttled, TodoAuthRequired
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,11 @@ class GraphTodoSource:
         self._accounts = accounts or self._msal_accounts
         hidden = {name.strip().casefold() for name in settings.todo_hidden_list_names}
         self._hidden_names = hidden
+        self._assignments = (
+            AssignmentReader(self._client, self._token_provider)
+            if settings.todo_assignments_enabled
+            else None
+        )
 
     # -- auth -------------------------------------------------------------------
 
@@ -236,6 +242,11 @@ class GraphTodoSource:
             return {}
         headers = {"Authorization": f"Bearer {token}"}
         return self._category_colors.get(f"{_GRAPH_BASE}/me", headers, account)
+
+    def people(self, account: str, list_id: str) -> dict[str, TaskPeople] | None:
+        if self._assignments is None:
+            return None
+        return self._assignments.read(account, list_id)
 
     # -- the one write ----------------------------------------------------------
 

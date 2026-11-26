@@ -89,6 +89,23 @@ export function splitAssignee<T>(title: string, people: T[], nameOf: (person: T)
   return assignee ? { title: match[1], assignee } : { title }
 }
 
+/**
+ * Who a task is for, first match wins: the To Do assignee (shared lists, best
+ * effort — absent when that source is down), a member named at the end of the
+ * title, a category naming a member, the task's creator, then the list owner.
+ * Names matching no household member are skipped. `title` drops any marker.
+ */
+export function taskPerson<T>(task: TaskItem, listOwner: T | undefined, people: T[], nameOf: (person: T) => string): { title: string; person?: T } {
+  const { title, assignee } = splitAssignee(task.title, people, nameOf)
+  const person =
+    matchPersonByName(task.assignee_name, people, nameOf) ??
+    assignee ??
+    matchPersonByName(task.category?.name, people, nameOf) ??
+    matchPersonByName(task.created_by_name, people, nameOf) ??
+    listOwner
+  return { title, person }
+}
+
 const HOME_RANK: Partial<Record<DueBucket, number>> = { overdue: 0, today: 1, upcoming: 2 }
 
 /** Home tile: open dated tasks — overdue, then today, then upcoming by date. */

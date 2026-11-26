@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from app.models import TaskItem, TaskList
+from app.todo.assignments import TaskPeople
 
 
 @dataclass
@@ -46,6 +47,11 @@ class TodoSource(Protocol):
     def list_delta(self, account: str, link: str | None) -> DeltaResult[TaskList]: ...
 
     def task_delta(self, account: str, list_id: str, link: str | None) -> DeltaResult[TaskItem]: ...
+
+    def people(self, account: str, list_id: str) -> dict[str, TaskPeople] | None:
+        """Assignee/creator per task id for a shared list; ``None`` = unavailable.
+        Must never raise."""
+        ...
 
     def set_completed(self, account: str, list_id: str, task_id: str, completed: bool) -> TaskItem:
         """Mark one task completed (or reopen it); returns the updated task."""

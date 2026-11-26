@@ -671,6 +671,10 @@ class Settings(BaseSettings):
     # "Flagged email" list is skipped separately by ``todo_include_flagged_email``.
     todo_hidden_list_names: Annotated[list[str], NoDecode] = []
     todo_include_flagged_email: bool = False
+    # Read assignee + creator of shared-list tasks from the To Do apps' own
+    # undocumented API (app/todo/assignments.py). Fails open; off = title/category
+    # markers and the list owner only.
+    todo_assignments_enabled: bool = True
 
     # -- Notes (Home pane sticky notes) --------------------------------------
     # Durable like lists, for the same reason — a wall appliance that forgets a

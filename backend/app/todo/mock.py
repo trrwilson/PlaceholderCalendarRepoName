@@ -10,6 +10,7 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
 from app.models import EventCategory, TaskImportance, TaskItem, TaskList, TaskStatus
+from app.todo.assignments import TaskPeople
 from app.todo.source import DeltaResult
 
 
@@ -93,6 +94,14 @@ class MockTodoSource:
         if link:
             return DeltaResult(next_link=link)
         return DeltaResult(upserts=self._tasks(list_id), next_link="mock", is_baseline=True)
+
+    def people(self, account: str, list_id: str) -> dict[str, TaskPeople] | None:
+        if list_id != "house":
+            return None
+        return {
+            "t4": TaskPeople(assignee_name="Jordan", created_by_name="Alex"),
+            "t5": TaskPeople(created_by_name="Jordan"),
+        }
 
     def set_completed(self, account: str, list_id: str, task_id: str, completed: bool) -> TaskItem:
         task = next((t for t in self._tasks(list_id) if t.id == task_id), None)

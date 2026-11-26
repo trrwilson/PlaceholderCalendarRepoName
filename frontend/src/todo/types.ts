@@ -36,6 +36,9 @@ export interface TaskItem {
   checklist_total: number
   checklist_done: number
   has_note: boolean
+  /** Shared lists only, best effort: the names To Do shows. Null = unassigned/unknown. */
+  assignee_name?: string | null
+  created_by_name?: string | null
 }
 
 export interface TaskSnapshot {

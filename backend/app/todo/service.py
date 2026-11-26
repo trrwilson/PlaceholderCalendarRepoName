@@ -183,7 +183,7 @@ class TodoSyncService:
             tasks.pop(task_id, None)
         for task in result.upserts:
             tasks[task.id] = task
-        self._tasks[list_id] = tasks
+        self._tasks[list_id] = self._with_people(account, list_id, tasks)
         if result.next_link:
             self._task_links[list_id] = result.next_link
 
@@ -199,8 +199,15 @@ class TodoSyncService:
         account = self._list_account.get(list_id)
         if account is None or task_id not in self._tasks.get(list_id, {}):
             raise KeyError(task_id)
+        previous = self._tasks[list_id][task_id]
         task = self._source.set_completed(account, list_id, task_id, completed)
-        self._tasks[list_id][task.id] = task
+        # The write answers with Graph's task, which knows nothing of assignment.
+        self._tasks[list_id][task.id] = task.model_copy(
+            update={
+                "assignee_name": previous.assignee_name,
+                "created_by_name": previous.created_by_name,
+            }
+        )
         self._save()
         return task
 
@@ -213,6 +220,29 @@ class TodoSyncService:
             ApplicationMessage(type="tasks", message="task updated", tasks=snapshot)
         )
         return snapshot
+
+    def _with_people(
+        self, account: str, list_id: str, tasks: dict[str, TaskItem]
+    ) -> dict[str, TaskItem]:
+        """Stamp assignee/creator names on a shared list's tasks, every round.
+
+        Fails open: when the source can't say (``None``), every name is cleared so
+        the display falls back to its title/category/creator rules rather than
+        showing a stale assignment.
+        """
+        listing = self._lists.get(list_id)
+        if listing is None or not listing.is_shared:
+            return tasks
+        people = self._source.people(account, list_id) or {}
+        stamped: dict[str, TaskItem] = {}
+        for task_id, task in tasks.items():
+            found = people.get(task_id)
+            names = {
+                "assignee_name": found.assignee_name if found else None,
+                "created_by_name": found.created_by_name if found else None,
+            }
+            stamped[task_id] = task.model_copy(update=names)
+        return stamped
 
     def _drop_list(self, list_id: str) -> None:
         self._lists.pop(list_id, None)

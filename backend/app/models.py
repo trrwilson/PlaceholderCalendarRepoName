@@ -680,6 +680,10 @@ class TaskItem(BaseModel):
     checklist_total: int = 0
     checklist_done: int = 0
     has_note: bool = False
+    # Shared lists only, best effort (app/todo/assignments.py): display names as
+    # To Do shows them. ``None`` = unassigned, unknown, or the source is down.
+    assignee_name: str | None = None
+    created_by_name: str | None = None
 
 
 TaskSyncStatus = Literal["ok", "stale", "needs_sign_in", "disabled"]
