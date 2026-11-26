@@ -23,7 +23,7 @@ normally serves the kiosk. A topic branch runs from its own worktree.
    list, notes, privacy lock, To Do state and eufy session aren't forked:
    `CALENDAR_SECONDARY_STATE_FILE`, `LISTS_FILE`, `TODO_STATE_FILE`, `NOTES_FILE`,
    `PRIVACY_STATE_FILE`, `EUFY_SESSION_FILE`, `EUFY_MEGA_SESSION_FILE`,
-   `EUFY_CLIP_CACHE_DIR`, `EUFY_GALLERY_CACHE_DIR`, `VOICE_DEBUG_CAPTURE_DIR`
+   `EUFY_CLIP_CACHE_DIR`, `EUFY_GALLERY_CACHE_DIR`, `PHOTOS_CACHE_DIR`, `VOICE_DEBUG_CAPTURE_DIR`
    (all `MISSION_CONTROL_`-prefixed). Then add the branch's own feature settings.
 3. **Credentials:** the branch gets its **own copy** of
    `backend/.msal_token_cache.json`. Back up the main checkout's copy outside the
