@@ -18,6 +18,7 @@ you can triage without opening it.
 | [voice-commands.md](voice-commands.md) | What you can say to Mission Control today, what each does, and its limits. Keep current with tool/prompt changes. |
 | [comparative-product-research.md](comparative-product-research.md) | Method + maintained catalogue for "has anyone else shipped this?" passes. |
 | [controls-layout-design.md](controls-layout-design.md) | Design record for the header / dock / settings layout grammar. |
+| [kiosk-integration-testing.md](kiosk-integration-testing.md) | Running a topic branch on sartra-server, and migrating credentials it creates to the main checkout on merge (open migration log). |
 | [credits.md](credits.md) | Source + licence for every bundled media asset and trained model artifact. |
 | [local-stt-evaluation.md](local-stt-evaluation.md) | Evidence behind the local STT engine choice and how to re-benchmark. |
 | [wake-word-model-training.md](wake-word-model-training.md) | Training, licensing, and provenance of the "Mission Control" wake-word model. |
@@ -50,4 +51,5 @@ you can triage without opening it.
 | [presence-module-plan.md](presence-module-plan.md) | General presence-signal contract (`PresenceSignal`, sources, aggregator) shared by the kiosk activity seam and remote/ambient camera events — designed, not started. |
 | [camera-support-plan.md](camera-support-plan.md) | Local webcam presence detection — implements the presence plan's `kiosk` scope. A coarse-motion MVP is built (`app/presence/`); the full "Phase 1 build spec" (real person/presence detector, display-policy wiring) is not. |
 | [display-dimming-plan.md](display-dimming-plan.md) | Backend-driven idle dimming of the physical panel (dim, not off); shares the presence-plan's activity seam. |
+| [photo-stream-plan.md](photo-stream-plan.md) | Photo Stream (#4): OneDrive-folder data-source vetting vs albums/Google, and a Home slideshow tile — initial build behind `photos_enabled`; see §8 for gaps. |
 | [eufy-sdk-integration.md](eufy-sdk-integration.md) | Eufy camera integration. The clip-review gallery (thumbnails + tap-to-play, replacing the old "garage door" placeholder) is built end-to-end (`eufy-bridge/`, `app/eufy/`, `App.tsx`). Ambient events (motion/person/doorbell banners, contact-sensor exceptions) remain designed but unbuilt; their future tie-in is the presence plan's `zone` scope. |

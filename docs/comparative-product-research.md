@@ -208,6 +208,7 @@ starting a new survey.
 | Timers | `docs/timer-plan.md` → *Amendment … pause / resume / restart* and the cross-references to Google Assistant / Alexa timers | pause/resume/reset semantics, replace-on-new, spoken confirmation flow |
 | Lists | `docs/lists-plan.md` → §1 *Pattern inspirations* | grocery apps + Nest Hub / Echo Show voice-add; check-vs-delete; "clear" scoping; quick-add grid as the no-keyboard input path |
 | Privacy mode | `docs/privacy-mode-plan.md` → *Pattern inspirations* | this document's Tiers 1–6, focused on redact-vs-hide and gated exit |
+| Photo stream | `docs/photo-stream-plan.md` → §3.3 *Pattern inspirations* | photo-frame sources (Nest Hub, Echo Show, Aura, DAKboard), dwell/shuffle, guest-mode photo behaviour |
 
 ---
 
