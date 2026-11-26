@@ -108,6 +108,12 @@ backend/.run/
 # reference, never committed (can contain LAN/device identifiers).
 backend/.eufy-investigation/
 
+# Synthetic wake-word eval corpus (scripts/gen_wake_corpus.py) + benchmark output.
+# The specs (tests/data/wake_corpus/*.json) are committed; the audio is not.
+backend/wake-corpus/
+wake-corpus/
+*.wake-bench.json
+
 # Editors and OS
 .vscode/*
 !.vscode/extensions.json

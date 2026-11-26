@@ -128,8 +128,17 @@ kept for comparison. `mc_big/mission_control.yaml` holds the 100k config.
 > recall **9/10**, **0** false accepts, peak-score margin 0.98 vs 0.001. Real
 > in-domain recall is far above the 0.62 synthetic-holdout figure here (deliberate,
 > close-mic, single speaker). The same run scored the Azure custom-keyword `.table`
-> identically (9/10, same missed clip). Full write-up + caveats (n is small; no
-> FA/hr):  `docs/wake-word-provider-bakeoff.md` → "Measured comparison".
+> identically (9/10, same missed clip).
+>
+> **This corpus is too small to compare detectors or to score a retrain** (n=10,
+> Wilson CI [60 %, 98 %]; both detectors identical on every clip). For a
+> version-over-version verdict use the frozen synthetic corpus:
+> `scripts/gen_wake_corpus.py` (raw WAV both detectors can read — the 0.62
+> holdout above is feature vectors, openWakeWord-only) →
+> `scripts/benchmark_wake.py --manifest … --json … --baseline …` (Wilson CIs,
+> per-condition recall, threshold sweep, paired McNemar of new-vs-old). Full
+> write-up + gaps: `docs/wake-word-provider-bakeoff.md` → "Do we have enough
+> data…".
 
 ### Further improvement, in order
 - **On-device threshold tuning first** — with recall 0.62 there's headroom to *raise*

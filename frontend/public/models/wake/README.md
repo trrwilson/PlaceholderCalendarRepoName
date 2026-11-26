@@ -13,11 +13,15 @@ Expected contents once provisioned:
 | `embedding_model.onnx` | Shared openWakeWord speech-embedding model | openWakeWord repo, Apache-2.0 (weights from Google's `speech_embedding`, Apache-2.0) |
 | `mission_control.onnx` | The trained "Mission Control" phrase model | Trained locally per `docs/wake-word-model-training.md`; output is yours |
 | `azure_mission_control_basic_med.table` | Azure custom-keyword model for the `azure` wake provider (optional) | Azure Speech Studio custom keyword ("Mission Control", basic, medium). **Read by the backend, not the browser** — `MISSION_CONTROL_WAKE_WORD_AZURE_MODEL_PATH` points here by default. |
+| `azure-advanced/{lowfa,midfa,highfa}.table` | Advanced-tier exports, three FA operating points. **Parked — do not use.** They never fire with the offline `KeywordRecognizer`; see `azure-advanced/README.md`. | Azure Speech Studio (advanced). |
 
-The first three `.onnx` files power the default in-browser `openwakeword` detector. The `.table`
-is only needed if you switch the wake provider to `azure` (Settings, or
-`MISSION_CONTROL_WAKE_WORD_PROVIDER=azure`), which also needs `pip install -e
-'backend[azure-wake]'`. See `docs/wake-word-provider-bakeoff.md`.
+The first three `.onnx` files power the default in-browser `openwakeword` detector. The
+basic `.table` is only needed if you switch the wake provider to `azure` (Settings, or
+`MISSION_CONTROL_WAKE_WORD_PROVIDER=azure`) — which uses the one at
+`MISSION_CONTROL_WAKE_WORD_AZURE_MODEL_PATH` and needs `pip install -e
+'backend[azure-wake]'` — or if you run the bake-off benchmark, which scores every
+`azure_mission_control_*.table` in this directory (the `azure-advanced/` subdir is
+excluded on purpose). See `docs/wake-word-provider-bakeoff.md`.
 
 The `onnxruntime-web` wasm runtime is **no longer copied here** — it is a project
 dependency (`frontend/package.json`, MIT) that Vite code-splits and fingerprints
