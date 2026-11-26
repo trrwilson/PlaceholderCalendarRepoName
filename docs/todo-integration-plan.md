@@ -504,3 +504,22 @@ account was not re-consented, so `validate_todo_graph.py` was not run and the ot
   category. [verify] that no assignee field exists, with a second account.
 - **Still open:** run `validate_todo_graph.py` (and `--resume` a day later for the 410
   lifetime) once both accounts have consented.
+
+### 2026-11-26 — assignee and completion (household request)
+
+- **Assignee, verified:** a task Sarah assigned to Travis in the To Do app carries no
+  assignee in Graph — v1.0 and beta, with `$expand` of `extensions`,
+  `singleValueExtendedProperties` and `linkedResources` all return the same plain
+  body. To Do keeps assignment in its own sync service, not projected to Graph.
+  Travis's account also does not list Sarah's shared "To Do" list at all, so the
+  joiner's side is not visible to Graph either. The title did carry `--Travis`.
+- **So:** a household member's name at the end of the title (`--Travis`, `- Travis`,
+  `— Travis`, `@Travis`, `(Travis)`) is the assignee: the row shows and colours as
+  that member and the marker is dropped from the shown title. Then a category naming
+  a member, then the list owner (the creator stand-in — Graph exposes no creator).
+- **Completion (§5, now built):** `PUT /api/tasks/{list}/{task}/completed`
+  (`_require_local` + `_require_unlocked`) PATCHes `status` through the account that
+  syncs the list, with a separate `Tasks.ReadWrite` token so the read sync never
+  depends on it. The sign-in asks for `Tasks.ReadWrite` too; until a member signs in
+  again the button answers "Sign in again from the kiosk". Touch only, from the To Do
+  detail sheet (two taps), with Reopen to undo; the Home tile stays read-only.

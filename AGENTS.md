@@ -47,6 +47,8 @@ appliance*, not a web app and not an Outlook/Google Calendar clone.
   write the calendar.** It has two narrow write exceptions — one kitchen timer and one
   grocery list — and can turn privacy mode *on* (never off). Wake-word activation is
   integrated but off by default.
+- Microsoft To Do is display-only with one deliberate exception: a household member
+  can tick a task complete (or reopen it) by touch. No content edits, no voice writes.
 
 ## Repository layout
 

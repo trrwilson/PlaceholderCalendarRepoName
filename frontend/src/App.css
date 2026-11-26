@@ -679,4 +679,5 @@ button.header-period-picker:hover, button.header-period-picker[aria-expanded='tr
 .todo-bucket h2 span { color: var(--muted); font-size: .7em; }
 .todo-bucket .todo-rows { overflow: auto; }
 .todo-bucket-overdue h2 { color: #b5462f; }
+.task-detail-actions { display: grid; gap: 10px; margin-top: 28px; }.task-complete { min-height: clamp(60px, 4vw, 120px); padding: 0 clamp(22px, 1.6vw, 56px); border: 0; border-radius: 12px; color: #fff; background: var(--ink); font-size: clamp(18px, 1.1vw, 36px); font-weight: 700; }.task-complete.is-reopen { color: var(--ink); background: var(--warm); border: 2px solid var(--line-dark); }.task-complete:disabled { opacity: .6; }.task-complete-error { margin: 0; color: #b5462f; font-size: clamp(15px, .9vw, 28px); }
 @media (max-width: 760px) { .home-grid.has-todo > * { grid-column: 1; grid-row: auto; }.todo-columns { grid-auto-flow: row; } }

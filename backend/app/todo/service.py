@@ -187,6 +187,33 @@ class TodoSyncService:
         if result.next_link:
             self._task_links[list_id] = result.next_link
 
+    # -- the one write ----------------------------------------------------------
+
+    def set_completed(self, list_id: str, task_id: str, completed: bool) -> TaskItem:
+        """Complete (or reopen) a task through the account that syncs its list.
+
+        Raises ``KeyError`` for an unknown task and lets ``TodoAuthRequired`` /
+        ``Throttled`` through for the route to report. The cache takes the
+        source's answer now; the next delta round echoes the same change.
+        """
+        account = self._list_account.get(list_id)
+        if account is None or task_id not in self._tasks.get(list_id, {}):
+            raise KeyError(task_id)
+        task = self._source.set_completed(account, list_id, task_id, completed)
+        self._tasks[list_id][task.id] = task
+        self._save()
+        return task
+
+    async def set_completed_and_broadcast(
+        self, list_id: str, task_id: str, completed: bool
+    ) -> TaskSnapshot:
+        await asyncio.to_thread(self.set_completed, list_id, task_id, completed)
+        snapshot = self.snapshot()
+        await self._broadcast(
+            ApplicationMessage(type="tasks", message="task updated", tasks=snapshot)
+        )
+        return snapshot
+
     def _drop_list(self, list_id: str) -> None:
         self._lists.pop(list_id, None)
         self._tasks.pop(list_id, None)

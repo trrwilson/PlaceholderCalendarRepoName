@@ -3,7 +3,9 @@
 Delegated only: reuses the personal-Outlook MSAL client and on-disk token cache
 (``app.calendar.outlook_personal.shared_msal_app``) with its own ``Tasks.Read``
 scope request, so a member who has not consented to tasks never affects the
-calendar's sign-in state. Read-only. See docs/todo-integration-plan.md.
+calendar's sign-in state. Read-only except for one write: marking a task
+completed (or reopening it) with a separate ``Tasks.ReadWrite`` token, so the
+read sync never depends on the write consent. See docs/todo-integration-plan.md.
 
 Graph JSON is mapped to provider-neutral models here and nowhere else.
 """
@@ -31,6 +33,7 @@ from app.todo.source import DeltaExpired, DeltaResult, Throttled, TodoAuthRequir
 logger = logging.getLogger(__name__)
 
 TODO_SCOPES = ["Tasks.Read"]
+TODO_WRITE_SCOPES = ["Tasks.ReadWrite"]
 # masterCategories is read with the calendar token, which already carries the
 # mailbox access it needs, so tasks never ask for a mailbox scope of their own.
 _CATEGORY_SCOPES = ["Calendars.Read"]
@@ -233,3 +236,26 @@ class GraphTodoSource:
             return {}
         headers = {"Authorization": f"Bearer {token}"}
         return self._category_colors.get(f"{_GRAPH_BASE}/me", headers, account)
+
+    # -- the one write ----------------------------------------------------------
+
+    def set_completed(self, account: str, list_id: str, task_id: str, completed: bool) -> TaskItem:
+        token = self._token_provider(account, TODO_WRITE_SCOPES)
+        url = (
+            f"{_GRAPH_BASE}/me/todo/lists/{quote(list_id, safe='')}/tasks/{quote(task_id, safe='')}"
+        )
+        response = self._client.patch(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"status": "completed" if completed else "notStarted"},
+        )
+        if response.status_code == 404:
+            raise KeyError(task_id)
+        if response.status_code == 429:
+            raise Throttled(_retry_after(response))
+        if response.status_code in (401, 403):
+            raise TodoAuthRequired(f"Graph refused the To Do update ({response.status_code})")
+        response.raise_for_status()
+        raw = response.json()
+        colors = self._colors(account) if raw.get("categories") else {}
+        return map_task(raw, list_id, colors)

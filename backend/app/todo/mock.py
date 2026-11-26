@@ -7,7 +7,7 @@ Due dates are relative to today so the Home tile always has something to show.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from app.models import EventCategory, TaskImportance, TaskItem, TaskList, TaskStatus
 from app.todo.source import DeltaResult
@@ -93,3 +93,14 @@ class MockTodoSource:
         if link:
             return DeltaResult(next_link=link)
         return DeltaResult(upserts=self._tasks(list_id), next_link="mock", is_baseline=True)
+
+    def set_completed(self, account: str, list_id: str, task_id: str, completed: bool) -> TaskItem:
+        task = next((t for t in self._tasks(list_id) if t.id == task_id), None)
+        if task is None:
+            raise KeyError(task_id)
+        return task.model_copy(
+            update={
+                "status": TaskStatus.completed if completed else TaskStatus.not_started,
+                "completed_at": datetime.now().replace(microsecond=0) if completed else None,
+            }
+        )

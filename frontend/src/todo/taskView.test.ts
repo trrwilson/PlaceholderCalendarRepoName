@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { bucketOf, dueLabel, groupByBucket, homeSummary, isoDay, matchPersonByName } from './taskView'
+import { bucketOf, dueLabel, groupByBucket, homeSummary, isoDay, matchPersonByName, splitAssignee } from './taskView'
 import type { TaskItem } from './types'
 
 const today = new Date(2026, 10, 9, 9, 0) // Mon 9 Nov 2026, local
@@ -69,6 +69,23 @@ describe('taskView', () => {
     expect(matchPersonByName('Life Admin', people, nameOf)).toBeUndefined()
     expect(matchPersonByName('Wilson', people, nameOf)).toBeUndefined()
     expect(matchPersonByName(null, people, nameOf)).toBeUndefined()
+  })
+
+  it('reads an assignee from a trailing name in the title, only for household members', () => {
+    const people = [{ name: 'Travis Wilson' }, { name: 'Sarah Shapro' }]
+    const nameOf = (p: { name: string }) => p.name
+    const split = (title: string) => {
+      const { title: shown, assignee } = splitAssignee(title, people, nameOf)
+      return [shown, assignee?.name]
+    }
+    expect(split('Change light bulb on garage door motor--Travis')).toEqual(['Change light bulb on garage door motor', 'Travis Wilson'])
+    expect(split('Call plumber - Sarah')).toEqual(['Call plumber', 'Sarah Shapro'])
+    expect(split('Call plumber — sarah shapro')).toEqual(['Call plumber', 'Sarah Shapro'])
+    expect(split('Wrap gifts (Travis)')).toEqual(['Wrap gifts', 'Travis Wilson'])
+    expect(split('Book flights @Sarah')).toEqual(['Book flights', 'Sarah Shapro'])
+    expect(split('Fix the x-ray machine')).toEqual(['Fix the x-ray machine', undefined])
+    expect(split('Read chapter - Hamlet')).toEqual(['Read chapter - Hamlet', undefined])
+    expect(split('Travis')).toEqual(['Travis', undefined])
   })
 
   it('home summary lists open dated tasks: overdue, today, then upcoming', () => {

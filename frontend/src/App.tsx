@@ -16,7 +16,7 @@ import { TimerView } from './timers/TimerView'
 import { useTimers } from './timers/useTimers'
 import { ListsView } from './lists/ListsView'
 import { useLists } from './lists/useLists'
-import { homeSummary, matchPersonByName } from './todo/taskView'
+import { homeSummary, matchPersonByName, splitAssignee } from './todo/taskView'
 import { TodoSummary, TodoView, type OwnerLookup } from './todo/TodoView'
 import { useTasks } from './todo/useTasks'
 import type { ListItem } from './lists/types'
@@ -386,7 +386,7 @@ function App() {
 
   // The grocery list. Backend-owned + persisted; a voice add / remove / clear on
   // any screen lands here through the shared `/api/ws` push. See docs/lists-plan.md.
-  const tasks = useTasks(API_URL)
+  const { snapshot: tasks, setCompleted: setTaskCompleted } = useTasks(API_URL)
   const lists = useLists({
     apiBaseUrl: API_URL,
     onRemoved: (removed: ListItem[], kind) => {
@@ -457,15 +457,15 @@ function App() {
     return override && override !== calendar.color ? { ...calendar, color: override } : calendar
   })
   const calendarById = new Map(calendars.map((calendar) => [calendar.id, calendar]))
-  // To Do (docs/todo-integration-plan.md): a task takes its owner's person colour,
-  // i.e. the same (viewer-remapped) palette entry as that member's calendar. To Do has
-  // no assignee field, so a category naming a member ("Travis" or "Travis Wilson")
-  // stands in for "assigned to" and takes that member's colour instead.
-  const taskOwner: OwnerLookup = (ownerId, categoryName) => {
+  // To Do (docs/todo-integration-plan.md): a task takes its person's colour, i.e. the
+  // same (viewer-remapped) palette entry as that member's calendar. Graph exposes no
+  // assignee, so a member named at the end of the title ("…--Travis") is the assignee,
+  // then a category naming a member; an unassigned task stays with its list owner.
+  const taskOwner: OwnerLookup = (task, list) => {
     const people = calendars.filter((calendar) => calendar.is_primary !== false)
-    const named = matchPersonByName(categoryName, people, personName)
-    const calendar = named ?? calendarById.get(ownerId)
-    return calendar ? { name: personName(calendar), colorClass: colorClass(calendar.color) } : null
+    const { title, assignee } = splitAssignee(task.title, people, personName)
+    const calendar = assignee ?? matchPersonByName(task.category?.name, people, personName) ?? (list ? calendarById.get(list.owner_id) : undefined)
+    return calendar ? { name: personName(calendar), colorClass: colorClass(calendar.color), title } : { name: null, colorClass: '', title }
   }
   const todoAvailable = !!tasks && tasks.status !== 'disabled'
   const todoDueCount = tasks ? homeSummary(tasks.tasks, now).length : 0
@@ -686,7 +686,7 @@ function App() {
         {mode === 'week' && <WeekView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'month' && <MonthView viewDate={viewDate} now={now} events={shownVisibleEvents} calendarById={calendarById} onSelect={selectEvent} onNavigate={navigate} colorMode={displayColorMode} weekStart={weekStart} />}
         {mode === 'timer' && <TimerView timer={timers.timer} remainingMs={timers.remainingMs} alarm={timers.alarm} onStart={startTimerFromTouch} onExtend={extendTimer} onPause={() => timerAction('pause')} onResume={() => timerAction('resume')} onRestart={() => timerAction('restart')} onCancel={() => { void timers.cancel() }} onDismiss={() => { void timers.dismiss() }} />}
-        {mode === 'todo' && <TodoView snapshot={tasks} owner={taskOwner} now={now} redacted={redacting} />}
+        {mode === 'todo' && <TodoView snapshot={tasks} owner={taskOwner} now={now} redacted={redacting} onSetCompleted={setTaskCompleted} />}
         {mode === 'lists' && <ListsView list={lists.list} recentItems={lists.recentItems} redacted={redacting} onAdd={(name) => { if (!redacting) void lists.add(name) }} onToggle={(id, checked) => { if (!redacting) void lists.toggle(id, checked) }} onRemove={(id) => { if (!redacting) void lists.remove(id) }} onClear={(scope) => { if (!redacting) void lists.clear(scope) }} onReorder={(ids) => { if (!redacting) void lists.reorder(ids) }} />}
       </section>
 

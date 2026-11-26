@@ -77,6 +77,18 @@ export function matchPersonByName<T>(label: string | null | undefined, people: T
   })
 }
 
+/**
+ * To Do exposes no assignee to Graph, so the household writes it into the title:
+ * a trailing "--Travis", "- Travis", "@Travis" or "(Travis)". Only a name that
+ * matches a household member counts; the marker is then dropped from the title.
+ */
+export function splitAssignee<T>(title: string, people: T[], nameOf: (person: T) => string): { title: string; assignee?: T } {
+  const match = /^(.*?\S)\s*(?:(?:--|[-–—:@])\s*@?([^-–—:@()]+?)|\(\s*@?([^()]+?)\s*\))\s*$/.exec(title)
+  if (!match) return { title }
+  const assignee = matchPersonByName(match[2] ?? match[3], people, nameOf)
+  return assignee ? { title: match[1], assignee } : { title }
+}
+
 const HOME_RANK: Partial<Record<DueBucket, number>> = { overdue: 0, today: 1, upcoming: 2 }
 
 /** Home tile: open dated tasks — overdue, then today, then upcoming by date. */

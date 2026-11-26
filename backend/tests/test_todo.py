@@ -405,4 +405,119 @@ def test_sign_in_scopes_add_tasks_only_for_graph_todo() -> None:
     assert sign_in_scopes(Settings(_env_file=None, todo_enabled=True, todo_provider="graph")) == [
         "Calendars.Read",
         "Tasks.Read",
+        "Tasks.ReadWrite",
     ]
+
+
+# -- completing a task (the one write) -------------------------------------------
+
+
+def test_graph_completion_patches_status_with_the_write_scope() -> None:
+    seen: list[tuple[str, str, dict]] = []
+    scopes_asked: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append((request.method, str(request.url), body))
+        return httpx.Response(200, json=_task("t1", "Bulb", status="completed"))
+
+    def tokens(account, scopes):
+        scopes_asked.append(scopes)
+        return "tok"
+
+    source = GraphTodoSource(
+        Settings(_env_file=None),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=tokens,
+        accounts=lambda: ["a@x.com"],
+    )
+    task = source.set_completed("a@x.com", "L=1", "t1", True)
+    assert task.status == TaskStatus.completed
+    assert seen == [("PATCH", f"{BASE}/me/todo/lists/L%3D1/tasks/t1", {"status": "completed"})]
+    assert scopes_asked == [["Tasks.ReadWrite"]]
+    source.set_completed("a@x.com", "L=1", "t1", False)
+    assert seen[-1][2] == {"status": "notStarted"}
+
+
+def test_graph_completion_without_write_consent_is_auth_required() -> None:
+    source = GraphTodoSource(
+        Settings(_env_file=None),
+        client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(403))),
+        token_provider=lambda account, scopes: "tok",
+        accounts=lambda: ["a@x.com"],
+    )
+    with pytest.raises(TodoAuthRequired):
+        source.set_completed("a@x.com", "L", "t1", True)
+
+
+def test_service_completion_updates_the_cache_and_rejects_unknown_tasks() -> None:
+    service = TodoSyncService(MockTodoSource(today=lambda: NOW.date()), clock=lambda: NOW)
+    service.sync_once()
+    service.set_completed("alex-tasks", "t2", True)
+    task = next(t for t in service.snapshot().tasks if t.id == "t2")
+    assert task.status == TaskStatus.completed
+    service.set_completed("alex-tasks", "t2", False)
+    task = next(t for t in service.snapshot().tasks if t.id == "t2")
+    assert task.status == TaskStatus.not_started
+    with pytest.raises(KeyError):
+        service.set_completed("alex-tasks", "nope", True)
+    with pytest.raises(KeyError):
+        service.set_completed("no-list", "t2", True)
+
+
+def _enable_mock_todo(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.todo import get_todo_service
+
+    monkeypatch.setenv("MISSION_CONTROL_TODO_ENABLED", "true")
+    get_settings.cache_clear()
+    reset_todo_service()
+    get_todo_service().sync_once()
+
+
+def test_completion_route_ticks_a_task_off(lan, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.main import app
+
+    _enable_mock_todo(monkeypatch)
+    client = TestClient(app)
+    body = client.put("/api/tasks/alex-tasks/t2/completed", json={"completed": True}).json()
+    assert next(t for t in body["tasks"] if t["id"] == "t2")["status"] == "completed"
+    missing = client.put("/api/tasks/alex-tasks/nope/completed", json={"completed": True})
+    assert missing.status_code == 404
+
+
+def test_completion_route_is_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.main import app
+
+    _enable_mock_todo(monkeypatch)
+    remote = TestClient(app, client=("8.8.8.8", 1234))
+    assert (
+        remote.put("/api/tasks/alex-tasks/t2/completed", json={"completed": True}).status_code
+        == 403
+    )
+    monkeypatch.setenv("MISSION_CONTROL_ALLOW_REMOTE_AUTH", "true")
+    monkeypatch.setenv("MISSION_CONTROL_PRIVACY_MODE_PIN", "8426")
+    get_settings.cache_clear()
+    client = TestClient(app)
+    client.post("/api/privacy/lock")
+    assert (
+        client.put("/api/tasks/alex-tasks/t2/completed", json={"completed": True}).status_code
+        == 423
+    )
+
+
+def test_completion_route_reports_missing_write_consent(
+    lan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.main import app
+    from app.todo import get_todo_service
+
+    _enable_mock_todo(monkeypatch)
+    service = get_todo_service()
+
+    def refuse(*_args):
+        raise TodoAuthRequired("no write consent")
+
+    monkeypatch.setattr(service._source, "set_completed", refuse)
+    response = TestClient(app).put("/api/tasks/alex-tasks/t2/completed", json={"completed": True})
+    assert response.status_code == 403
+    assert "Sign in again" in response.json()["detail"]

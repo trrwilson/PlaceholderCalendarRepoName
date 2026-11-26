@@ -52,11 +52,13 @@ GRAPH_SCOPES = ["Calendars.Read"]
 
 def sign_in_scopes(settings: Settings) -> list[str]:
     """Scopes a device-code sign-in asks consent for: the calendar always, plus
-    ``Tasks.Read`` when the To Do feature reads Graph. Token *acquisition* stays
-    per feature, so a member who never consented to tasks keeps a working calendar.
+    ``Tasks.Read`` + ``Tasks.ReadWrite`` (to tick tasks off) when the To Do feature
+    reads Graph. Token *acquisition* stays per feature, so a member who never
+    consented to tasks keeps a working calendar, and one who consented only to
+    ``Tasks.Read`` keeps a working To Do display.
     """
     if settings.todo_enabled and settings.todo_provider == "graph":
-        return [*GRAPH_SCOPES, "Tasks.Read"]
+        return [*GRAPH_SCOPES, "Tasks.Read", "Tasks.ReadWrite"]
     return list(GRAPH_SCOPES)
 
 

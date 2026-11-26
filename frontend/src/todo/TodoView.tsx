@@ -1,12 +1,18 @@
 import { useState, type CSSProperties } from 'react'
 
+import type { TaskCompletion } from './useTasks'
+
 import { BUCKET_LABELS, BUCKET_ORDER, bucketOf, dueLabel, groupByBucket, homeSummary } from './taskView'
 import type { TaskItem, TaskList, TaskSnapshot } from './types'
 
 const REDACTED = '•••'
 
-/** Who a task is for: a category naming a household member wins over the list owner. */
-export type OwnerLookup = (ownerId: string, categoryName?: string | null) => { name: string; colorClass: string } | null
+/**
+ * Who a task is for and the title to show: a household member named at the end of
+ * the title ("…--Travis") is the assignee, then a category naming a member, else
+ * the list owner (the creator). `title` has any assignee marker removed.
+ */
+export type OwnerLookup = (task: TaskItem, list: TaskList | undefined) => { name: string | null; colorClass: string; title: string }
 
 interface RowProps {
   task: TaskItem
@@ -18,24 +24,24 @@ interface RowProps {
 }
 
 function TaskRow({ task, list, owner, today, redacted, onSelect }: RowProps) {
-  const person = list ? owner(list.owner_id, task.category?.name) : null
+  const person = owner(task, list)
   const due = dueLabel(task.due_on, today)
   const done = bucketOf(task, today) === 'done'
   const overdue = bucketOf(task, today) === 'overdue'
   const category = !redacted && task.category
   return (
     <button
-      className={`task-row ${person?.colorClass ?? ''}${done ? ' is-done' : ''}`}
+      className={`task-row ${person.colorClass}${done ? ' is-done' : ''}`}
       onClick={onSelect && !redacted ? () => onSelect(task) : undefined}
       disabled={!onSelect || redacted}
     >
       <span className="task-main">
         <strong>
           {task.importance === 'high' && <span className="task-important" aria-label="Important">★ </span>}
-          {redacted ? REDACTED : task.title}
+          {redacted ? REDACTED : person.title}
         </strong>
         <small>
-          {person && <span className="task-owner">{person.name}</span>}
+          {person.name && <span className="task-owner">{person.name}</span>}
           {list && !redacted && <span className="task-list-name">{list.name}</span>}
           {task.checklist_total > 0 && <span>{task.checklist_done}/{task.checklist_total}</span>}
         </small>
@@ -48,15 +54,36 @@ function TaskRow({ task, list, owner, today, redacted, onSelect }: RowProps) {
 
 interface ViewProps {
   snapshot: TaskSnapshot | null
+  /** Ticks a task off or reopens it; absent = read-only (e.g. the Home tile). */
+  onSetCompleted?: TaskCompletion
   owner: OwnerLookup
   now: Date
   redacted: boolean
 }
 
 /** The To Do appliance mode: tasks grouped by due bucket. Read-only. */
-export function TodoView({ snapshot, owner, now, redacted }: ViewProps) {
-  const [selected, setSelected] = useState<TaskItem | null>(null)
+export function TodoView({ snapshot, owner, now, redacted, onSetCompleted }: ViewProps) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const keyOf = (task: TaskItem) => `${task.list_id}:${task.id}`
+  // Follow the live snapshot so the sheet reflects a completion as soon as it lands.
+  const selected = (snapshot?.tasks ?? []).find((task) => keyOf(task) === selectedKey) ?? null
+  const setSelected = (task: TaskItem | null) => {
+    setSelectedKey(task ? keyOf(task) : null)
+    setError(null)
+  }
+  const toggleCompleted = async (task: TaskItem) => {
+    if (!onSetCompleted || pending) return
+    setPending(true)
+    setError(null)
+    const problem = await onSetCompleted(task, task.status !== 'completed')
+    setPending(false)
+    if (problem) setError(problem)
+    else setSelected(null)
+  }
   const lists = new Map((snapshot?.lists ?? []).map((list) => [list.id, list]))
+  const selectedPerson = selected ? owner(selected, lists.get(selected.list_id)) : null
   const groups = groupByBucket(snapshot?.tasks ?? [], now)
   const openCount = (snapshot?.tasks ?? []).filter((task) => task.status !== 'completed').length
   return (
@@ -87,11 +114,19 @@ export function TodoView({ snapshot, owner, now, redacted }: ViewProps) {
         <div className="detail-scrim" onClick={() => setSelected(null)} onKeyDown={(e) => e.key === 'Escape' && setSelected(null)} role="presentation">
           <section className="detail-sheet task-detail" role="dialog" aria-label={selected.title} onClick={(e) => e.stopPropagation()}>
             <button className="close-detail" aria-label="Close" onClick={() => setSelected(null)}>×</button>
-            <span className={`detail-bar ${lists.get(selected.list_id) ? owner(lists.get(selected.list_id)!.owner_id, selected.category?.name)?.colorClass ?? '' : ''}`} />
-            <h2>{selected.title}</h2>
-            <p className="detail-time">{dueLabel(selected.due_on, now) ?? 'No due date'} · {lists.get(selected.list_id)?.name}</p>
+            <span className={`detail-bar ${selectedPerson!.colorClass}`} />
+            <h2>{selectedPerson!.title}</h2>
+            <p className="detail-time">{dueLabel(selected.due_on, now) ?? 'No due date'} · {lists.get(selected.list_id)?.name}{selectedPerson!.name ? ` · ${selectedPerson!.name}` : ''}</p>
             {selected.checklist_total > 0 && <p className="detail-location">{selected.checklist_done} of {selected.checklist_total} steps done</p>}
             {selected.has_note && <p className="detail-location">Has a note — open To Do to read it.</p>}
+            {onSetCompleted && (
+              <div className="task-detail-actions">
+                <button className={`task-complete${selected.status === 'completed' ? ' is-reopen' : ''}`} disabled={pending} onClick={() => void toggleCompleted(selected)}>
+                  {pending ? 'Saving…' : selected.status === 'completed' ? 'Reopen' : '✓ Mark complete'}
+                </button>
+                {error && <p className="task-complete-error" role="alert">{error}</p>}
+              </div>
+            )}
           </section>
         </div>
       )}

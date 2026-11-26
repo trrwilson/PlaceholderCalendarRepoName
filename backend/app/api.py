@@ -749,14 +749,43 @@ async def restart_timer(request: Request, timer_id: str) -> Timer:
 
 
 # -- To Do tasks -------------------------------------------------------------
-# Read-only display of Microsoft To Do (docs/todo-integration-plan.md). No
-# mutating endpoint exists yet; a future one MUST add _require_unlocked().
+# Display of Microsoft To Do (docs/todo-integration-plan.md). The one write is
+# completing / reopening a task by touch — never content edits, never voice.
 
 
 @router.get("/tasks", response_model=TaskSnapshot)
 async def get_tasks(request: Request) -> TaskSnapshot:
     _require_local(request)
     return todo_snapshot()
+
+
+class TaskCompletionRequest(BaseModel):
+    completed: bool
+
+
+@router.put("/tasks/{list_id}/{task_id}/completed", response_model=TaskSnapshot)
+async def set_task_completed(
+    request: Request, list_id: str, task_id: str, body: TaskCompletionRequest
+) -> TaskSnapshot:
+    """Tick a To Do task off (or reopen it). Returns the resulting snapshot."""
+    _require_local(request)
+    _require_unlocked()
+    from app.todo import get_todo_service
+    from app.todo.source import Throttled, TodoAuthRequired
+
+    service = get_todo_service()
+    if service is None:
+        raise HTTPException(status_code=404, detail="To Do is not enabled")
+    try:
+        return await service.set_completed_and_broadcast(list_id, task_id, body.completed)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such task") from exc
+    except TodoAuthRequired as exc:
+        raise HTTPException(
+            status_code=403, detail="Sign in again from the kiosk to tick tasks off"
+        ) from exc
+    except Throttled as exc:
+        raise HTTPException(status_code=503, detail="To Do is busy; try again shortly") from exc
 
 
 # -- lists ------------------------------------------------------------------
