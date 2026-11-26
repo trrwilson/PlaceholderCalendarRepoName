@@ -1,0 +1,40 @@
+{
+  "_doc": "Per-keyword spec for the synthetic wake-word eval corpus. One file per keyword in this directory; shared voices + condition profiles live in _voices.json. `python -m scripts.gen_wake_corpus --keyword mission_control` reads this. The audio is provisioned per install (TTS is not bit-reproducible); the manifest records checksums. See docs/wake-word-provider-bakeoff.md.",
+  "phrase": "Mission Control",
+  "slug": "mission_control",
+  "seed": 20260908,
+  "positives": [
+    "Mission Control",
+    "Mission Control.",
+    "Hey Mission Control",
+    "OK Mission Control",
+    "Mission Control, what's on today?",
+    "Mission Control, what's happening tomorrow?",
+    "Mission Control, add milk to the grocery list.",
+    "Mission Control, set a timer for ten minutes.",
+    "Mission Control, when is Evan's birthday?",
+    "Mission Control, show me next week.",
+    "Mission Control what's the weather",
+    "Um, Mission Control, cancel that timer.",
+    "Mission Control... show the month.",
+    "So Mission Control, go back home."
+  ],
+  "negatives_confusable": [
+    "permission control",
+    "permission granted",
+    "commission control",
+    "transmission control",
+    "mission accomplished",
+    "the mission is a go",
+    "additional controls are over here",
+    "position control system",
+    "emission controls on the car",
+    "mission statement",
+    "control the situation",
+    "vision control",
+    "admission counter",
+    "remote control",
+    "mission critical systems"
+  ],
+  "negatives_from_command_corpus": true
+}

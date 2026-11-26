@@ -1,0 +1,40 @@
+{
+  "_doc": "Shared across every keyword spec in this directory: the size profiles and the voice roster for scripts/gen_wake_corpus.py. `--profile` picks a row; `--voices/--positives-limit/...` override individual fields.",
+
+  "profiles": {
+    "smoke":  { "voices": 4,  "positives_limit": 6,  "negatives_limit": 20, "rates_pct": [0],          "snr_db": [null, 10] },
+    "coarse": { "voices": 12, "positives_limit": 0,  "negatives_limit": 0,  "rates_pct": [-15, 0, 15], "snr_db": [null, 12, 6] },
+    "full":   { "voices": 24, "positives_limit": 0,  "negatives_limit": 0,  "rates_pct": [-15, 0, 15], "snr_db": [null, 18, 12, 6] }
+  },
+
+  "_azure_note": "Standard Azure Neural voices (not HD/Dragon — those bill 2x). Mixed accent + gender + one child voice. Order matters: --voices N takes the first N. Verify availability in your region's voice list; a missing name fails that clip with a clear error.",
+  "azure_voices": [
+    "en-US-AriaNeural",
+    "en-US-GuyNeural",
+    "en-GB-SoniaNeural",
+    "en-AU-WilliamNeural",
+    "en-US-JennyNeural",
+    "en-IN-PrabhatNeural",
+    "en-GB-RyanNeural",
+    "en-US-DavisNeural",
+    "en-AU-NatashaNeural",
+    "en-IN-NeerjaNeural",
+    "en-US-AnaNeural",
+    "en-CA-LiamNeural",
+    "en-US-AmberNeural",
+    "en-GB-LibbyNeural",
+    "en-US-TonyNeural",
+    "en-CA-ClaraNeural",
+    "en-US-NancyNeural",
+    "en-IE-ConnorNeural",
+    "en-US-JasonNeural",
+    "en-GB-MaisieNeural",
+    "en-NZ-MollyNeural",
+    "en-US-SaraNeural",
+    "en-AU-DuncanNeural",
+    "en-US-BrandonNeural"
+  ],
+
+  "_piper_note": "Multi-speaker piper voice model (the training env has en_US-libritts_r-medium, 904 speakers). Point --piper-model at the .onnx; --voices N speaker ids are sampled evenly across [0, speaker_max).",
+  "piper": { "speaker_max": 904 }
+}

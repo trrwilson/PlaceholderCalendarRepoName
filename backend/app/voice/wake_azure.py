@@ -68,6 +68,17 @@ async def run_wake_relay(client: WebSocket) -> None:
     audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
 
     try:
+        # Tier byte (offset 8, LE uint32): basic == 3, advanced == 6. The offline
+        # KeywordRecognizer only matches basic tables; advanced ones load fine
+        # but never fire (see frontend/public/models/wake/azure-advanced/README.md).
+        with contextlib.suppress(Exception), open(settings.wake_word_azure_model_path, "rb") as fh:
+            tier = int.from_bytes(fh.read(12)[8:12], "little")
+            if tier not in (0, 3):
+                note(
+                    f"wake relay: {settings.wake_word_azure_model_path} looks like a "
+                    f"tier-{tier} (advanced) keyword table — the offline recogniser will "
+                    "not match it; use a basic-tier .table"
+                )
         model = speechsdk.KeywordRecognitionModel(settings.wake_word_azure_model_path)
     except Exception as exc:  # noqa: BLE001 - a bad/missing .table is a config error
         note(f"wake relay: could not load keyword model: {exc}")
