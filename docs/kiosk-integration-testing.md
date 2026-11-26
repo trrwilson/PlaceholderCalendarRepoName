@@ -63,3 +63,4 @@ move, not the secrets.
 | Branch / PR | Credential | What changed | Migrate to main |
 |---|---|---|---|
 | `claude/magical-hopper-amppbu` (PR #6, photo stream) | `backend/.msal_token_cache.json` | The photo-folder owner's account re-consents with `Files.Read` added (kiosk Settings → Add calendar) | Copy the worktree cache over main's. Copy the `MISSION_CONTROL_PHOTOS_*` lines from the worktree's `.env` into main's. |
+| `worktree-bridge-cse_01EyabTcJ5H5KpCC1oqzyTx3` (To Do assignee + completion) | `backend/.msal_token_cache.json` (copied from the photo worktree, so it already holds `Files.Read`) | Members re-consent with `Tasks.ReadWrite` added (kiosk Settings → Add calendar) to tick tasks off | Copy this worktree's cache over main's; it supersedes the photo row above. No new `.env` settings. Its `backend/.venv` is a junction to the photo worktree's venv. |
